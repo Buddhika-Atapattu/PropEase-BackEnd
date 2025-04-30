@@ -18,18 +18,18 @@
     <pre><code>git clone https://github.com/your-username/PropEase-BackEnd.git
 cd PropEase-BackEnd</code></pre>
 
-    <h3>2. Install Dependencies</h3>
-    <pre><code>npm install</code></pre>
+    2. Install Dependencie
+        npm install
 
-    <h3>3. Development Mode</h3>
-    <p>Run the server with live-reload using Nodemon:</p>
-    <pre><code>npm run dev</code></pre>
+    3. Development Mode
+        Run the server with live-reload using Nodemon:
+        npm run dev
 
-    <h3>4. Build for Production</h3>
-    <pre><code>npm run build</code></pre>
+    4. Build for Production
+        npm run build
 
-    <h3>5. Run Compiled Production Code</h3>
-    <pre><code>npm start</code></pre>
+    5. Run Compiled Production Code
+        npm start
   </div>
 
   <div class="section">
