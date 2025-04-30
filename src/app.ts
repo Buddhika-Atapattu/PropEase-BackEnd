@@ -25,6 +25,7 @@ export default class App {
     this.app.use(express.urlencoded({ extended: true }));
     this.app.use(cors());
     this.app.use(this.User.route);
+    this.indexPage();
     Database.connect();
   }
 

@@ -15,21 +15,16 @@
   <div class="section">
     <h2>🚀 Getting Started</h2>
     <h3>1. Clone the Repository</h3>
-    <pre><code>git clone https://github.com/your-username/PropEase-BackEnd.git
-cd PropEase-BackEnd</code></pre>
-
-    2. Install Dependencie
-        npm install
-
-    3. Development Mode
-        Run the server with live-reload using Nodemon:
-        npm run dev
-
-    4. Build for Production
-        npm run build
-
-    5. Run Compiled Production Code
-        npm start
+    <pre><code>git clone https://github.com/your-username/PropEase-BackEnd.git</code></pre> <pre><code>cd PropEase-BackEnd</code></pre>
+    <h3>2. Install Dependencie</h3>
+    <pre><code>npm install</code></pre>
+    <h3>3. Development Mode</h3>
+    <h4>Run the server with live-reload using Nodemon:</h4>
+    <pre><code>npm run dev</code></pre>
+    <h3>4. Build for Production</h3>
+    <pre><code>npm run build</code></pre>
+    <h3>5. Run Compiled Production Code</h3>
+    <pre><code>npm start</code></pre>
   </div>
 
   <div class="section">
@@ -37,26 +32,49 @@ cd PropEase-BackEnd</code></pre>
     <p>Core settings in <code>tsconfig.json</code>:</p>
     <pre><code>{
   "compilerOptions": {
+    /* Visit https://aka.ms/tsconfig to read more about this file */
+
+    /* Projects */
+
+    /* Language and Environment */
     "target": "ES2020",
-    "module": "CommonJS",
-    "rootDir": "src",
-    "outDir": "dist",
-    "strict": true,
+
+    /* Modules */
+    "module": "commonjs",
+    "rootDir": "./src", // ADDED: source files location
+    "outDir": "./dist", // ADDED: compiled JS output
+
+    /* JavaScript Support */
+
+    /* Emit */
+
+    /* Interop Constraints */
     "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+
+    /* Type Checking */
+    "strict": true,
+    /* Completeness */
     "skipLibCheck": true
-  }
-}</code></pre>
+
+},
+"include": ["src/app.ts"], // ADDED: watch only src/app.ts
+"exclude": ["node_modules"] // ADDED: ignore node_modules
+}
+</code></pre>
+
   </div>
 
   <div class="section">
     <h2>📁 Project Structure</h2>
     <pre><code>PropEase-BackEnd/
+├── public/
 ├── src/
 │   ├── index.ts
-│   ├── routes/
-│   ├── controllers/
-│   └── services/
-├── public/
+│   ├── api/
+│   ├── configs/
+│   ├── models/
+│   └── app.ts
 ├── .env
 ├── tsconfig.json
 ├── package.json
@@ -64,13 +82,56 @@ cd PropEase-BackEnd</code></pre>
   </div>
 
   <div class="section">
+    <h2>📜 Package.json</h2>
+    <pre><code>
+    {
+  "name": "propease",
+  "version": "1.0.0",
+  "description": "PropEase is a modern real estate management platform designed to simplify property listing, tenant coordination, agent management, and transaction handling for residential and commercial properties.",
+  "main": "dist/app.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && npm run copy-public",
+    "copy-public": "cpx2 \"public/**/*\" dist/public",
+    "start": "node dist/app.js",
+    "dev": "nodemon src/app.ts"
+  },
+  "keywords": [
+    "node",
+    "express",
+    "TypeScript"
+  ],
+  "author": "Buddhika",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "glob": "^11.0.2",
+    "mongoose": "^8.14.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.1",
+    "@types/glob": "^8.1.0",
+    "@types/mongoose": "^5.11.96",
+    "cpx2": "^8.0.0",
+    "nodemon": "^3.1.10",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}
+    </code></pre>
+  </div>
+
+  <div class="section">
     <h2>📜 Scripts</h2>
     <pre><code>{
   "scripts": {
-    "dev": "nodemon src/index.ts",
-    "build": "tsc",
-    "start": "node dist/index.js"
-  }
+    "build": "tsc -p tsconfig.build.json && npm run copy-public",
+    "copy-public": "cpx2 \"public/**/*\" dist/public",
+    "start": "node dist/app.js",
+    "dev": "nodemon src/app.ts"
+  },
 }</code></pre>
   </div>
 
