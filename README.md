@@ -1,37 +1,4 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>PropEase Backend - README</title>
-  <style>
-    body {
-      font-family: system-ui, sans-serif;
-      line-height: 1.6;
-      padding: 2rem;
-      background-color: #f9f9f9;
-      color: #1a1a1a;
-    }
-    h1, h2, h3 {
-      color: #08122f;
-    }
-    code, pre {
-      background-color: #efefef;
-      padding: 0.25rem 0.5rem;
-      border-radius: 4px;
-      font-family: monospace;
-    }
-    pre {
-      padding: 1rem;
-      overflow-x: auto;
-    }
-    .section {
-      margin-bottom: 2rem;
-    }
-  </style>
-</head>
-<body>
-  <h1>🏗️ PropEase Backend Server</h1>
+<h1>🏗️ PropEase Backend Server</h1>
   <p>A backend server for <strong>PropEase</strong>, a scalable Node.js application written in TypeScript. Designed to support modern, modular, and efficient property management systems.</p>
 
   <div class="section">
@@ -134,5 +101,3 @@ DB_URI=mongodb://localhost:27017/your-db</code></pre>
     <h2>📄 License</h2>
     <p>This project is licensed under the <strong>MIT License</strong>.</p>
   </div>
-</body>
-</html>
