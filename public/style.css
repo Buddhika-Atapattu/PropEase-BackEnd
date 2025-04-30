@@ -1,0 +1,43 @@
+body {
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+[data-theme="dark"] body {
+  background-color: #08122f;
+  color: #fefefe !important;
+}
+
+[data-theme="light"] body {
+  background-color: #fdf6e3;
+  color: #1f1f1f !important;
+}
+
+[data-theme="dark"] .card {
+  color: #fefefe !important;
+}
+
+[data-theme="light"] .card {
+  color: #1f1f1f !important;
+}
+
+[data-theme="dark"] .text-muted {
+  color: #c0c0c0 !important;
+  font-style: italic !important;
+}
+
+[data-theme="light"] .text-muted {
+  color: #3e3e3e !important;
+  font-style: italic !important;
+}
+
+.mode-toggle {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+}
+
+.card {
+  background-color: inherit;
+  border: 1px solid var(--bs-border-color, #ccc);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+}

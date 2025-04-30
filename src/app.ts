@@ -28,6 +28,20 @@ export default class App {
     Database.connect();
   }
 
+  private indexPage(): void {
+    this.app.get("/", (req: Request, res: Response) => {
+      fs.readFile(path.join(__dirname, "../public/index.html"), (err, data) => {
+        if (err) {
+          console.error(err);
+          res.status(500).send("Internal Server Error");
+        } else {
+          // res.send(data)
+          console.log(data);
+        }
+      });
+    });
+  }
+
   public listen(port: number): void {
     this.app.listen(port, () => {
       console.log(`Server running on http://localhost:${port}`);

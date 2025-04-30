@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PropEase Backend</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.5/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+      integrity="sha384-SgOJa3DmI69IUzQ2PVdRZhwQ+dy64/BUtbMJw1MZ8t5HZApcHrRKUc4W0kG879m7"
+      crossorigin="anonymous" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+
+  <body>
+    <div class="mode-toggle">
+      <button class="btn btn-outline-secondary" id="themeToggle">
+        Toggle Theme
+      </button>
+    </div>
+
+    <div class="container py-5">
+      <div class="row justify-content-center">
+        <div class="col-md-8">
+          <div class="card text-center p-4">
+            <h1 class="mb-3">🏛️ Welcome to PropEase Backend API</h1>
+            <p class="lead">
+              Your trusted engine powering intelligent property management.
+            </p>
+            <hr />
+            <h5 class="mt-4">🔧 Server Status: Running</h5>
+            <p>Environment: <strong>Development</strong></p>
+            <p>Time: <span id="currentTime"></span></p>
+            <p class="text-muted mt-4">
+              Crafted with care by the PropEase Engineering Team
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Detect system preference
+      const prefersDark = window.matchMedia(
+        "(prefers-color-scheme: dark)"
+      ).matches;
+      const root = document.documentElement;
+
+      if (prefersDark) {
+        root.setAttribute("data-theme", "dark");
+      } else {
+        root.setAttribute("data-theme", "light");
+      }
+
+      // Theme toggle
+      document.getElementById("themeToggle").addEventListener("click", () => {
+        const current = root.getAttribute("data-theme");
+        root.setAttribute("data-theme", current === "dark" ? "light" : "dark");
+      });
+
+      // Set current time
+      document.getElementById("currentTime").innerText =
+        new Date().toLocaleString();
+    </script>
+
+    <script
+      src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.5/dist/js/bootstrap.bundle.min.js"
+      integrity="sha384-k6d4wzSIapyDyv1kpU366/PK5hCdSbCRGRCMv+eplOQJWyd1fbcAu9OCUj5zNLiq"
+      crossorigin="anonymous"></script>
+  </body>
+</html>
