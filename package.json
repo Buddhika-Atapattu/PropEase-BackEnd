@@ -1,0 +1,36 @@
+{
+  "name": "propease",
+  "version": "1.0.0",
+  "description": "PropEase is a modern real estate management platform designed to simplify property listing, tenant coordination, agent management, and transaction handling for residential and commercial properties.",
+  "main": "dist/app.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && npm run copy-public",
+    "copy-public": "cpx2 \"public/**/*\" dist/public",
+    "start": "node dist/app.js",
+    "dev": "nodemon src/app.ts"
+  },
+  "keywords": [
+    "node",
+    "express",
+    "TypeScript"
+  ],
+  "author": "Buddhika",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "glob": "^11.0.2",
+    "mongoose": "^8.14.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.1",
+    "@types/glob": "^8.1.0",
+    "@types/mongoose": "^5.11.96",
+    "cpx2": "^8.0.0",
+    "nodemon": "^3.1.10",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}

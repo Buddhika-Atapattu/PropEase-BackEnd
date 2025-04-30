@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json", // <- Inherit from main tsconfig
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "noEmit": false, // <--- Allow output files
+    "emitDeclarationOnly": false, // <--- Emit js + types (if you generate types)
+    "declaration": false, // <--- No need .d.ts files unless you are building a library
+    "sourceMap": false, // <--- Disable sourcemaps for smaller dist
+    "removeComments": true // <--- Remove comments for cleaner JS
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}
