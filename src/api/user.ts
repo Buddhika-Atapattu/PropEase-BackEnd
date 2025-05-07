@@ -6,9 +6,12 @@ import express, {
   Router,
 } from "express";
 import * as path from "path";
-import * as fs from "fs";
+import * as fs from "fs-extra";
 import { UserModel, IUser } from "../models/user.model";
 import * as Argon2 from "argon2";
+import multer from "multer";
+import sharp from "sharp";
+import os from "os";
 
 export interface Address {
   street: string;
@@ -23,7 +26,7 @@ export interface Roles {
   role: "admin" | "agent" | "tenant" | "operator" | "developer" | "user";
 }
 
-export interface NewUser extends Document {
+export interface NewUser {
   firstName: string;
   middleName?: string;
   lastName: string;
@@ -63,23 +66,25 @@ const NewAgent = new UserModel({
   isActive: true,
 });
 
-export default class User {
-  private router: Router;
-  private users: IUser[] = [];
-
+export default class UserRoute {
+  private router: express.Router;
   constructor() {
-    this.router = Router();
+    this.router = express.Router();
     this.createUser();
     this.getAllUsers();
     this.getUserData();
-    // this.insertDummyUser(); // Insert dummy user immediately when server starts
+    this.updateUser();
+  }
+
+  get route(): Router {
+    return this.router;
   }
 
   private async hashPassword(password: string): Promise<string> {
     return await Argon2.hash(password);
   }
 
-  private async getUserData(): Promise<void> {
+  private getUserData() {
     this.router.post(
       "/verify-user",
       async (req: Request, res: Response, next: NextFunction) => {
@@ -88,6 +93,8 @@ export default class User {
           const user: IUser | null = await UserModel.findOne({
             username: req.body.username,
           });
+
+          console.log(user);
 
           if (user !== null) {
             const isPasswordValid = await Argon2.verify(
@@ -112,29 +119,7 @@ export default class User {
         }
       }
     );
-    return Promise.resolve();
   }
-
-  // private async insertDummyUser() {
-  //   try {
-  //     // Check if the dummy user already exists in the database
-  //     const existingUser = await UserModel.findOne({ username: "agent" });
-  //     if (existingUser) {
-  //       console.log("Dummy user already exists:", existingUser);
-  //       return; // Exit early if the user already exists
-  //     }
-
-  //     // If the user does not exist, save the dummy user
-  //     const savedUser = await NewAgent.save();
-  //     if (savedUser) {
-  //       console.log("Dummy user inserted:", savedUser);
-  //     } else {
-  //       console.log("Failed to insert dummy user");
-  //     }
-  //   } catch (error) {
-  //     console.error("Error inserting dummy user:", error);
-  //   }
-  // }
 
   private createUser(): Promise<void> {
     this.router.post(
@@ -167,17 +152,162 @@ export default class User {
   private getAllUsers() {
     this.router.get("/users", async (req: Request, res: Response) => {
       try {
-        const users = await UserModel.find();
-        res.json(users);
+        const users = await UserModel.find({});
+        if (users.length === 0) {
+          throw new Error("No users found");
+        } else {
+          res.status(201).json(users);
+        }
       } catch (error) {
-        res
-          .status(500)
-          .json({ error: "Failed to fetch users", details: error });
+        res.status(500).json({ error: `Failed to fetch users: ${error}` });
       }
     });
   }
 
-  get route(): Router {
-    return this.router;
+  private updateUser(): void {
+    const storage = multer.memoryStorage();
+    const allowedTypes = [
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "image/gif",
+      "image/jpg",
+      "image/ico",
+    ];
+
+    const upload = multer({
+      storage,
+      fileFilter: (req, file, cb) => {
+        if (allowedTypes.includes(file.mimetype)) {
+          cb(null, true);
+        } else {
+          cb(new Error("Only image files are allowed"));
+        }
+      },
+    });
+
+    this.router.put(
+      "/user-update/:username",
+      upload.fields([{ name: "userimage", maxCount: 1 }]),
+      async (
+        req: Request<{ username: string }>,
+        res: Response,
+        next: NextFunction
+      ) => {
+        try {
+          const username = req.params.username;
+          if (!username) throw new Error("Invalid username");
+
+          const files = req.files as {
+            [fieldname: string]: Express.Multer.File[];
+          };
+
+          const image = files?.userimage?.[0];
+          if (image) {
+            // Create user-specific directory
+            const userDir = path.join(
+              __dirname,
+              "../../public/users",
+              username
+            );
+            const imagePath = path.join(userDir, "image.webp");
+
+            fs.mkdirSync(userDir, { recursive: true });
+
+            // Convert and save image as .webp
+            const imagetoWebp = await sharp(image.buffer)
+              .webp({ quality: 80 })
+              .toFile(imagePath);
+            if (imagetoWebp) {
+              const host = req.get("host");
+              const protocol = req.protocol;
+              const baseUrl = `${protocol}://${host}`;
+              console.log(baseUrl);
+              const publicPath = `${baseUrl}/users/${username}/image.webp`;
+
+              const updatedUser = await UserModel.findOneAndUpdate(
+                { username }, // filter
+                {
+                  $set: {
+                    firstName: req.body.firstname,
+                    middleName: req.body.middlename,
+                    lastName: req.body.lastname,
+                    email: req.body.email,
+                    age: req.body.age,
+                    image: publicPath,
+                    phoneNumber: req.body.phone,
+                    role: { role: req.body.role },
+                    address: {
+                      street: req.body.street,
+                      houseNumber: req.body.houseNumber,
+                      city: req.body.city,
+                      postcode: req.body.postcode,
+                      country: req.body.country,
+                      stateOrProvince: req.body.stateOrProvince,
+                    },
+                    isActive: req.body.isActive,
+                    updatedAt: req.body.updatedAt,
+                    dateOfBirth: req.body.dateOfBirth,
+                  },
+                },
+                {
+                  new: true, // Return the updated user
+                  upsert: false, // Don't insert if the user doesn't exist
+                }
+              );
+
+              if (!updatedUser) throw new Error("User not found in DB");
+
+              res.status(200).json({
+                message: `Image saved and user updated for ${username}`,
+                user: updatedUser,
+              });
+            } else {
+              throw new Error("Failed to convert image");
+            }
+          } else {
+            const updatedUser = await UserModel.findOneAndUpdate(
+              { username }, // filter
+              {
+                $set: {
+                  firstName: req.body.firstname,
+                  middleName: req.body.middlename,
+                  lastName: req.body.lastname,
+                  email: req.body.email,
+                  age: req.body.age,
+                  phoneNumber: req.body.phone,
+                  role: { role: req.body.role },
+                  address: {
+                    street: req.body.street,
+                    houseNumber: req.body.houseNumber,
+                    city: req.body.city,
+                    postcode: req.body.postcode,
+                    country: req.body.country,
+                    stateOrProvince: req.body.stateOrProvince,
+                  },
+                  isActive: req.body.isActive,
+                  updatedAt: req.body.updatedAt,
+                  dateOfBirth: req.body.dateOfBirth,
+                },
+              },
+              {
+                new: true, // Return the updated user
+                upsert: false, // Don't insert if the user doesn't exist
+              }
+            );
+
+            if (!updatedUser) throw new Error("User not found in DB");
+
+            res.status(200).json({
+              message: `User updated for ${username} without image`,
+              user: updatedUser,
+            });
+          }
+        } catch (error) {
+          console.error("Error in updateUser:", error);
+          res.status(500).json({ message: "Error: " + error });
+        }
+      }
+    );
   }
 }

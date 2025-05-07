@@ -1,7 +1,7 @@
 {
-  "name": "propease",
+  "name": "propease-backend",
   "version": "1.0.0",
-  "description": "PropEase is a modern real estate management platform designed to simplify property listing, tenant coordination, agent management, and transaction handling for residential and commercial properties.",
+  "description": "propease is a modern real estate management platform designed to simplify property listing, tenant coordination, agent management, and transaction handling for residential and commercial properties.",
   "main": "dist/app.js",
   "scripts": {
     "build": "tsc -p tsconfig.build.json && npm run copy-public",
@@ -21,14 +21,20 @@
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
+    "fs-extra": "^11.3.0",
     "glob": "^11.0.2",
-    "mongoose": "^8.14.0"
+    "mongoose": "^8.14.0",
+    "multer": "^1.4.5-lts.2",
+    "sharp": "^0.34.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.1",
+    "@types/fs-extra": "^11.0.4",
     "@types/glob": "^8.1.0",
     "@types/mongoose": "^5.11.96",
+    "@types/multer": "^1.4.12",
+    "@types/node": "^22.15.14",
     "cpx2": "^8.0.0",
     "nodemon": "^3.1.10",
     "ts-node": "^10.9.2",

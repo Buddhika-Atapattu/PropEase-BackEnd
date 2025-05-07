@@ -85,7 +85,7 @@
     <h2>📜 Package.json</h2>
     <pre><code>
     {
-  "name": "propease",
+  "name": "propease-backend",
   "version": "1.0.0",
   "description": "PropEase is a modern real estate management platform designed to simplify property listing, tenant coordination, agent management, and transaction handling for residential and commercial properties.",
   "main": "dist/app.js",

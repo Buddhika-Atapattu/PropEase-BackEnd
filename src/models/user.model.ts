@@ -1,6 +1,20 @@
 // src/models/user.model.ts
 import mongoose, { Schema, Document } from "mongoose";
 
+export interface Country {
+  name: string;
+  code: string;
+  emoji: string;
+  unicode: string;
+  image: string;
+}
+
+export interface UserCredentials {
+  username: string;
+  password: string;
+  rememberMe?: boolean;
+}
+
 export interface Address {
   street: string;
   houseNumber: string;
@@ -10,9 +24,38 @@ export interface Address {
   stateOrProvince?: string;
 }
 
-export interface Roles {
+export interface Role {
   role: "admin" | "agent" | "tenant" | "operator" | "developer" | "user";
 }
+
+export interface BaseUser {
+  __id?: string;
+  __v?: number;
+  firstName: string;
+  middleName?: string | null;
+  lastName: string;
+  username: string;
+  email: string;
+  dateOfbirth?: Date | null;
+  age: number;
+  image?: string | File;
+  phoneNumber?: string;
+  role: Role;
+  address: Address;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface NewUser extends BaseUser {
+  password: string;
+}
+
+export interface UsersType extends NewUser {}
+
+export interface UpdateUserType extends Omit<BaseUser, "createdAt"> {}
+
+export interface LoggedUserType extends Omit<NewUser, "password"> {}
 
 export interface IUser extends Document {
   firstName: string;
@@ -20,15 +63,14 @@ export interface IUser extends Document {
   lastName: string;
   username: string;
   email: string;
+  dateOfBirth?: Date;
   password: string;
   age: number;
-  image?: string;
+  image?: string | File;
   phoneNumber?: string;
-  role: Roles;
+  role: Role;
   address: Address;
   isActive: boolean;
-  createdAt: Date;
-  updatedAt: Date;
 }
 
 const AddressSchema = new Schema<Address>({
@@ -55,6 +97,7 @@ const UserSchema = new Schema<IUser>(
     lastName: { type: String, required: true },
     username: { type: String, required: true, unique: true },
     email: { type: String, required: true, unique: true },
+    dateOfBirth: { type: Date, required: true },
     password: { type: String, required: true },
     age: { type: Number, required: true },
     image: String,

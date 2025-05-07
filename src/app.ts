@@ -5,28 +5,27 @@ import express, {
   NextFunction,
   Router,
 } from "express";
+import Database from "./configs/database";
 import * as path from "path";
 import * as fs from "fs";
-import Database from "./configs/database";
 import { glob } from "glob";
-import User from "./api/user";
 import cors from "cors";
 import Dotenv from "dotenv";
+import UserRoute from "./api/user";
 Dotenv.config();
 
 export default class App {
-  private app: Express;
-  private User: User = new User();
+  private user: UserRoute = new UserRoute();
 
-  constructor() {
-    this.app = express();
-    this.app.use(express.static(path.join(__dirname, "../public")));
-    this.app.use(express.json());
-    this.app.use(express.urlencoded({ extended: true }));
-    this.app.use(cors());
-    this.app.use(this.User.route);
-    this.indexPage();
-    Database.connect();
+  constructor(private app: Express = express()) {
+    Database.connect().then(() => {
+      this.app.use(cors());
+      this.app.use(express.json());
+      this.app.use(express.urlencoded({ extended: true }));
+      this.app.use("/api-user", this.user.route);
+      this.app.use(express.static(path.join(__dirname, "../public")));
+      this.indexPage();
+    });
   }
 
   private indexPage(): void {
@@ -36,8 +35,7 @@ export default class App {
           console.error(err);
           res.status(500).send("Internal Server Error");
         } else {
-          // res.send(data)
-          console.log(data);
+          res.send(data);
         }
       });
     });
