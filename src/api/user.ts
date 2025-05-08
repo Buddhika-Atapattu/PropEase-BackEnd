@@ -74,6 +74,7 @@ export default class UserRoute {
     this.getAllUsers();
     this.getUserData();
     this.updateUser();
+    this.getAllUsersWithPagination();
   }
 
   get route(): Router {
@@ -94,7 +95,7 @@ export default class UserRoute {
             username: req.body.username,
           });
 
-          console.log(user);
+          // console.log(user);
 
           if (user !== null) {
             const isPasswordValid = await Argon2.verify(
@@ -147,6 +148,85 @@ export default class UserRoute {
       }
     );
     return Promise.resolve();
+  }
+
+  private getAllUsersWithPagination() {
+    this.router.get(
+      "/users-with-pagination/:start/:limit",
+      async (req: Request, res: Response, next: NextFunction) => {
+        try {
+          const start = parseInt(req.params.start as string) || 0;
+          const limit = parseInt(req.params.limit as string) || 10;
+          const search = (req.query.search as string)?.trim() || "";
+
+          const safeStart = Math.max(0, start);
+          const safeLimit = Math.max(1, limit);
+
+          const searchArray = search
+            .trim()
+            .split(" ")
+            .filter((part) => part); // Split and remove extra spaces
+
+          let nameFilter: any = {};
+
+          if (searchArray.length > 0) {
+            if (searchArray.length === 1) {
+              // If only one word is provided, search it in all name fields
+              nameFilter = {
+                $or: [
+                  { firstName: { $regex: searchArray[0], $options: "i" } },
+                  { middleName: { $regex: searchArray[0], $options: "i" } },
+                  { lastName: { $regex: searchArray[0], $options: "i" } },
+                ],
+              };
+            } else {
+              // Assume structure: first [middle...] last
+              const firstName = searchArray[0];
+              const lastName = searchArray[searchArray.length - 1];
+              const middleName = searchArray.slice(1, -1).join(" "); // All between first and last
+
+              nameFilter = {
+                $and: [
+                  { firstName: { $regex: firstName, $options: "i" } },
+                  { middleName: { $regex: middleName, $options: "i" } },
+                  { lastName: { $regex: lastName, $options: "i" } },
+                ],
+              };
+            }
+          }
+
+          const searchFilter = search
+            ? {
+                $or: [
+                  nameFilter,
+                  { username: { $regex: search, $options: "i" } },
+                  { email: { $regex: search, $options: "i" } },
+                ],
+              }
+            : {};
+
+          const userCount = await UserModel.countDocuments(searchFilter);
+          const users = await UserModel.find(searchFilter)
+            .sort({ createdAt: -1 })
+            .skip(safeStart)
+            .limit(safeLimit)
+            .lean();
+
+          const data = {
+            count: userCount,
+            start: safeStart,
+            end: Math.min(safeStart + safeLimit, userCount),
+            limit: safeLimit,
+            data: users,
+          };
+
+          res.status(200).json(data);
+        } catch (error) {
+          console.error("Pagination error:", error);
+          res.status(500).json({ message: "Internal server error: " + error });
+        }
+      }
+    );
   }
 
   private getAllUsers() {
@@ -222,7 +302,7 @@ export default class UserRoute {
               const host = req.get("host");
               const protocol = req.protocol;
               const baseUrl = `${protocol}://${host}`;
-              console.log(baseUrl);
+              // console.log(baseUrl);
               const publicPath = `${baseUrl}/users/${username}/image.webp`;
 
               const updatedUser = await UserModel.findOneAndUpdate(
