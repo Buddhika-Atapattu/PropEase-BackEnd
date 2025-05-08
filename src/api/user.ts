@@ -259,6 +259,7 @@ export default class UserRoute {
               if (!updatedUser) throw new Error("User not found in DB");
 
               res.status(200).json({
+                status: "success",
                 message: `Image saved and user updated for ${username}`,
                 user: updatedUser,
               });
@@ -299,13 +300,16 @@ export default class UserRoute {
             if (!updatedUser) throw new Error("User not found in DB");
 
             res.status(200).json({
+              status: "success",
               message: `User updated for ${username} without image`,
               user: updatedUser,
             });
           }
         } catch (error) {
           console.error("Error in updateUser:", error);
-          res.status(500).json({ message: "Error: " + error });
+          res
+            .status(500)
+            .json({ status: "error", message: "Error: server side error..." });
         }
       }
     );
