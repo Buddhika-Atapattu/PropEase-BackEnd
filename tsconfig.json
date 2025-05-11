@@ -1,23 +1,16 @@
 {
   "compilerOptions": {
-    /* Language and Environment */
     "target": "ES2021",
     "lib": ["ES2021"],
-
-    /* Modules */
     "module": "CommonJS",
     "rootDir": "./src",
     "outDir": "./dist",
     "moduleResolution": "node",
     "esModuleInterop": true,
     "types": ["node"],
-
-    /* Type Checking */
     "strict": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
-
-    /* Optional, Recommended Settings */
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true
   },

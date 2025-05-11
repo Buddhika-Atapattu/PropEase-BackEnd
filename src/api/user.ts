@@ -12,59 +12,11 @@ import * as Argon2 from "argon2";
 import multer from "multer";
 import sharp from "sharp";
 import os from "os";
+import nodemailer from "nodemailer";
+import dotenv from "dotenv";
+import twilio from "twilio";
 
-export interface Address {
-  street: string;
-  houseNumber: string;
-  city: string;
-  postcode: string;
-  country?: string;
-  stateOrProvince?: string;
-}
-
-export interface Roles {
-  role: "admin" | "agent" | "tenant" | "operator" | "developer" | "user";
-}
-
-export interface NewUser {
-  firstName: string;
-  middleName?: string;
-  lastName: string;
-  username: string;
-  email: string;
-  password: string;
-  age: number;
-  image?: string | File;
-  phoneNumber?: string;
-  role: Roles;
-  address: Address;
-  isActive: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-const NewAgent = new UserModel({
-  firstName: "Gamin",
-  middleName: "",
-  lastName: "Atapattu",
-  username: "agent",
-  email: "agent@example.com",
-  password: "gamini1234",
-  age: 28,
-  image:
-    "https://images.unsplash.com/photo-1560250097-0b93528c311a?w=600&auto=format&fit=crop&q=60&ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxzZWFyY2h8MTF8fHVzZXJ8ZW58MHx8MHx8fDA%3D",
-  phoneNumber: "+94771234568",
-  role: { role: "agent" },
-  address: {
-    street: "Maple Street",
-    houseNumber: "42B",
-    city: "New York",
-    postcode: "10001",
-    country: "USA",
-    stateOrProvince: "NY",
-  },
-  isActive: true,
-});
+dotenv.config();
 
 export default class UserRoute {
   private router: express.Router;
@@ -75,15 +27,23 @@ export default class UserRoute {
     this.getUserData();
     this.updateUser();
     this.getAllUsersWithPagination();
+    this.findUserByUsername();
+    this.findUserByEmail();
+    this.findUserByPhone();
+    this.verifyNewUserEmail();
   }
 
   get route(): Router {
     return this.router;
   }
 
-  private async hashPassword(password: string): Promise<string> {
+  //<=========== HASH THE PASSWORD WITH ARGON2 ============>
+
+  public async hashPassword(password: string): Promise<string> {
     return await Argon2.hash(password);
   }
+
+  //<====== VERIFY THE LOGIN USER ============>
 
   private getUserData() {
     this.router.post(
@@ -122,33 +82,7 @@ export default class UserRoute {
     );
   }
 
-  private createUser(): Promise<void> {
-    this.router.post(
-      "/create-user",
-      async (req: Request, res: Response, next: NextFunction) => {
-        try {
-          const newUser: IUser = new UserModel(req.body);
-          const existingUser = await UserModel.findOne({
-            username: req.body.username,
-          });
-          if (existingUser) {
-            console.log("User already exists:", existingUser);
-            return; // Exit early if the user already exists
-          } else {
-            const savedUser = await newUser.save();
-            console.log(req.body);
-            res.status(201).json(savedUser);
-          }
-        } catch (error) {
-          res
-            .status(500)
-            .json({ error: "Failed to create user", details: error });
-          next(error);
-        }
-      }
-    );
-    return Promise.resolve();
-  }
+  //<======== GET USERS SEARCH WITH PAGINATION ===========>
 
   private getAllUsersWithPagination() {
     this.router.get(
@@ -162,38 +96,13 @@ export default class UserRoute {
           const safeStart = Math.max(0, start);
           const safeLimit = Math.max(1, limit);
 
-          const searchArray = search
-            .trim()
-            .split(" ")
-            .filter((part) => part); // Split and remove extra spaces
+          const searchArray = search.trim(); // Split and remove extra spaces
 
           let nameFilter: any = {};
 
-          if (searchArray.length > 0) {
-            if (searchArray.length === 1) {
-              // If only one word is provided, search it in all name fields
-              nameFilter = {
-                $or: [
-                  { firstName: { $regex: searchArray[0], $options: "i" } },
-                  { middleName: { $regex: searchArray[0], $options: "i" } },
-                  { lastName: { $regex: searchArray[0], $options: "i" } },
-                ],
-              };
-            } else {
-              // Assume structure: first [middle...] last
-              const firstName = searchArray[0];
-              const lastName = searchArray[searchArray.length - 1];
-              const middleName = searchArray.slice(1, -1).join(" "); // All between first and last
-
-              nameFilter = {
-                $and: [
-                  { firstName: { $regex: firstName, $options: "i" } },
-                  { middleName: { $regex: middleName, $options: "i" } },
-                  { lastName: { $regex: lastName, $options: "i" } },
-                ],
-              };
-            }
-          }
+          nameFilter = {
+            $or: [{ name: { $regex: searchArray, $options: "i" } }],
+          };
 
           const searchFilter = search
             ? {
@@ -229,6 +138,8 @@ export default class UserRoute {
     );
   }
 
+  //<=========== GET ALL USERS ==========>
+
   private getAllUsers() {
     this.router.get("/users", async (req: Request, res: Response) => {
       try {
@@ -243,6 +154,291 @@ export default class UserRoute {
       }
     });
   }
+
+  //<========== VERIFY NEW USER EMAIL ==========>
+
+  private verifyNewUserEmail() {
+    this.router.get(
+      "/emailverifycation/:token",
+      async (req: Request<{ token: string }>, res: Response) => {
+        const token = req.params.token;
+
+        const user = await UserModel.findOne({
+          emailVerificationToken: token,
+          emailVerificationTokenExpires: { $gt: new Date() },
+        });
+
+        if (user) {
+          user.emailVerified = true;
+          user.emailVerificationToken = undefined;
+          user.emailVerificationTokenExpires = undefined;
+          user.autoDelete = false;
+
+          await user.save();
+          res.redirect("http://localhost:4200/login");
+        } else {
+          res
+            .status(400)
+            .sendFile(
+              path.join(__dirname, "../../public/error/emailExpire.html"),
+              (error) => {
+                if (error) {
+                  console.log(error);
+                }
+              }
+            );
+        }
+      }
+    );
+  }
+
+  //<========== END VERIFY NEW USER EMAIL ==========>
+
+  //<========== SEND THE TOKEN TO THE USER TO VERIFY ==========>
+  private async sendVerificationEmail(
+    userEmail: string,
+    token: string
+  ): Promise<boolean> {
+    const verifyLink = `http://localhost:3000/api-user/emailverifycation/${token}`;
+    const html = `
+  <div style="max-width: 600px; margin: auto; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; font-family: Arial, sans-serif;">
+    <h2 style="text-align: center; color: #007bff;">Verify Your Email Address</h2>
+    <p style="font-size: 16px; color: #333;">
+      Hi there,
+    </p>
+    <p style="font-size: 16px; color: #333;">
+      Thank you for registering with us. To complete your sign-up and activate your account, please verify your email address by clicking the button below:
+    </p>
+    <div style="text-align: center; margin: 30px 0;">
+      <a href="${verifyLink}" style="background-color: #007bff; color: white; padding: 12px 24px; text-decoration: none; font-size: 16px; border-radius: 5px; display: inline-block;">
+        Verify Email
+      </a>
+    </div>
+    <p style="font-size: 14px; color: #777;">
+      If the button above does not work, copy and paste the following link into your browser:
+    </p>
+    <p style="font-size: 14px; word-break: break-word; color: #555;">
+      ${verifyLink}
+    </p>
+    <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;" />
+    <p style="font-size: 12px; color: #999; text-align: center;">
+      If you did not create an account, please ignore this email or contact support.
+    </p>
+  </div>
+`;
+
+    const transporter = nodemailer.createTransport({
+      service: "gmail", // or SMTP details
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+    });
+
+    const sendmail = await transporter.sendMail({
+      from: '"PropEase Real Estate" <no-reply@propease.com>',
+      to: userEmail,
+      subject: "Verify Your Email",
+      html: html,
+    });
+
+    if (sendmail) {
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+  //<========== END SEND THE TOKEN TO THE USER TO VERIFY ==========>
+
+  //<========== PHONE NUMBER VERIFICATION *USE THIS FOR ONLY IN THE PRODUCTION* ==========>
+
+  private async verifyPhoneNumber(to: string, otp: string) {
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken = process.env.TWILIO_ACCOUNT_AUTH_TOKEN;
+    const twilioPhone = process.env.TWILIO_ACCOUNT_PHONE_NUMBER;
+
+    console.log(accountSid);
+    console.log(authToken);
+    console.log(twilioPhone);
+    console.log(to);
+    console.log(otp);
+
+    const client = twilio(accountSid, authToken);
+    return client.messages.create({
+      body: `Your verification code is: ${otp}`,
+      from: twilioPhone,
+      to,
+    });
+  }
+
+  private generateOTP(): string {
+    return Math.floor(100000 + Math.random() * 900000).toString();
+  }
+
+  //<========== END PHONE NUMBER VERIFICATION ==========>
+
+  //<========== CREATE USERS ==========>
+
+  private createUser(): Promise<any> {
+    const storage = multer.memoryStorage();
+    const allowedTypes = [
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "image/gif",
+      "image/jpg",
+      "image/ico",
+    ];
+
+    const upload = multer({
+      storage,
+      fileFilter: (req, file, cb) => {
+        if (allowedTypes.includes(file.mimetype)) {
+          cb(null, true);
+        } else {
+          cb(new Error("Only image files are allowed"));
+        }
+      },
+    });
+    this.router.post(
+      "/create-user",
+      upload.fields([{ name: "userimage", maxCount: 1 }]),
+      async (req: Request, res: Response, next: NextFunction) => {
+        try {
+          const files = req.files as {
+            [fieldname: string]: Express.Multer.File[];
+          };
+          //test log
+          console.log(req.body);
+
+          const image = files?.userimage?.[0];
+          const username = req.body.username;
+
+          if (!username) throw new Error("Invalid username");
+
+          if (image) {
+            // Create user-specific directory
+            const userDir = path.join(
+              __dirname,
+              "../../public/users",
+              username
+            );
+
+            //Define the image path
+            const imagePath = path.join(userDir, "image.webp");
+            fs.mkdirSync(userDir, { recursive: true });
+
+            // Convert and save image as .webp
+            const imagetoWebp = await sharp(image.buffer)
+              .webp({ quality: 80 })
+              .toFile(imagePath);
+
+            //Checking the image is converted and stored
+            if (imagetoWebp) {
+              //Define the local Variables
+              const host = req.get("host");
+              const protocol = req.protocol;
+              const baseUrl = `${protocol}://${host}`;
+              const verifyEmail = JSON.parse(req.body.verifyEmail);
+              const token = verifyEmail.token;
+              const verifyDate = new Date(verifyEmail.expires);
+              const otp = this.generateOTP();
+              const otpValidTimeJson = JSON.parse(req.body.otpValidTime);
+              const otpValidTime = otpValidTimeJson.otpValidTime;
+              const email = req.body.email.trim();
+              const phone = req.body.phoneNumber.trim();
+              const publicPath = `${baseUrl}/users/${username}/image.webp`;
+              const pass = req.body.userPassword.trim();
+              if (!pass) throw new Error("Password is required");
+
+              //Hashing the password
+              const password = await this.hashPassword(pass);
+              const access = JSON.parse(req.body.access);
+
+              //Calling the method to verify the email
+              if (email) {
+                const sendEmail = await this.sendVerificationEmail(
+                  email,
+                  token
+                );
+                if (!sendEmail) {
+                  throw new Error("Failed to send email");
+                }
+              } else {
+                throw new Error("Email is required");
+              }
+
+              //Calling the method to verify the phone number *USE THIS ONLY FOR THE PRODUCTION*
+              // if (phone) {
+              //   const sendPhone = await this.verifyPhoneNumber(phone, otp);
+              //   if (!sendPhone) {
+              //     throw new Error("Failed to send phone number");
+              //   }
+              // } else {
+              //   throw new Error("Contact number is required");
+              // }
+
+              if (!phone) throw new Error("Contact number is required");
+
+              const newUser = new UserModel({
+                name: req.body.name,
+                username: req.body.username,
+                email: req.body.email,
+                dateOfBirth: req.body.dateOfBirth,
+                age: req.body.age,
+                gender: req.body.gender,
+                phoneNumber: phone,
+                image: publicPath,
+                role: req.body.role,
+                isActive: req.body.isActive,
+                address: {
+                  street: req.body.street,
+                  houseNumber: req.body.houseNumber,
+                  city: req.body.city,
+                  postcode: req.body.postcode,
+                  country: req.body.country,
+                  stateOrProvince: req.body.stateOrProvince,
+                },
+                access: access,
+                password: password,
+                otpToken: otp,
+                otpValidTime: otpValidTime,
+                emailVerificationToken: token,
+                emailVerificationTokenExpires: verifyDate,
+                createdAt: new Date(),
+                updatedAt: new Date(),
+              });
+              const save = await newUser.save();
+              if (save) {
+                res.status(201).json({
+                  status: "success",
+                  message: "User created successfully",
+                  user: newUser,
+                });
+              } else {
+                throw new Error("Failed to create user");
+              }
+            } else {
+              throw new Error("Failed to convert image");
+            }
+          } else {
+            throw new Error("Image is required");
+          }
+        } catch (error) {
+          console.error("User creation error:", error);
+          res.status(500).json({
+            status: "error",
+            message: "Failed to create user: " + error,
+          });
+        }
+      }
+    );
+
+    return Promise.resolve();
+  }
+
+  //<=========== UPDATE USER ==============>
 
   private updateUser(): void {
     const storage = multer.memoryStorage();
@@ -305,18 +501,19 @@ export default class UserRoute {
               // console.log(baseUrl);
               const publicPath = `${baseUrl}/users/${username}/image.webp`;
 
+              // console.log(req.body);
+
               const updatedUser = await UserModel.findOneAndUpdate(
                 { username }, // filter
                 {
                   $set: {
-                    firstName: req.body.firstname,
-                    middleName: req.body.middlename,
-                    lastName: req.body.lastname,
+                    name: req.body.name,
+                    gender: req.body.gender,
                     email: req.body.email,
                     age: req.body.age,
                     image: publicPath,
                     phoneNumber: req.body.phone,
-                    role: { role: req.body.role },
+                    role: req.body.role,
                     address: {
                       street: req.body.street,
                       houseNumber: req.body.houseNumber,
@@ -351,13 +548,12 @@ export default class UserRoute {
               { username }, // filter
               {
                 $set: {
-                  firstName: req.body.firstname,
-                  middleName: req.body.middlename,
-                  lastName: req.body.lastname,
+                  name: req.body.name,
+                  gender: req.body.gender,
                   email: req.body.email,
                   age: req.body.age,
                   phoneNumber: req.body.phone,
-                  role: { role: req.body.role },
+                  role: req.body.role,
                   address: {
                     street: req.body.street,
                     houseNumber: req.body.houseNumber,
@@ -390,6 +586,118 @@ export default class UserRoute {
           res
             .status(500)
             .json({ status: "error", message: "Error: server side error..." });
+        }
+      }
+    );
+  }
+
+  //<========= FIND USER BY USERNAME ==========>
+
+  private findUserByUsername() {
+    this.router.get(
+      "/user-username/:username",
+      async (req: Request<{ username: string }>, res: Response) => {
+        const username = req.params.username;
+        console.log("username: ", username);
+        const user = await UserModel.findOne({ username: username });
+        try {
+          if (!user) {
+            res.status(200).json({ status: "false" });
+          } else {
+            res.status(200).json({ status: "true" });
+          }
+        } catch (error) {
+          console.error("Error in updateUser:", error);
+          res
+            .status(500)
+            .json({ status: "error", message: "Error: server side error..." });
+        }
+      }
+    );
+  }
+
+  //<======== Before inserting user input into a regex, escape it: ===========>
+
+  private escapeRegex(str: string): string {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  //<======== End Before inserting user input into a regex, escape it: ===========>
+
+  //<======== FIND THE USER BY EMAIL ===========>
+
+  private findUserByEmail() {
+    this.router.get(
+      "/user-email/:email",
+      async (req: Request<{ email: string }>, res: Response) => {
+        try {
+          const rawEmail = req.params.email;
+          const email = decodeURIComponent(rawEmail ?? "").trim();
+          console.log("email: ", email);
+
+          // Simple email validation
+          const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+          if (!emailRegex.test(email)) {
+            res
+              .status(400)
+              .json({ status: "error", message: "Invalid email format" });
+          }
+
+          const user = await UserModel.findOne({
+            email: { $regex: `^${this.escapeRegex(email)}$`, $options: "i" },
+          });
+
+          if (user) {
+            res.status(200).json({ status: "true" }); // Email exists
+          } else {
+            res.status(200).json({ status: "false" }); // Email does not exist
+          }
+        } catch (error) {
+          console.error("Error in findUserByEmail:", error);
+          res
+            .status(500)
+            .json({ status: "error", message: "Server error occurred" });
+        }
+      }
+    );
+  }
+
+  //<========== FIND THE USER BY PHONE NUMBER ============>
+
+  private findUserByPhone() {
+    this.router.get(
+      "/user-phone/:phone",
+      async (req: Request<{ phone: string }>, res: Response) => {
+        try {
+          const phoneNumber = req.params.phone.trim();
+          console.log("phone: ", phoneNumber);
+
+          // Simple phone validation
+          const phoneRegex = /^\+?[0-9\s\-()]{10,15}$/;
+          if (!phoneRegex.test(phoneNumber)) {
+            res.status(400).json({
+              status: "error",
+              message: "Invalid phone number format",
+            });
+          }
+
+          const user = await UserModel.findOne({
+            phoneNumber: {
+              $regex: `^${this.escapeRegex(phoneNumber)}$`,
+              $options: "i",
+            },
+          });
+
+          if (user) {
+            res.status(200).json({ status: "true" }); // phone exists
+          } else {
+            res.status(200).json({ status: "false" }); // phone does not exist
+          }
+        } catch (error) {
+          console.error("Error in findUserByEmail:", error);
+          res
+            .status(500)
+            .json({ status: "error", message: "Server error occurred" });
         }
       }
     );
