@@ -22,6 +22,7 @@ export default class Tracking {
     this.router = express.Router();
     this.trackLoggedUserLogin();
     this.getLoggedUserTracking();
+    this.getAllUserLoginCounts();
   }
 
   get route(): Router {
@@ -93,29 +94,31 @@ export default class Tracking {
           const { username, start, limit } = req.params;
           const { startDate, endDate } = req.query;
 
-          // Validate presence
           if (!username || !start || !limit) {
             throw new Error("Parameter data is missing!");
           }
 
-          // Safe numeric conversion
           const safeStart = Math.max(0, parseInt(start));
           const safeLimit = Math.max(1, parseInt(limit));
 
-          // Build date filter if applicable
           const dateFilter: any = {};
           if (startDate) dateFilter.$gte = new Date(startDate as string);
-          if (endDate) dateFilter.$lte = new Date(endDate as string);
+          if (endDate) {
+            const end = new Date(endDate as string);
+            end.setHours(23, 59, 59, 999); // include full end day
+            dateFilter.$lte = end;
+          }
 
-          // Aggregate pipeline
-          const tracking = await TrackingLoggedUserModel.aggregate([
+          const matchDate =
+            startDate || endDate
+              ? [{ $match: { "data.date": dateFilter } }]
+              : [];
+
+          // Aggregate specific user data
+          const userTrackingPipeline: import("mongoose").PipelineStage[] = [
             { $match: { username } },
-            { $unwind: "$data" },
-            {
-              $match: {
-                ...(startDate || endDate ? { "data.date": dateFilter } : {}),
-              },
-            },
+            { $unwind: { path: "$data" } },
+            ...matchDate,
             { $sort: { "data.date": -1 } },
             {
               $group: {
@@ -129,20 +132,129 @@ export default class Tracking {
               $project: {
                 username: 1,
                 totalCount: 1,
-                data: {
-                  $slice: ["$data", safeStart, safeLimit],
+                data: { $slice: ["$data", safeStart, safeLimit] },
+              },
+            },
+          ];
+
+          // Aggregate all users' total login counts
+          const allUsersLoginPipeline: import("mongoose").PipelineStage[] = [
+            { $unwind: { path: "$data" } },
+            ...matchDate,
+            {
+              $group: {
+                _id: "$username",
+                username: { $first: "$username" },
+                loginCount: { $sum: 1 },
+              },
+            },
+            { $sort: { loginCount: -1 } },
+          ];
+
+          // Total login count of all users (optional)
+          const totalCountPipeline: import("mongoose").PipelineStage[] = [
+            { $unwind: { path: "$data" } },
+            ...matchDate,
+            {
+              $group: {
+                _id: null,
+                totalLoginCount: { $sum: 1 },
+              },
+            },
+          ];
+
+          //  Execute in parallel
+          const [userTracking, allUsersLogin, totalLoginResult] =
+            await Promise.all([
+              TrackingLoggedUserModel.aggregate(userTrackingPipeline),
+              TrackingLoggedUserModel.aggregate(allUsersLoginPipeline),
+              TrackingLoggedUserModel.aggregate(totalCountPipeline),
+            ]);
+
+          if (!userTracking || userTracking.length === 0) {
+            throw new Error("No tracking data found");
+          }
+
+          const totalLoginCount = totalLoginResult[0]?.totalLoginCount || 0;
+
+          res.status(200).json({
+            status: "success",
+            message: "Tracking and summary retrieved successfully",
+            data: {
+              userTrackingData: userTracking[0],
+              allUsersLoginCounts: allUsersLogin,
+              totalLoginCount,
+            },
+          });
+        } catch (error) {
+          console.error("Error:", error);
+          res.status(500).json({
+            status: "error",
+            message: "Internal Server Error: " + error,
+          });
+        }
+      }
+    );
+  }
+
+  //<============= GET ALL USER COUNT WITH LOGIN DATA COUNT ===============>
+  private getAllUserLoginCounts() {
+    this.router.get(
+      "/get-all-users-login-counts",
+      async (req: Request, res: Response, next: NextFunction) => {
+        try {
+          const { startDate, endDate } = req.query;
+
+          const dateFilter: any = {};
+          if (startDate) dateFilter.$gte = new Date(startDate as string);
+          if (endDate) dateFilter.$lte = new Date(endDate as string);
+
+          const matchStage: any = {};
+          if (startDate || endDate) {
+            matchStage["data.date"] = dateFilter;
+          }
+
+          const result = await TrackingLoggedUserModel.aggregate([
+            { $unwind: "$data" },
+            ...(Object.keys(matchStage).length > 0
+              ? [{ $match: matchStage }]
+              : []),
+            {
+              $group: {
+                _id: "$username",
+                username: { $first: "$username" },
+                loginCount: { $sum: 1 },
+              },
+            },
+            {
+              $group: {
+                _id: null,
+                users: {
+                  $push: {
+                    username: "$username",
+                    loginCount: "$loginCount",
+                  },
                 },
+                totalLoginCount: { $sum: "$loginCount" },
+              },
+            },
+            {
+              $project: {
+                _id: 0,
+                users: 1,
+                totalLoginCount: 1,
               },
             },
           ]);
 
-          if (!tracking || tracking.length === 0)
-            throw new Error("No tracking data found");
+          if (!result || result.length === 0) {
+            throw new Error("No user login data found");
+          }
 
           res.status(200).json({
             status: "success",
-            message: "Tracking retrieved successfully",
-            data: tracking[0],
+            message: "All user login counts retrieved successfully",
+            data: result[0],
           });
         } catch (error) {
           console.error("Error:", error);
