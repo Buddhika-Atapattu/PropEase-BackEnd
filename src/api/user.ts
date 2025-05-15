@@ -15,6 +15,9 @@ import os from "os";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
 import twilio from "twilio";
+import { TokenMap } from "../models/token.model";
+import crypto from "crypto";
+import { UserDocument } from "../models/file-upload.model";
 
 dotenv.config();
 
@@ -31,6 +34,10 @@ export default class UserRoute {
     this.findUserByEmail();
     this.findUserByPhone();
     this.verifyNewUserEmail();
+    this.generateToken();
+    this.getUserByToken();
+    this.uploadDocument();
+    this.getUserDocuments();
   }
 
   get route(): Router {
@@ -175,7 +182,7 @@ export default class UserRoute {
           user.autoDelete = false;
 
           await user.save();
-          res.redirect("http://localhost:4200/login");
+          res.redirect("https://localhost:4200/login");
         } else {
           res
             .status(400)
@@ -258,12 +265,6 @@ export default class UserRoute {
     const authToken = process.env.TWILIO_ACCOUNT_AUTH_TOKEN;
     const twilioPhone = process.env.TWILIO_ACCOUNT_PHONE_NUMBER;
 
-    console.log(accountSid);
-    console.log(authToken);
-    console.log(twilioPhone);
-    console.log(to);
-    console.log(otp);
-
     const client = twilio(accountSid, authToken);
     return client.messages.create({
       body: `Your verification code is: ${otp}`,
@@ -278,7 +279,7 @@ export default class UserRoute {
 
   //<========== END PHONE NUMBER VERIFICATION ==========>
 
-  //<========== CREATE USERS ==========>
+  //<========== CREATE USER ==========>
 
   private createUser(): Promise<any> {
     const storage = multer.memoryStorage();
@@ -388,6 +389,7 @@ export default class UserRoute {
                 dateOfBirth: req.body.dateOfBirth,
                 age: req.body.age,
                 gender: req.body.gender,
+                bio: req.body.bio,
                 phoneNumber: phone,
                 image: publicPath,
                 role: req.body.role,
@@ -512,6 +514,7 @@ export default class UserRoute {
                     email: req.body.email,
                     age: req.body.age,
                     image: publicPath,
+                    bio: req.body.bio,
                     phoneNumber: req.body.phone,
                     role: req.body.role,
                     address: {
@@ -604,7 +607,7 @@ export default class UserRoute {
           if (!user) {
             res.status(200).json({ status: "false" });
           } else {
-            res.status(200).json({ status: "true" });
+            res.status(200).json({ status: "true", user: user });
           }
         } catch (error) {
           console.error("Error in updateUser:", error);
@@ -702,4 +705,265 @@ export default class UserRoute {
       }
     );
   }
+
+  //<============= GENERATE A TOKEN =============>
+
+  private generateToken() {
+    this.router.post(
+      "/generate-token",
+      async (req: Request, res: Response, next: NextFunction) => {
+        try {
+          const { username } = req.body;
+          if (username) {
+            const token = crypto.randomBytes(32).toString("hex");
+            const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min TTL
+            const data = {
+              token,
+              username,
+              type: "view",
+              expiresAt,
+            };
+            const saveToken = await TokenMap.create(data);
+            if (saveToken) {
+              res.status(201).json({
+                status: "success",
+                message: "Token generated successfully",
+                token: saveToken.token,
+              });
+            } else {
+              throw new Error("Failed to generate token");
+            }
+          } else {
+            throw new Error("Invalid username");
+          }
+        } catch (error) {
+          console.log(error);
+          res.status(500).json({
+            status: "error",
+            message: "Server error occurred: " + error,
+          });
+        }
+      }
+    );
+  }
+
+  //<============= END GENERATE A TOKEN =============>
+
+  //<============= GET USER BY TOKEN =============>
+
+  private getUserByToken() {
+    this.router.get(
+      "/user-token/:token",
+      async (
+        req: Request<{ token: string }>,
+        res: Response,
+        next: NextFunction
+      ) => {
+        try {
+          const token = req.params.token;
+          if (token) {
+            const data = await TokenMap.findOne({ token });
+            if (data) {
+              const user = await UserModel.findOne({ username: data.username });
+              if (user) {
+                res.status(200).json({
+                  status: "success",
+                  message: "User found",
+                  user: user,
+                });
+              } else {
+                throw new Error("User not found");
+              }
+            } else {
+              throw new Error("Token not found");
+            }
+          }
+        } catch (error) {
+          console.log(error);
+          res.status(500).json({
+            status: "error",
+            message: "Server error occurred: " + error,
+          });
+        }
+      }
+    );
+  }
+
+  //<============= END GET USER BY TOKEN =============>
+
+  //<============= USER DOCUMENT UPLOAD =============>
+  private uploadDocument() {
+    const allowedTypes = [
+      // Word Documents
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+      "application/rtf",
+
+      // Excel Documents
+      "application/vnd.ms-excel",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+      "text/csv",
+      "text/tab-separated-values",
+
+      // PowerPoint Documents
+      "application/vnd.ms-powerpoint",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "application/vnd.openxmlformats-officedocument.presentationml.template",
+
+      // OpenDocument Formats
+      "application/vnd.oasis.opendocument.text",
+      "application/vnd.oasis.opendocument.spreadsheet",
+      "application/vnd.oasis.opendocument.presentation",
+
+      // PDF
+      "application/pdf",
+
+      // Plain Text
+      "text/plain",
+
+      // Common Image Types
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "image/gif",
+      "image/jpg",
+      "image/ico",
+      "image/svg+xml",
+    ];
+
+    const storage = multer.diskStorage({
+      destination: (req, file, cb) => {
+        const username = req.params.username;
+        console.log("Username: ", username);
+
+        if (!username)
+          return cb(new Error("Username is required in form data."), "");
+
+        const uploadPath = path.join(
+          __dirname,
+          `../../public/uploads/${username}/documents`
+        );
+        fs.mkdirSync(uploadPath, { recursive: true });
+        cb(null, uploadPath);
+      },
+      filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+        const sanitized = file.originalname.replace(/\s+/g, "_");
+        cb(null, `${uniqueSuffix}-${sanitized}`);
+      },
+    });
+
+    const upload = multer({
+      storage,
+      fileFilter: (req, file, cb) => {
+        if (allowedTypes.includes(file.mimetype)) {
+          cb(null, true);
+        } else {
+          cb(new Error(`File type not allowed: ${file.mimetype}`));
+        }
+      },
+    });
+
+    this.router.post(
+      "/user-document-upload/:username",
+      upload.array("files", 10),
+      async (req: Request<{ username: string }>, res: Response) => {
+        try {
+          if (req.files) {
+            const username = req.body.username;
+            if (!username) throw new Error("Username is required."); //Error come from here the username is not getting
+
+            const files = req.files as Express.Multer.File[];
+            if (!files || files.length === 0) {
+              throw new Error("No files uploaded.");
+            }
+
+            const savedFiles = files.map((file) => ({
+              originalName: file.originalname,
+              storedName: file.filename,
+              mimeType: file.mimetype,
+              size: file.size,
+              path: file.path,
+              extension: path.extname(file.originalname),
+              download: `${username}/documents/${file.filename}`,
+              URL: `${req.protocol}://${req.get(
+                "host"
+              )}/uploads/${username}/documents/${file.filename}`,
+            }));
+
+            // Check if username exists in DB
+            let doc = await UserDocument.findOne({ username });
+
+            if (doc) {
+              // Append new files
+              doc.files.push(...savedFiles);
+            } else {
+              // Create new document
+              doc = new UserDocument({
+                username,
+                files: savedFiles,
+              });
+            }
+
+            const save = await doc.save();
+            if (save) {
+              res.status(200).json({
+                status: "success",
+                message: "Files uploaded and saved successfully.",
+                fileCount: files.length,
+                uploadedFiles: savedFiles,
+              });
+            } else {
+              throw new Error("Failed to save files.");
+            }
+          } else {
+            throw new Error("Files are required.");
+          }
+        } catch (error) {
+          console.error("Upload error:", error);
+          res.status(500).json({
+            status: "error",
+            message: "Server error: " + error,
+          });
+        }
+      }
+    );
+  }
+
+  //<============= END USER DOCUMENT UPLOAD =============>
+
+  //<============= GET USER DOCUMENTS =============>
+  private getUserDocuments() {
+    this.router.get(
+      "/uploads/:username/documents",
+      async (req: Request<{ username: string }>, res: Response) => {
+        try {
+          const username = req.params.username;
+          if (!username) throw new Error("Username is required.");
+          const user = await UserDocument.findOne({ username }).sort({
+            updatedAt: -1,
+          });
+          if (user) {
+            res.status(200).json({
+              status: "success",
+              message: "Files retrieved successfully.",
+              data: user.files,
+            });
+          } else {
+            throw new Error("User not found");
+          }
+        } catch (error) {
+          console.error("Upload error:", error);
+          res.status(500).json({
+            status: "error",
+            message: "Server error: " + error,
+          });
+        }
+      }
+    );
+  }
+  //<============= END GET USER DOCUMENTS =============>
+
 }

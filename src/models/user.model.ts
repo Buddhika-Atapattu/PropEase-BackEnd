@@ -63,6 +63,7 @@ export interface IUser extends Document {
   phoneNumber?: string;
   role: Role;
   address: Address;
+  bio: string;
   isActive: boolean;
   access: ROLE_ACCESS_MAP;
   otpVerifycation: boolean;
@@ -74,6 +75,13 @@ export interface IUser extends Document {
   autoDelete: boolean;
   createdAt: Date;
   updatedAt: Date;
+}
+
+interface ITokenMap extends Document {
+  token: string;
+  username: string;
+  type: "view" | "email" | "session" | string;
+  expiresAt: Date;
 }
 
 /* ========== SCHEMAS ========== */
@@ -101,7 +109,7 @@ const AccessSchema = new Schema<ROLE_ACCESS_MAP>({
 });
 
 // Main User Schema
-const UserSchema = new Schema<IUser>(
+export const UserSchema = new Schema<IUser>(
   {
     name: { type: String, required: true },
     username: { type: String, required: true, unique: true },
@@ -111,6 +119,7 @@ const UserSchema = new Schema<IUser>(
     age: { type: Number, required: true },
     gender: { type: String, required: true },
     image: { type: String },
+    bio: { type: String },
     phoneNumber: { type: String },
     role: {
       type: String,

@@ -1,0 +1,190 @@
+Question related topics:
+2024 October
+A1:
+a. management activities (planning, organizing, leading, and controlling)
+b. management activities (planning, organizing, leading, and controlling) and relationship
+c. SWOT analysis
+d. Simon's Decision Making
+e. Main element of management information (data, people, and technology)
+f. Interaction of users to MIS systems
+
+A2:
+a. MIS system
+b. DSS and GDSS
+c. OIS (Office Information System)
+d. KBS (Knowledge Based System -> Expert System)
+e. Data mining
+f. MIS system related to internet
+
+A3:
+a. SP (Strategic planning) and SISP (Strategic Information System Planning)
+b. Feasibility study
+c. CSF (Critical Success Factors) and KPI (Key Performance Indicators)
+d. MIS development
+e. Software Development in MIS
+
+B4:
+a. Project management methodologies
+b. Fact-Finding
+c. CASE Tools
+d. Software development in MIS
+
+B5:
+a. Software and Hardware development in MIS
+b. MIS and Virtual Organization
+c. Mobile computing
+d. Social media
+
+2024 April
+A1:
+Management levels, Strategic planning, and Management of MIS (planning, organizing, leading, and controlling)
+
+A2:
+GDSS
+
+A3:
+IOS (Office Information System)
+
+B4:
+CASE tools
+
+B5:
+Mobile computing in MIS
+
+2023 October
+A1:
+a. Simon's Decision making model
+b. Characteristics of information
+
+A2:
+a. KBS -> Expert System
+b. KBS -> Neural Network System
+
+A3:
+a. Data mining
+b. Data mining with MIS
+
+B4:
+MIS Implementation options
+
+B5:
+a. Software and Hardware development in MIS
+b. Technology enhancement in MIS
+
+2023 April
+A1:
+ERP system
+
+A2:
+Business Intelligence system
+
+A3:
+01. MIS reports
+02. DSS
+03. Data mart and Data warehouse
+04. ERP and OLAP
+
+B4:
+a. Legal acts in UK based on MIS
+
+B5:
+CSF
+
+2022 October
+A1:
+CRM and mobile computing
+
+A2:
+a. SWOT Analysis and Balance Score Card
+b. Project Management
+
+A3:
+Strategic Planning
+
+B4:
+GDSS and OIS innovation together
+
+B5:
+Social Midea
+
+2022 April
+A1:
+ERP system with functionality
+
+A2:
+OIS with corporation related
+
+A3:
+Cloud based system
+
+B4:
+OIS with spreadsheet analysis and usage
+
+B5:
+Mobile computing and future enhancement 
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Find the topics in this document what I should follow thoroughly according to the following:
+Predicted Topics for the April 2025 Exam Paper
+Based on the analysis of previous exam topics, the following patterns emerge:
+
+Recurring Topics: Strategic Planning, MIS development, DSS/GDSS, OIS, Data Mining, Mobile Computing, CASE Tools.
+
+Rotation of Topics: Topics such as Simon's Decision-Making Model, ERP, Business Intelligence, and Social Media in MIS appear intermittently.
+
+New Trends & Technology Enhancements: Topics related to AI, cloud-based systems, and mobile computing have been appearing more frequently.
+
+Expected Questions for April 2025 Exam
+Section A
+A1:
+
+Management activities (planning, organizing, leading, and controlling)
+
+MIS levels and strategic planning in organizations
+
+Interaction of users with MIS systems
+
+Elements of management information (data, people, technology)
+
+A2:
+
+DSS and GDSS
+
+Office Information Systems (OIS) and their applications
+
+Knowledge-Based Systems (KBS) with expert systems and neural networks
+
+Data mining techniques in MIS
+
+A3:
+
+Strategic Information System Planning (SISP) and feasibility study
+
+Critical Success Factors (CSF) and Key Performance Indicators (KPI)
+
+MIS development methodologies
+
+Software development in MIS
+
+Section B
+B4:
+
+Project management methodologies in MIS
+
+Fact-finding techniques and CASE tools
+
+MIS implementation approaches
+
+B5:
+
+Software and hardware development in MIS
+
+MIS and Virtual Organizations
+
+Social media and mobile computing in MIS
+
+Cloud-based systems and future enhancements
+
+Conclusion:
+Given the trends, Strategic Planning, MIS Development, DSS/GDSS, Mobile Computing, and CASE Tools are likely to appear. Newer concepts like AI-driven decision-making, cloud-based MIS, and emerging business intelligence solutions may also be tested.

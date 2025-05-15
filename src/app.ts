@@ -12,10 +12,13 @@ import { glob } from "glob";
 import cors from "cors";
 import Dotenv from "dotenv";
 import UserRoute from "./api/user";
+import "./services/auto-delete.service";
+import Tracking from "./api/tracking";
 Dotenv.config();
 
 export default class App {
   private user: UserRoute = new UserRoute();
+  private tracking: Tracking = new Tracking();
 
   constructor(private app: Express = express()) {
     Database.connect().then(() => {
@@ -23,6 +26,7 @@ export default class App {
       this.app.use(express.json());
       this.app.use(express.urlencoded({ extended: true }));
       this.app.use("/api-user", this.user.route);
+      this.app.use("/api-tracking", this.tracking.route);
       this.app.use(express.static(path.join(__dirname, "../public")));
       this.indexPage();
     });
