@@ -57,12 +57,9 @@ export default class UserRoute {
       "/verify-user",
       async (req: Request, res: Response, next: NextFunction) => {
         try {
-          console.log(req.body);
           const user: IUser | null = await UserModel.findOne({
             username: req.body.username,
           });
-
-          // console.log(user);
 
           if (user !== null) {
             const isPasswordValid = await Argon2.verify(
@@ -310,8 +307,6 @@ export default class UserRoute {
           const files = req.files as {
             [fieldname: string]: Express.Multer.File[];
           };
-          //test log
-          console.log(req.body);
 
           const image = files?.userimage?.[0];
           const username = req.body.username;
@@ -408,6 +403,7 @@ export default class UserRoute {
                 otpValidTime: otpValidTime,
                 emailVerificationToken: token,
                 emailVerificationTokenExpires: verifyDate,
+                creator: req.body.creator,
                 createdAt: new Date(),
                 updatedAt: new Date(),
               });
@@ -500,10 +496,7 @@ export default class UserRoute {
               const host = req.get("host");
               const protocol = req.protocol;
               const baseUrl = `${protocol}://${host}`;
-              // console.log(baseUrl);
               const publicPath = `${baseUrl}/users/${username}/image.webp`;
-
-              // console.log(req.body);
 
               const updatedUser = await UserModel.findOneAndUpdate(
                 { username }, // filter
@@ -601,7 +594,6 @@ export default class UserRoute {
       "/user-username/:username",
       async (req: Request<{ username: string }>, res: Response) => {
         const username = req.params.username;
-        console.log("username: ", username);
         const user = await UserModel.findOne({ username: username });
         try {
           if (!user) {
@@ -636,7 +628,6 @@ export default class UserRoute {
         try {
           const rawEmail = req.params.email;
           const email = decodeURIComponent(rawEmail ?? "").trim();
-          console.log("email: ", email);
 
           // Simple email validation
           const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -673,7 +664,6 @@ export default class UserRoute {
       async (req: Request<{ phone: string }>, res: Response) => {
         try {
           const phoneNumber = req.params.phone.trim();
-          console.log("phone: ", phoneNumber);
 
           // Simple phone validation
           const phoneRegex = /^\+?[0-9\s\-()]{10,15}$/;
@@ -836,7 +826,6 @@ export default class UserRoute {
     const storage = multer.diskStorage({
       destination: (req, file, cb) => {
         const username = req.params.username;
-        console.log("Username: ", username);
 
         if (!username)
           return cb(new Error("Username is required in form data."), "");
@@ -872,8 +861,12 @@ export default class UserRoute {
       async (req: Request<{ username: string }>, res: Response) => {
         try {
           if (req.files) {
+            console.log(req.body);
             const username = req.body.username;
-            if (!username) throw new Error("Username is required."); //Error come from here the username is not getting
+            if (!username) throw new Error("Username is required.");
+
+            const uploader = req.body.uploader;
+            if (!uploader) throw new Error("Uploader is required.");
 
             const files = req.files as Express.Multer.File[];
             if (!files || files.length === 0) {
@@ -891,6 +884,7 @@ export default class UserRoute {
               URL: `${req.protocol}://${req.get(
                 "host"
               )}/uploads/${username}/documents/${file.filename}`,
+              uploader: uploader,
             }));
 
             // Check if username exists in DB
@@ -965,5 +959,4 @@ export default class UserRoute {
     );
   }
   //<============= END GET USER DOCUMENTS =============>
-
 }

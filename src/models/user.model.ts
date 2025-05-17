@@ -73,6 +73,7 @@ export interface IUser extends Document {
   emailVerificationToken?: string;
   emailVerificationTokenExpires?: Date;
   autoDelete: boolean;
+  creator: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -145,6 +146,7 @@ export const UserSchema = new Schema<IUser>(
     emailVerificationToken: { type: String },
     emailVerificationTokenExpires: { type: Date },
     autoDelete: { type: Boolean, default: true },
+    creator: { type: String, required: true },
   },
   { timestamps: true }
 );
