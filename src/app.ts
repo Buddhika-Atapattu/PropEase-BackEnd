@@ -14,11 +14,15 @@ import Dotenv from "dotenv";
 import UserRoute from "./api/user";
 import "./services/auto-delete.service";
 import Tracking from "./api/tracking";
+import Property from "./api/property";
+import { PlacesController } from "./api/PlacesController";
 Dotenv.config();
 
 export default class App {
   private user: UserRoute = new UserRoute();
   private tracking: Tracking = new Tracking();
+  private property: Property = new Property();
+  private placesController: PlacesController = new PlacesController();
 
   constructor(private app: Express = express()) {
     Database.connect().then(() => {
@@ -27,6 +31,8 @@ export default class App {
       this.app.use(express.urlencoded({ extended: true }));
       this.app.use("/api-user", this.user.route);
       this.app.use("/api-tracking", this.tracking.route);
+      this.app.use("/api-property", this.property.route);
+      this.app.use("/api-places", this.placesController.router);
       this.app.use(express.static(path.join(__dirname, "../public")));
       this.indexPage();
     });
