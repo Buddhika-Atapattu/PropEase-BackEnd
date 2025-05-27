@@ -39,7 +39,7 @@ export interface propertyDocs {
   size: number;
   documentURL: string;
 }
-
+ 
 export interface propertyImages {
   originalname: string;
   filename: string;

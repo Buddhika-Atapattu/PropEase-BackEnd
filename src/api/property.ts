@@ -27,6 +27,16 @@ import { error } from "console";
 
 dotenv.config();
 
+interface filterDialogData {
+  minPrice: number;
+  maxPrice: number;
+  beds: string;
+  bathrooms: string;
+  amenities: string[];
+  type: string;
+  status: string;
+}
+
 export default class Property {
   // Define the router for the property API
   // This will handle the routing for the property API
@@ -37,6 +47,8 @@ export default class Property {
     this.router = express.Router();
     this.insertProperty();
     this.test();
+    this.getAllPropertiesWithPagination();
+    this.getSinglePropertyById();
   }
 
   get route(): Router {
@@ -382,4 +394,174 @@ export default class Property {
       }
     );
   }
+
+  //<==================== END OF INSERT PROPERTY ====================>
+
+  //<==================== GET ALL PROPERTIES WITH THE PAGINATION ====================>
+  private getAllPropertiesWithPagination(): void {
+    this.router.get(
+      "/get-all-properties-with-pagination/:start/:end/",
+      async (
+        req: Request<{
+          start: string;
+          end: string;
+        }>,
+        res: Response
+      ) => {
+        try {
+          const { start, end } = req.params;
+          const safeStart = Math.max(0, parseInt(start, 10));
+          const safeEnd = Math.max(1, parseInt(end, 10));
+
+          const search = req.query.search as string | "";
+          const filter = req.query.filter as string | "";
+
+          const safeSearch =
+            typeof search === "string" && search.trim() !== ""
+              ? search.trim()
+              : "";
+          const safeFilter =
+            typeof filter === "string" && filter.trim() !== ""
+              ? filter.trim()
+              : "";
+
+          if (isNaN(safeStart) || isNaN(safeEnd)) {
+            throw new Error("Invalid start or end parameters.");
+          }
+
+          const filterDialogData: filterDialogData = safeFilter
+            ? JSON.parse(safeFilter)
+            : {
+                minPrice: 0,
+                maxPrice: Number.MAX_SAFE_INTEGER,
+                beds: "",
+                bathrooms: "",
+                amenities: [],
+                type: "",
+                status: "",
+              };
+
+          const andFilters: any[] = [];
+
+          console.log(filterDialogData);
+          // Keyword-based search across multiple fields
+          if (safeSearch) {
+            const searchRegex = new RegExp(safeSearch, "i");
+            andFilters.push({
+              $or: [
+                { title: { $regex: searchRegex } },
+                { type: { $regex: searchRegex } },
+                { status: { $regex: searchRegex } },
+                { "address.country": { $regex: searchRegex } },
+              ],
+            });
+          }
+
+          // Apply filters if available
+          if (filterDialogData) {
+            andFilters.push({
+              price: {
+                $gte: filterDialogData.minPrice,
+                $lte: filterDialogData.maxPrice,
+              },
+            });
+
+            if (filterDialogData.beds === "10+") {
+              andFilters.push({ bedrooms: { $gte: 10 } });
+            } else if (filterDialogData.beds) {
+              andFilters.push({
+                bedrooms: parseInt(filterDialogData.beds, 10),
+              });
+            }
+
+            if (filterDialogData.bathrooms === "10+") {
+              andFilters.push({ bathrooms: { $gte: 10 } });
+            } else if (filterDialogData.bathrooms) {
+              andFilters.push({
+                bathrooms: parseInt(filterDialogData.bathrooms, 10),
+              });
+            }
+
+            if (filterDialogData.type) {
+              andFilters.push({ type: filterDialogData.type });
+            }
+
+            if (filterDialogData.status) {
+              andFilters.push({ status: filterDialogData.status });
+            }
+
+            if (
+              filterDialogData.amenities &&
+              filterDialogData.amenities.length > 0
+            ) {
+              andFilters.push({
+                featuresAndAmenities: { $all: filterDialogData.amenities },
+              });
+            }
+          }
+
+          const filterQuery = andFilters.length > 0 ? { $and: andFilters } : {};
+
+          const properties = await PropertyModel.find(filterQuery)
+            .skip(safeStart)
+            .limit(safeEnd - safeStart)
+            .sort({ createdAt: -1 });
+
+          const totalCount = await PropertyModel.countDocuments(filterQuery);
+
+          const resData = {
+            properties: properties,
+            count: totalCount,
+          };
+
+          res.status(200).json({
+            status: "success",
+            message: "Properties fetched successfully.",
+            data: resData,
+          });
+        } catch (error) {
+          console.error("Error occurred while fetching properties: ", error);
+          res.status(500).json({
+            status: "error",
+            message: "Error occurred while fetching properties: " + error,
+          });
+        }
+      }
+    );
+  }
+  //<==================== END GET ALL PROPERTIES WITH THE PAGINATION ====================>
+
+  //<==================== GET SINGLE PROPERTY BY ID ====================>
+  private getSinglePropertyById(): void {
+    this.router.get(
+      "/get-single-property-by-id/:id",
+      async (req: Request<{ id: string }>, res: Response) => {
+        try {
+          const { id } = req.params;
+          const safeID = id.trim();
+          console.log(safeID);
+          if (!safeID) {
+            throw new Error("Property ID is required.");
+          }
+          const property = await PropertyModel.findOne({ id: safeID });
+          if (!property) {
+            throw new Error("Property not found.");
+          }
+          res.status(200).json({
+            status: "success",
+            message: "Property fetched successfully.",
+            data: property,
+          });
+        } catch (error) {
+          console.error("Error occurred while fetching properties: ", error);
+          res.status(500).json({
+            status: "error",
+            message: "Error occurred while fetching properties: " + error,
+          });
+        }
+      }
+    );
+  }
+
+  //<==================== END GET SINGLE PROPERTY BY ID ====================>
 }

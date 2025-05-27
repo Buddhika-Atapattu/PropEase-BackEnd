@@ -102,7 +102,7 @@ export default class UserRoute {
 
           const searchArray = search.trim(); // Split and remove extra spaces
 
-          let nameFilter: any = {};
+          let nameFilter: any = {}; 
 
           nameFilter = {
             $or: [{ name: { $regex: searchArray, $options: "i" } }],
