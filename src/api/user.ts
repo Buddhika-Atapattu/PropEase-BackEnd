@@ -38,6 +38,7 @@ export default class UserRoute {
     this.getUserByToken();
     this.uploadDocument();
     this.getUserDocuments();
+    this.getUserDataByUsername();
   }
 
   get route(): Router {
@@ -102,7 +103,7 @@ export default class UserRoute {
 
           const searchArray = search.trim(); // Split and remove extra spaces
 
-          let nameFilter: any = {}; 
+          let nameFilter: any = {};
 
           nameFilter = {
             $or: [{ name: { $regex: searchArray, $options: "i" } }],
@@ -959,4 +960,31 @@ export default class UserRoute {
     );
   }
   //<============= END GET USER DOCUMENTS =============>
+  //<============= GET USER DATA BY USERNAME =============>
+  private getUserDataByUsername() {
+    this.router.get(
+      "/user-data/:username",
+      async (req: Request<{ username: string }>, res: Response) => {
+        try {
+          const username = req.params.username;
+          const user = await UserModel.findOne(
+            { username: username },
+            { password: 0 }
+          );
+          if (!user) {
+            throw new Error("User not founded!");
+          } else {
+            res.status(200).json({
+              status: "success",
+              message: "User data founded",
+              data: user,
+            });
+          }
+        } catch (error) {
+          res.status(500).json({ status: "error", message: error });
+        }
+      }
+    );
+  }
+  //<============= END GET USER DATA BY USERNAME =============>
 }

@@ -23,7 +23,6 @@ import fs from "fs";
 import path from "path";
 import multer from "multer";
 import sharp from "sharp";
-import { error } from "console";
 
 dotenv.config();
 
@@ -35,6 +34,22 @@ interface filterDialogData {
   amenities: string[];
   type: string;
   status: string;
+}
+
+interface UploadedImage {
+  originalname: string;
+  filename: string;
+  mimetype: string;
+  size: number;
+  imageURL: string;
+}
+
+interface UploadedDocument {
+  originalname: string;
+  filename: string;
+  mimetype: string;
+  size: number;
+  documentURL: string;
 }
 
 export default class Property {
@@ -49,6 +64,7 @@ export default class Property {
     this.test();
     this.getAllPropertiesWithPagination();
     this.getSinglePropertyById();
+    this.deleteProperty();
   }
 
   get route(): Router {
@@ -141,11 +157,11 @@ export default class Property {
           // This will create a unique folder for each property
           uploadPath = path.join(
             __dirname,
-            `../../public/propertyUploads/${propertyID}/images/`
+            `../../public/propertyUploads/${propertyID}/tempImages/`
           );
-          // If the field name is "propertyDocs", save to the documents folder
+          // If the field name is "documents", save to the documents folder
           // This will create a unique folder for each property
-        } else if (file.fieldname === "propertyDocs") {
+        } else if (file.fieldname === "documents") {
           // Create the upload path for documents
           // This will create a unique folder for each property
           uploadPath = path.join(
@@ -196,7 +212,7 @@ export default class Property {
         // Check if the document type is allowed
         // This is important to ensure that files are saved in the correct location
       } else if (
-        file.fieldname === "propertyDocs" &&
+        file.fieldname === "documents" &&
         allowedDocumentTypes.includes(file.mimetype)
       ) {
         // If the document type is allowed, return true
@@ -217,7 +233,7 @@ export default class Property {
     // This will handle the file upload and save the property to the database
     this.router.post(
       "/insert-property/:propertyID",
-      upload.fields([{ name: "images" }, { name: "propertyDocs" }]),
+      upload.fields([{ name: "images" }, { name: "documents" }]),
       async (
         req: Request<{ propertyID: string }>,
         res: Response,
@@ -243,15 +259,20 @@ export default class Property {
           }
 
           // Define the property documents and images
-          const propertyDocs = propertyFiles?.propertyDocs;
+          const documents = propertyFiles?.documents;
           const propertyImages = propertyFiles?.images;
           // Define the property empty images and document arrays
-          const Images = [];
-          const Docs = [];
+
+          const Images: UploadedImage[] = [];
+          const Docs: UploadedDocument[] = [];
+
+          // Array to hold promises
+          const conversionPromises: Promise<void>[] = [];
+
           // Check if the property documents are provided
-          if (propertyDocs) {
+          if (documents) {
             // Loop through each document and create a file URL
-            for (const file of propertyDocs) {
+            for (const file of documents) {
               // Create the file path for the document
               // const filePath = path.join(
               //   __dirname,
@@ -263,11 +284,11 @@ export default class Property {
               )}/propertyUploads/${propertyID}/documents/${file.filename}`;
               // Create the document object and push it to the documents array
               Docs.push({
-                originalname: file.originalname,
-                filename: file.filename,
-                mimetype: file.mimetype,
+                originalname: file.originalname.trim(),
+                filename: file.filename.trim(),
+                mimetype: file.mimetype.trim(),
                 size: file.size,
-                documentURL: fileURL,
+                documentURL: fileURL.trim(),
               });
             }
           } else {
@@ -279,64 +300,63 @@ export default class Property {
           if (propertyImages) {
             const convertDir = path.join(
               __dirname,
-              `../../public/propertyUploads/${propertyID}/ConvertImages/`
+              `../../public/propertyUploads/${propertyID}/images/`
             );
 
             fs.mkdirSync(convertDir, { recursive: true });
             // Loop through each image and create a file URL
             for (const file of propertyImages) {
               // Create the file path for the image
+              const ext = path.extname(file.filename);
+              const baseName = path.basename(file.filename, ext);
+
               const convertedImagePath = path.join(
                 __dirname,
-                `../../public/propertyUploads/${propertyID}/ConvertImages/${file.filename}`
+                `../../public/propertyUploads/${propertyID}/images/${baseName}.webp`
               );
-
               const originalImagePath = file.path;
 
               // Create the file URL for the image
               const fileURL = `${req.protocol}://${req.get(
                 "host"
-              )}/propertyUploads/${propertyID}/ConvertImages/${file.filename}`;
+              )}/propertyUploads/${propertyID}/images/${baseName}.webp`;
 
-              try {
-                // Check if the image type is webp
-                if (file.mimetype !== "image/webp") {
-                  // Convert the image to webp format
-                  await sharp(originalImagePath)
-                    .webp({ quality: 80 })
-                    .resize(800, 600, {
-                      fit: "inside",
-                      withoutEnlargement: true,
-                    })
-                    .toFile(convertedImagePath);
+              /*
+              All image conversions using sharp finish properly before deleting the temp folder,
 
-                  await new Promise((res) => setTimeout(res, 50));
-                  await fs.promises.unlink(originalImagePath);
-                } else {
-                  await sharp(originalImagePath)
-                    .resize(800, 600, {
-                      fit: "inside",
-                      withoutEnlargement: true,
-                    })
-                    .toFile(convertedImagePath);
+              Avoid the EBUSY error caused by open file handles,
 
-                  await new Promise((res) => setTimeout(res, 50));
-                  await fs.promises.unlink(originalImagePath);
-                }
-              } catch (error) {
-                console.error("Error occurred while processing image: ", error);
-              }
+              Ensure correct .webp file naming and referencing,
 
-              // Reshape the image to a specific size
+              Should move all conversion tasks into an array of Promises and await them using Promise.all(...) before proceeding to deletion.
+                          
+              */
+
+              // Push the conversion promise into the array and Reshape the image to a specific size
+              const conversionPromise = sharp(originalImagePath)
+                .webp({ quality: 100 })
+                .resize(800, 600, {
+                  fit: "inside",
+                  withoutEnlargement: true,
+                })
+                .toFile(convertedImagePath)
+                .then(() => {
+                  // console.log("WebP Image saved to:", convertedImagePath);
+                })
+                .catch((error) => {
+                  // console.error("Error converting image to WebP:", error);
+                });
 
               // Create the image object and push it to the images array
               Images.push({
-                originalname: file.originalname,
-                filename: file.filename,
-                mimetype: file.mimetype,
+                originalname: file.originalname.trim(),
+                filename: file.filename.trim(),
+                mimetype: file.mimetype.trim(),
                 size: file.size,
-                imageURL: fileURL,
+                imageURL: fileURL.trim(),
               });
+
+              conversionPromises.push(conversionPromise);
             }
           } else {
             //Throw new error No property images were uploaded
@@ -345,39 +365,154 @@ export default class Property {
 
           // Get the property details from the request body
 
-          //<======================================================================================================================>
+          //<============================= Oganizing the data to insert into the DB =============================>
 
           const DbData = {
-            id: propertyID,
-            title: req.body.title,
-            description: req.body.description,
-            type: req.body.type,
-            status: req.body.status,
-            price: req.body.price,
-            currency: req.body.currency,
-            bedrooms: req.body.bedrooms,
-            bathrooms: req.body.bathrooms,
-            maidrooms: req.body.maidrooms,
-            area: req.body.area,
-            images: Images,
-            address: JSON.parse(req.body.address),
-            countryDetails: JSON.parse(req.body.countryDetails),
+            // Basic Property Details
+            id: propertyID.trim(),
+            title: req.body.title.trim(),
+            type: req.body.type.trim().toLowerCase(),
+            listing: req.body.listing.trim().toLowerCase(),
+            description: req.body.description.trim(),
+            // Basic Property Details
+
+            // Location Details
+            countryDetails: JSON.parse(req.body.countryDetails.trim()),
+            address: JSON.parse(req.body.address.trim()),
+            location:
+              typeof req.body.location === "string"
+                ? JSON.parse(req.body.location.trim())
+                : {},
+            // End Location Details
+
+            // Property Specifications
+            totalArea: Number(req.body.totalArea.trim()),
+            builtInArea: Number(req.body.builtInArea.trim()),
+            livingRooms: Number(req.body.livingRooms.trim()),
+            balconies: Number(req.body.balconies.trim()),
+            kitchen: Number(req.body.kitchen.trim()),
+            bedrooms: Number(req.body.bedrooms.trim()),
+            bathrooms: Number(req.body.bathrooms.trim()),
+            maidrooms: Number(req.body.maidrooms.trim()),
+            driverRooms: Number(req.body.driverRooms.trim()),
+            furnishingStatus: req.body.furnishingStatus.trim(),
+            totalFloors: Number(req.body.totalFloors.trim()),
+            numberOfParking: Number(req.body.numberOfParking.trim()),
+            // End Property Specifications
+
+            // Construction & Age
+            builtYear: Number(req.body.builtYear.trim()),
+            propertyCondition: req.body.propertyCondition.trim().toLowerCase(),
+            developerName: req.body.developerName.trim(),
+            projectName:
+              typeof req.body.projectName === "string"
+                ? req.body.projectName.trim()
+                : "",
+            ownerShipType: req.body.ownerShipType.trim().toLowerCase(),
+            // End Construction & Age
+
+            // Financial Details
+            price: Number(req.body.price.trim()),
+            currency: req.body.currency.trim(),
+            pricePerSqurFeet: Number(req.body.pricePerSqurFeet.trim()),
+            expectedRentYearly:
+              typeof req.body.expectedRentYearly === "string"
+                ? Number(req.body.expectedRentYearly.trim())
+                : 0,
+            expectedRentQuartely:
+              typeof req.body.expectedRentQuartely === "string"
+                ? Number(req.body.expectedRentQuartely.trim())
+                : 0,
+            expectedRentMonthly:
+              typeof req.body.expectedRentMonthly === "string"
+                ? Number(req.body.expectedRentMonthly.trim())
+                : 0,
+            expectedRentDaily:
+              typeof req.body.expectedRentDaily === "string"
+                ? Number(req.body.expectedRentDaily.trim())
+                : 0,
+            maintenanceFees: Number(req.body.maintenanceFees.trim()),
+            serviceCharges: Number(req.body.serviceCharges.trim()),
+            transferFees:
+              typeof req.body.transferFees === "string"
+                ? Number(req.body.transferFees.trim())
+                : 0,
+            availabilityStatus: req.body.availabilityStatus
+              .trim()
+              .toLowerCase(),
+            // End Financial Details
+
+            // Features & Amenities
             featuresAndAmenities: JSON.parse(req.body.featuresAndAmenities),
-            addedBy: JSON.parse(req.body.addedBy),
-            location: JSON.parse(req.body.location),
-            propertyDocs: Docs,
+            // End Features & Amenities
+
+            // Media
+            images: Images,
+            documents: Docs,
+            videoTour:
+              typeof req.body.videoTour === "string"
+                ? req.body.videoTour.trim()
+                : "",
+            virtualTour:
+              typeof req.body.virtualTour === "string"
+                ? req.body.virtualTour.trim()
+                : "",
+            // End Media
+
+            // Listing Management
+            listingDate: new Date(req.body.listingDate.trim()).toISOString(),
+            availabilityDate:
+              typeof req.body.availabilityDate === "string"
+                ? new Date(req.body.availabilityDate.trim()).toISOString()
+                : undefined,
+            listingExpiryDate:
+              typeof req.body.listingExpiryDate === "string"
+                ? new Date(req.body.listingExpiryDate.trim()).toISOString()
+                : undefined,
+            rentedDate:
+              typeof req.body.rentedDate === "string"
+                ? new Date(req.body.rentedDate.trim()).toISOString()
+                : undefined,
+            soldDate:
+              typeof req.body.soldDate === "string"
+                ? new Date(req.body.soldDate.trim()).toISOString()
+                : undefined,
+            addedBy: JSON.parse(req.body.addedBy.trim()),
+            owner: req.body.owner.trim(),
+            // End Listing Management
+
+            // Administrative & Internal Use
+            referenceCode: req.body.referenceCode.trim(),
+            verificationStatus: req.body.verificationStatus
+              .trim()
+              .toLowerCase(),
+            priority: req.body.priority.trim().toLowerCase(),
+            status: req.body.status.trim().toLowerCase(),
+            internalNote: req.body.internalNote.trim(),
+            // End Administrative & Internal Use
           };
 
           const insertToTheDB = new PropertyModel(DbData);
           const insertedProperty = await insertToTheDB.save();
 
           if (insertedProperty) {
-            console.log("Inserted Property: ", insertedProperty);
+            // Send susscess message
             res.status(200).json({
               status: "success",
               message: "Property inserted successfully",
               data: insertedProperty,
             });
+
+            // Wait until all the promise is resolved
+            await Promise.all(conversionPromises);
+
+            
+            await this.deleteFolderWithRetry(
+              path.join(
+                __dirname,
+                `../../public/propertyUploads/${propertyID}/tempImages/`
+              )
+            );
           } else {
             throw new Error("Property insertion failed.");
           }
@@ -394,8 +529,37 @@ export default class Property {
       }
     );
   }
-
   //<==================== END OF INSERT PROPERTY ====================>
+
+  //<==================== DRLETE PROPERTY TEMP IMAGES FOLDER ====================>
+  private async deleteFolderWithRetry(
+    folderPath: string,
+    retries: number = 5,
+    delayMs: number = 500
+  ): Promise<void> {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        await fs.promises.rm(folderPath, { recursive: true, force: true });
+        console.log(`Deleted folder on attempt ${attempt}: ${folderPath}`);
+        return;
+      } catch (err: any) {
+        if (err.code === "EBUSY" || err.code === "EPERM") {
+          console.warn(
+            `Attempt ${attempt} failed to delete folder. Retrying in ${delayMs}ms...`
+          );
+          await new Promise((res) => setTimeout(res, delayMs));
+        } else {
+          throw err; // Unexpected error, rethrow
+        }
+      }
+    }
+
+    throw new Error(
+      `Failed to delete folder after ${retries} attempts: ${folderPath}`
+    );
+  }
+
+  //<==================== END DRLETE PROPERTY TEMP IMAGES FOLDER ====================>
 
   //<==================== GET ALL PROPERTIES WITH THE PAGINATION ====================>
   private getAllPropertiesWithPagination(): void {
@@ -443,7 +607,6 @@ export default class Property {
 
           const andFilters: any[] = [];
 
-          console.log(filterDialogData);
           // Keyword-based search across multiple fields
           if (safeSearch) {
             const searchRegex = new RegExp(safeSearch, "i");
@@ -539,10 +702,11 @@ export default class Property {
         try {
           const { id } = req.params;
           const safeID = id.trim();
-          console.log(safeID);
+
           if (!safeID) {
             throw new Error("Property ID is required.");
           }
+
           const property = await PropertyModel.findOne({ id: safeID });
           if (!property) {
             throw new Error("Property not found.");
@@ -562,6 +726,61 @@ export default class Property {
       }
     );
   }
-
   //<==================== END GET SINGLE PROPERTY BY ID ====================>
+
+  //<==================== DELETE THE PROPERTY BY PROPERTY ID ====================>
+  private deleteProperty(): void {
+    this.router.delete(
+      "/delete-property/:id",
+      async (req: Request<{ id: string }>, res: Response) => {
+        try {
+          const { id } = req.params;
+          const safeID = id.trim();
+
+          if (!safeID) {
+            throw new Error("Property ID is required.");
+          }
+
+          const fileFolderPath = path.join(
+            __dirname,
+            `../../public/propertyUploads/${safeID}`
+          );
+
+          const deleteFolder = fs.promises.rm(fileFolderPath, {
+            recursive: true,
+            force: true,
+          });
+
+          if (!deleteFolder) {
+            throw new Error(
+              "Error occurred while deleting folder: " + deleteFolder
+            );
+          }
+
+          const deleteProperty = await PropertyModel.findOneAndDelete({
+            id: safeID,
+          });
+
+          if (!deleteProperty) {
+            throw new Error(
+              "Error occurred while deleting property: " + deleteProperty
+            );
+          }
+
+          res.status(200).json({
+            status: "success",
+            message: "Property deleted successfully.",
+          });
+        } catch (error) {
+          if (error) {
+            res.status(500).json({
+              status: "error",
+              message: "Error occurred while deleting property: " + error,
+            });
+          }
+        }
+      }
+    );
+  }
+  //<==================== END DELETE THE PROPERTY BY PROPERTY ID ====================>
 }

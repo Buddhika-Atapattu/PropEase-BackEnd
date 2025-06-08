@@ -5,31 +5,103 @@ import { Schema, model, Document } from "mongoose";
 
 // Main Property Interface
 export interface IProperty extends Document {
+  // Basic Property Details
   id: string;
   title: string;
-  description: string;
   type:
-    | "Apartment"
-    | "House"
-    | "Villa"
-    | "Commercial"
-    | "Land"
-    | "Stodio"
+    | "apartment"
+    | "house"
+    | "villa"
+    | "commercial"
+    | "land"
+    | "stodio"
     | string;
-  status: "Sale" | "Rent" | "Sold" | "Rented" | string;
-  price: number;
-  currency: string;
+  listing: "sale" | "rent" | "sold" | "rented" | string;
+  description: string;
+  // End Basic Property Details
+
+  // Location Details
+  countryDetails: CountryDetails;
+  address: Address;
+  location?: GoogleMapLocation;
+  // End Location Details
+
+  // Property Specifications
+  totalArea: number; // in square feet or meters
+  builtInArea: number; // in square feet or meters
+  livingRooms: number;
+  balconies: number;
+  kitchen: number;
   bedrooms: number;
   bathrooms: number;
   maidrooms: number;
-  area: number;
-  images: propertyImages[];
-  address: Address;
-  countryDetails: CountryDetails;
+  driverRooms: number;
+  furnishingStatus: "furnished" | "semi-furnished" | "unfurnished" | string;
+  totalFloors: number;
+  numberOfParking: number;
+  // End Property Specifications
+
+  // Construction & Age
+  builtYear: number;
+  propertyCondition:
+    | "new"
+    | "old"
+    | "excellent"
+    | "good"
+    | "needs renovation"
+    | string;
+  developerName: string;
+  projectName?: string;
+  ownerShipType: "freehold" | "leasehold" | "company" | "trust" | string;
+  // End Construction & Age
+
+  // Financial Details
+  price: number;
+  currency: string;
+  pricePerSqurFeet: number;
+  expectedRentYearly?: number;
+  expectedRentQuartely?: number;
+  expectedRentMonthly?: number;
+  expectedRentDaily?: number;
+  maintenanceFees: number;
+  serviceCharges: number;
+  transferFees?: number;
+  availabilityStatus:
+    | "available"
+    | "not available"
+    | "pending"
+    | "ready to move"
+    | string;
+  // End Financial Details
+
+  // Features & Amenities
   featuresAndAmenities: string[];
+  // End Features & Amenities
+
+  // Media
+  images: propertyImages[];
+  documents: propertyDocs[];
+  videoTour?: string;
+  virtualTour?: string;
+  // End Media
+
+  // Listing Management
+  listingDate: Date;
+  availabilityDate?: Date;
+  listingExpiryDate?: Date;
+  rentedDate?: Date;
+  soldDate?: Date;
   addedBy: AddedBy;
-  location?: GoogleMapLocation;
-  propertyDocs: propertyDocs[];
+  owner: string;
+  // End Listing Management
+
+  // Administrative & Internal Use
+  referenceCode: string;
+  verificationStatus: "pending" | "verified" | "rejected" | "approved";
+  priority: "high" | "medium" | "low";
+  status: "draft" | "published" | "archived";
+  internalNote: string;
+  // End Administrative & Internal Use
 }
 
 export interface propertyDocs {
@@ -39,7 +111,7 @@ export interface propertyDocs {
   size: number;
   documentURL: string;
 }
- 
+
 export interface propertyImages {
   originalname: string;
   filename: string;
@@ -227,34 +299,155 @@ const AddedBySchema = new Schema<AddedBy>({
 const GoogleMapLocationSchema = new Schema<GoogleMapLocation>({
   lat: Number,
   lng: Number,
-  embeddedUrl: String,
+  embeddedUrl: {type: String, required: false, default: ''},
 });
 
 const PropertySchema = new Schema<IProperty>(
   {
+    // Basic Property Details
     id: { type: String, unique: true, required: true },
     title: { type: String, required: true, default: "Property Title" },
-    description: { type: String, required: true, default: "" },
     type: {
       type: String,
-      enum: ["Apartment", "House", "Villa", "Commercial", "Land", "Studio"],
+      enum: ["apartment", "house", "villa", "commercial", "land", "studio"],
       required: true,
       default: "apartment",
     },
-    status: { type: String, required: true, default: "Sale" },
-    price: { type: Number, required: true, default: 0 },
-    currency: { type: String, required: true, default: "$" },
+    listing: {
+      type: String,
+      enum: ["sale", "rent", "sold", "rented"],
+      required: true,
+      default: "sale",
+    },
+    description: { type: String, required: true, default: "" },
+    // End Basic Property Details
+
+    // Location Details
+    countryDetails: { type: CountryDetailsSchema, default: {} },
+    address: { type: AddressSchema, default: {} },
+    location: { type: GoogleMapLocationSchema, default: {} },
+    // End Location Details
+
+    // Property Specifications
+    totalArea: { type: Number, required: true, default: 0 },
+    builtInArea: { type: Number, required: true, default: 0 },
+    livingRooms: { type: Number, required: true, default: 0 },
+    balconies: { type: Number, required: true, default: 0 },
+    kitchen: { type: Number, required: true, default: 0 },
     bedrooms: { type: Number, required: true, default: 0 },
     bathrooms: { type: Number, required: true, default: 0 },
     maidrooms: { type: Number, required: true, default: 0 },
-    area: { type: Number, required: true, default: 0 },
-    images: { type: [PropertyImageSchema], default: [] },
-    address: { type: AddressSchema, default: {} },
-    countryDetails: { type: CountryDetailsSchema, default: {} },
+    driverRooms: { type: Number, required: true, default: 0 },
+    furnishingStatus: {
+      type: String,
+      enum: ["furnished", "semi-furnished", "unfurnished"],
+      required: true,
+      default: "unfurnished",
+    },
+    totalFloors: {
+      type: Number,
+      required: true,
+      default: 0,
+    },
+    numberOfParking: {
+      type: Number,
+      required: true,
+      default: 0,
+    },
+    // End Property Specifications
+
+    // Construction & Age
+    builtYear: { type: Number, required: true, default: 0 },
+    propertyCondition: {
+      type: String,
+      enum: ["new", "old", "excellent", "good", "needs renovation"],
+      required: true,
+      default: "new",
+    },
+    developerName: {
+      type: String,
+      required: true,
+      default: "",
+    },
+    projectName: {
+      type: String,
+      required: false,
+      default: "",
+    },
+    ownerShipType: {
+      type: String,
+      required: true,
+      enum: ["freehold", "leasehold", "company", "trust"],
+      default: "",
+    },
+    // End Construction & Age
+
+    // Financial Details
+    price: { type: Number, required: true, default: 0 },
+    currency: { type: String, required: true, default: "lkr" },
+    pricePerSqurFeet: { type: Number, required: true, default: 0 },
+    expectedRentYearly: { type: Number, required: false, default: 0 },
+    expectedRentQuartely: { type: Number, required: false, default: 0 },
+    expectedRentMonthly: { type: Number, required: false, default: 0 },
+    expectedRentDaily: { type: Number, required: false, default: 0 },
+    maintenanceFees: { type: Number, required: true, default: 0 },
+    serviceCharges: { type: Number, required: true, default: 0 },
+    transferFees: { type: Number, required: false, default: 0 },
+    availabilityStatus: {
+      type: String,
+      enum: ["available", "not available", "pending", "ready to move"],
+      required: false,
+      default: "available",
+    },
+    // End Financial Details
+
+    // Features & Amenities
     featuresAndAmenities: { type: [String], default: [] },
-    addedBy: { type: AddedBySchema, required: true },
-    location: { type: GoogleMapLocationSchema, default: {} },
-    propertyDocs: { type: [PropertyDocSchema], default: [] },
+    // End Features & Amenities
+
+    // Media
+    images: { type: [PropertyImageSchema], required: true, default: [] },
+    documents: { type: [PropertyDocSchema], required: true, default: [] },
+    videoTour: { type: String, required: false, default: "" },
+    virtualTour: { type: String, required: false, default: "" },
+    // End Media
+
+    // Listing Management
+    listingDate: { type: Date, required: true, default: undefined },
+    availabilityDate: { type: Date, required: false, default: undefined },
+    listingExpiryDate: { type: Date, required: false, default: undefined },
+    rentedDate: { type: Date, required: false, default: undefined },
+    soldDate: { type: Date, required: false, default: undefined },
+    addedBy: { type: AddedBySchema, required: true, default: {} },
+    owner: { type: String, required: true, default: "" },
+    // End Listing Management
+
+    // Administrative & Internal Use
+    referenceCode: { type: String, required: true, default: "" },
+    verificationStatus: {
+      type: String,
+      enum: ["pending", "verified", "rejected", "approved"],
+      required: true,
+      default: "verified",
+    },
+    priority: {
+      type: String,
+      enum: ["high", "medium", "low"],
+      required: true,
+      default: "medium",
+    },
+    status: {
+      type: String,
+      enum: ["draft", "published", "archived"],
+      required: true,
+      default: "published",
+    },
+    internalNote: {
+      type: String,
+      required: true,
+      default: "",
+    },
+    // End Administrative & Internal Use
   },
   { timestamps: true }
 );
