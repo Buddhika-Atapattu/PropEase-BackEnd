@@ -60,11 +60,17 @@ export default class Property {
   // It initializes the router and sets up the routes
   constructor() {
     this.router = express.Router();
+    // Insert property and used muter for file handle
     this.insertProperty();
     this.test();
+    // Get all properties with pagination, search and filter
     this.getAllPropertiesWithPagination();
+    // Get single property by ID
     this.getSinglePropertyById();
+    // Delete the property by ID
     this.deleteProperty();
+    // Update the property by ID and used muter to file handle
+    this.updateProperty();
   }
 
   get route(): Router {
@@ -350,8 +356,8 @@ export default class Property {
               // Create the image object and push it to the images array
               Images.push({
                 originalname: file.originalname.trim(),
-                filename: file.filename.trim(),
-                mimetype: file.mimetype.trim(),
+                filename: `${baseName}.webp`,
+                mimetype: "image/webp",
                 size: file.size,
                 imageURL: fileURL.trim(),
               });
@@ -470,11 +476,12 @@ export default class Property {
                 ? new Date(req.body.listingExpiryDate.trim()).toISOString()
                 : undefined,
             rentedDate:
-              typeof req.body.rentedDate === "string"
+              typeof req.body.rentedDate === "string" &&
+              req.body.rentedDate !== ""
                 ? new Date(req.body.rentedDate.trim()).toISOString()
                 : undefined,
             soldDate:
-              typeof req.body.soldDate === "string"
+              typeof req.body.soldDate === "string" && req.body.soldDate !== ""
                 ? new Date(req.body.soldDate.trim()).toISOString()
                 : undefined,
             addedBy: JSON.parse(req.body.addedBy.trim()),
@@ -506,7 +513,6 @@ export default class Property {
             // Wait until all the promise is resolved
             await Promise.all(conversionPromises);
 
-            
             await this.deleteFolderWithRetry(
               path.join(
                 __dirname,
@@ -783,4 +789,470 @@ export default class Property {
     );
   }
   //<==================== END DELETE THE PROPERTY BY PROPERTY ID ====================>
+
+  //<==================== UPDATE THE PROPERTY BY PROPERTY ID =====================>
+  private updateProperty(): void {
+    // Define allowed document types
+    // You can add more types as per your requirements
+    const allowedDocumentTypes = [
+      // Word Documents
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+      "application/rtf",
+
+      // Excel Documents
+      "application/vnd.ms-excel",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+      "text/csv",
+      "text/tab-separated-values",
+
+      // PowerPoint Documents
+      "application/vnd.ms-powerpoint",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "application/vnd.openxmlformats-officedocument.presentationml.template",
+
+      // OpenDocument Formats
+      "application/vnd.oasis.opendocument.text",
+      "application/vnd.oasis.opendocument.spreadsheet",
+      "application/vnd.oasis.opendocument.presentation",
+
+      // PDF
+      "application/pdf",
+
+      // Plain Text
+      "text/plain",
+    ];
+
+    // Define allowed images types
+    // You can add more types as per your requirements
+    const allowedImageTypes = [
+      "image/jpeg",
+      "image/png",
+      "image/gif",
+      "image/bmp",
+      "image/tiff",
+      "image/webp",
+      "image/svg+xml",
+    ];
+
+    const storage = multer.diskStorage({
+      // Define the destination for the uploaded files
+      // The destination is determined based on the field name
+      destination: (req, file, cb) => {
+        // Check if the property ID is provided in the form data
+        // This is used to create a unique folder for each property
+        const propertyID = req.params.id;
+
+        // If property ID is not provided, return an error
+        // This is important to ensure that files are saved in the correct location
+        if (!propertyID) {
+          // If property ID is not provided, return an error
+          // This is important to ensure that files are saved in the correct location
+          return cb(new Error("Property ID is required in form data."), "");
+        }
+
+        // Define the upload path based on the field name
+        // This will create a unique folder for each property
+        let uploadPath = "";
+        // Check the field name to determine the upload path
+        // If the field name is "images", save to the images folder
+        if (file.fieldname === "images") {
+          // Create the upload path for images
+          // This will create a unique folder for each property
+          uploadPath = path.join(
+            __dirname,
+            `../../public/propertyUploads/${propertyID}/tempImages/`
+          );
+          // If the field name is "documents", save to the documents folder
+          // This will create a unique folder for each property
+        } else if (file.fieldname === "documents") {
+          // Create the upload path for documents
+          // This will create a unique folder for each property
+          uploadPath = path.join(
+            __dirname,
+            `../../public/propertyUploads/${propertyID}/documents/`
+          );
+          // If the field name is not recognized, return an error
+          // This is important to ensure that files are saved in the correct location
+        } else {
+          // If the field name is not recognized, return an error
+          // This is important to ensure that files are saved in the correct location
+          return cb(new Error("Unexpected field: " + file.fieldname), "");
+        }
+        // Create the upload path if it doesn't exist
+        // This is important to ensure that files are saved in the correct location
+        fs.mkdirSync(uploadPath, { recursive: true });
+        // Return the upload path to multer
+        // This is important to ensure that files are saved in the correct location
+        cb(null, uploadPath);
+      },
+      // Define the filename for the uploaded files
+      // This will create a unique filename for each file
+      filename: (req, file, cb) => {
+        // Create a unique filename using the current timestamp and a random number
+        // This is important to ensure that files are saved in the correct location
+        const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+        // Replace spaces in the original filename with underscores
+        // This is important to ensure that files are saved in the correct location
+        const sanitized = file.originalname.replace(/\s+/g, "_");
+        // Create the final filename using the unique suffix and the sanitized original filename
+        // This is important to ensure that files are saved in the correct location
+        cb(null, `${uniqueSuffix}-${sanitized}`);
+      },
+    });
+
+    // Define the file filter for multer
+    // This will check the file type and size before uploading
+    const fileFilter = (req: Request, file: Express.Multer.File, cb: any) => {
+      // Check if the image type is allowed
+      // This is important to ensure that files are saved in the correct location
+      if (
+        file.fieldname === "images" &&
+        allowedImageTypes.includes(file.mimetype)
+      ) {
+        // If the image type is allowed, return true
+        // This is important to ensure that files are saved in the correct location
+        cb(null, true);
+        // Check if the document type is allowed
+        // This is important to ensure that files are saved in the correct location
+      } else if (
+        file.fieldname === "documents" &&
+        allowedDocumentTypes.includes(file.mimetype)
+      ) {
+        // If the document type is allowed, return true
+        // This is important to ensure that files are saved in the correct location
+        cb(null, true);
+      } else {
+        // If the file type is not allowed, return an error
+        // This is important to ensure that files are saved in the correct location
+        cb(new Error("File type not allowed: " + file.mimetype));
+      }
+    };
+
+    // Create the multer instance with the defined storage and file filter
+    // This will check the file type and size before uploading
+    const upload = multer({ storage, fileFilter });
+
+    // Define the route for inserting a property
+    // This will handle the file upload and save the property to the database
+
+    this.router.put(
+      "/update-property/:id",
+      upload.fields([{ name: "images" }, { name: "documents" }]),
+      async (req: Request<{ id: string }>, res: Response) => {
+        try {
+          // configure the property id
+          const { id } = req.params || req.body.id;
+          // make the property id more reliable without and empty string
+          const propertyID = id.trim();
+          // Check the property id
+          if (!propertyID) {
+            throw new Error("Property ID is required. from body");
+          }
+
+          // define the property files to check whether the files are uploaded
+          const propertyFiles = req.files as
+            | { [fieldname: string]: Express.Multer.File[] }
+            | undefined;
+
+          const uploadedImages = propertyFiles?.["images"];
+          const uploadedDocuments = propertyFiles?.["documents"];
+
+          // Define the property empty images and document arrays
+          const Images: UploadedImage[] = [];
+          const Docs: UploadedDocument[] = [];
+
+          // Exsiting images and documents
+          const existingImages: UploadedImage[] =
+            JSON.parse(req.body.existingImages.trim()) || [];
+          const existingDocuments: UploadedDocument[] =
+            JSON.parse(req.body.existingDocuments.trim()) || [];
+
+          // Push existing images and documents to the Images and Docs array
+          Images.push(...existingImages);
+          Docs.push(...existingDocuments);
+
+          // Remove Images
+          const removeImages = JSON.parse(req.body.removeImages.trim());
+          if (removeImages && removeImages.length > 0) {
+            removeImages.forEach((image: UploadedImage) => {
+              const removeImagePath = path.join(
+                __dirname,
+                `../../public/propertyUploads/${propertyID}/images/${image.filename}`
+                // ../../public/propertyUploads/${propertyID}/images/${image.filename}
+              );
+              fs.unlinkSync(removeImagePath);
+            });
+          }
+
+          // Remove Documents
+          const removeDocuments = JSON.parse(req.body.removeDocuments.trim());
+          if (removeDocuments && removeDocuments.length > 0) {
+            removeDocuments.forEach((document: UploadedDocument) => {
+              const removeDocumentPath = path.join(
+                __dirname,
+                `../../public/propertyUploads/${propertyID}/documents/${document.filename}`
+              );
+              fs.unlinkSync(removeDocumentPath);
+            });
+          }
+
+          // Array to hold promises
+          const conversionPromises: Promise<void>[] = [];
+
+          // Check if the property new images are provided
+          if (uploadedImages && uploadedImages.length > 0) {
+            const convertDir = path.join(
+              __dirname,
+              `../../public/propertyUploads/${propertyID}/images/`
+            );
+
+            // Make the directory for image uploads
+            fs.mkdirSync(convertDir, { recursive: true });
+
+            // Loop through each image and create a file URL
+            for (const file of uploadedImages) {
+              // Create the file path for the image
+              const ext = path.extname(file.filename);
+              const baseName = path.basename(file.filename, ext);
+
+              const convertedImagePath = path.join(
+                __dirname,
+                `../../public/propertyUploads/${propertyID}/images/${baseName}.webp`
+              );
+              const originalImagePath = file.path;
+
+              // Create the file URL for the image
+              const fileURL = `${req.protocol}://${req.get(
+                "host"
+              )}/propertyUploads/${propertyID}/images/${baseName}.webp`;
+
+              /*
+              All image conversions using sharp finish properly before deleting the temp folder,
+
+              Avoid the EBUSY error caused by open file handles,
+
+              Ensure correct .webp file naming and referencing,
+
+              Should move all conversion tasks into an array of Promises and await them using Promise.all(...) before proceeding to deletion.
+                          
+              */
+
+              // Push the conversion promise into the array and Reshape the image to a specific size
+              const conversionPromise = sharp(originalImagePath)
+                .webp({ quality: 100 })
+                .resize(800, 600, {
+                  fit: "inside",
+                  withoutEnlargement: true,
+                })
+                .toFile(convertedImagePath)
+                .then(() => {
+                  // console.log("WebP Image saved to:", convertedImagePath);
+                })
+                .catch((error) => {
+                  // console.error("Error converting image to WebP:", error);
+                });
+
+              // Create the image object and push it to the images array
+              Images.push({
+                originalname: file.originalname.trim(),
+                filename: `${baseName}.webp`,
+                mimetype: "image/webp",
+                size: file.size,
+                imageURL: fileURL.trim(),
+              });
+
+              conversionPromises.push(conversionPromise);
+            }
+          }
+
+          // Check if the property new documents are provided
+          if (uploadedDocuments && uploadedDocuments.length > 0) {
+            for (const file of uploadedDocuments) {
+              // Create the file URL for the document
+              const fileURL = `${req.protocol}://${req.get(
+                "host"
+              )}/propertyUploads/${propertyID}/documents/${file.filename}`;
+              // Create the document object and push it to the documents array
+              Docs.push({
+                originalname: file.originalname.trim(),
+                filename: file.filename.trim(),
+                mimetype: file.mimetype.trim(),
+                size: file.size,
+                documentURL: fileURL.trim(),
+              });
+            }
+          }
+
+          // Organize the data to update the property
+          const DbData = {
+            // Basic Property Details
+            id: propertyID.trim(),
+            title: req.body.title.trim(),
+            type: req.body.type.trim().toLowerCase(),
+            listing: req.body.listing.trim().toLowerCase(),
+            description: req.body.description.trim(),
+            // Basic Property Details
+
+            // Location Details
+            countryDetails: JSON.parse(req.body.countryDetails.trim()),
+            address: JSON.parse(req.body.address.trim()),
+            location:
+              typeof req.body.location === "string"
+                ? JSON.parse(req.body.location.trim())
+                : {},
+            // End Location Details
+
+            // Property Specifications
+            totalArea: Number(req.body.totalArea.trim()),
+            builtInArea: Number(req.body.builtInArea.trim()),
+            livingRooms: Number(req.body.livingRooms.trim()),
+            balconies: Number(req.body.balconies.trim()),
+            kitchen: Number(req.body.kitchen.trim()),
+            bedrooms: Number(req.body.bedrooms.trim()),
+            bathrooms: Number(req.body.bathrooms.trim()),
+            maidrooms: Number(req.body.maidrooms.trim()),
+            driverRooms: Number(req.body.driverRooms.trim()),
+            furnishingStatus: req.body.furnishingStatus.trim(),
+            totalFloors: Number(req.body.totalFloors.trim()),
+            numberOfParking: Number(req.body.numberOfParking.trim()),
+            // End Property Specifications
+
+            // Construction & Age
+            builtYear: Number(req.body.builtYear.trim()),
+            propertyCondition: req.body.propertyCondition.trim().toLowerCase(),
+            developerName: req.body.developerName.trim(),
+            projectName:
+              typeof req.body.projectName === "string"
+                ? req.body.projectName.trim()
+                : "",
+            ownerShipType: req.body.ownerShipType.trim().toLowerCase(),
+            // End Construction & Age
+
+            // Financial Details
+            price: Number(req.body.price.trim()),
+            currency: req.body.currency.trim(),
+            pricePerSqurFeet: Number(req.body.pricePerSqurFeet.trim()),
+            expectedRentYearly:
+              typeof req.body.expectedRentYearly === "string"
+                ? Number(req.body.expectedRentYearly.trim())
+                : 0,
+            expectedRentQuartely:
+              typeof req.body.expectedRentQuartely === "string"
+                ? Number(req.body.expectedRentQuartely.trim())
+                : 0,
+            expectedRentMonthly:
+              typeof req.body.expectedRentMonthly === "string"
+                ? Number(req.body.expectedRentMonthly.trim())
+                : 0,
+            expectedRentDaily:
+              typeof req.body.expectedRentDaily === "string"
+                ? Number(req.body.expectedRentDaily.trim())
+                : 0,
+            maintenanceFees: Number(req.body.maintenanceFees.trim()),
+            serviceCharges: Number(req.body.serviceCharges.trim()),
+            transferFees:
+              typeof req.body.transferFees === "string"
+                ? Number(req.body.transferFees.trim())
+                : 0,
+            availabilityStatus: req.body.availabilityStatus
+              .trim()
+              .toLowerCase(),
+            // End Financial Details
+
+            // Features & Amenities
+            featuresAndAmenities: JSON.parse(req.body.featuresAndAmenities),
+            // End Features & Amenities
+
+            // Media
+            images: Images,
+            documents: Docs,
+            videoTour:
+              typeof req.body.videoTour === "string"
+                ? req.body.videoTour.trim()
+                : "",
+            virtualTour:
+              typeof req.body.virtualTour === "string"
+                ? req.body.virtualTour.trim()
+                : "",
+            // End Media
+
+            // Listing Management
+            listingDate: new Date(req.body.listingDate.trim()).toISOString(),
+            availabilityDate:
+              typeof req.body.availabilityDate === "string"
+                ? new Date(req.body.availabilityDate.trim()).toISOString()
+                : undefined,
+            listingExpiryDate:
+              typeof req.body.listingExpiryDate === "string"
+                ? new Date(req.body.listingExpiryDate.trim()).toISOString()
+                : undefined,
+            rentedDate:
+              req.body.rentedDate && typeof req.body.rentedDate === "string"
+                ? new Date(req.body.rentedDate.trim()).toISOString()
+                : undefined,
+            soldDate:
+              req.body.soldDate && typeof req.body.soldDate === "string"
+                ? new Date(req.body.soldDate.trim()).toISOString()
+                : undefined,
+            addedBy: JSON.parse(req.body.addedBy.trim()),
+            owner: req.body.owner.trim(),
+            // End Listing Management
+
+            // Administrative & Internal Use
+            referenceCode: req.body.referenceCode.trim(),
+            verificationStatus: req.body.verificationStatus
+              .trim()
+              .toLowerCase(),
+            priority: req.body.priority.trim().toLowerCase(),
+            status: req.body.status.trim().toLowerCase(),
+            internalNote: req.body.internalNote.trim(),
+            // End Administrative & Internal Use
+          };
+
+          console.log(DbData);
+
+          const updateThePropertyByID = await PropertyModel.findOneAndUpdate(
+            { id: propertyID },
+            { $set: DbData },
+            { new: true }
+          );
+
+          if (!updateThePropertyByID) {
+            throw new Error(
+              "Error occurred while updating property: " + updateThePropertyByID
+            );
+          } else {
+            res.status(200).json({
+              status: "success",
+              message: "Property updated successfully.",
+              data: updateThePropertyByID,
+            });
+
+            // Wait until all the promise is resolved
+            await Promise.all(conversionPromises);
+
+            await this.deleteFolderWithRetry(
+              path.join(
+                __dirname,
+                `../../public/propertyUploads/${propertyID}/tempImages/`
+              )
+            );
+          }
+        } catch (error) {
+          if (error) {
+            console.log("Error occurred while updating property: ", error);
+            res.status(500).json({
+              status: "error",
+              message: "Error occurred while updating property: " + error,
+            });
+          }
+        }
+      }
+    );
+  }
+
+  //<==================== END UPDATE THE PROPERTY BY PROPERTY ID ====================>
 }

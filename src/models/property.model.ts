@@ -80,7 +80,9 @@ export interface IProperty extends Document {
 
   // Media
   images: propertyImages[];
+  uploadedImages?: propertyImages[];
   documents: propertyDocs[];
+  uploadedDocuments?: propertyDocs[];
   videoTour?: string;
   virtualTour?: string;
   // End Media
