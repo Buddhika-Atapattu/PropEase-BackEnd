@@ -470,20 +470,20 @@ export default class Property {
             availabilityDate:
               typeof req.body.availabilityDate === "string"
                 ? new Date(req.body.availabilityDate.trim()).toISOString()
-                : undefined,
+                : null,
             listingExpiryDate:
               typeof req.body.listingExpiryDate === "string"
                 ? new Date(req.body.listingExpiryDate.trim()).toISOString()
-                : undefined,
+                : null,
             rentedDate:
               typeof req.body.rentedDate === "string" &&
               req.body.rentedDate !== ""
                 ? new Date(req.body.rentedDate.trim()).toISOString()
-                : undefined,
+                : null,
             soldDate:
               typeof req.body.soldDate === "string" && req.body.soldDate !== ""
                 ? new Date(req.body.soldDate.trim()).toISOString()
-                : undefined,
+                : null,
             addedBy: JSON.parse(req.body.addedBy.trim()),
             owner: req.body.owner.trim(),
             // End Listing Management
@@ -1184,19 +1184,19 @@ export default class Property {
             availabilityDate:
               typeof req.body.availabilityDate === "string"
                 ? new Date(req.body.availabilityDate.trim()).toISOString()
-                : undefined,
+                : null,
             listingExpiryDate:
               typeof req.body.listingExpiryDate === "string"
                 ? new Date(req.body.listingExpiryDate.trim()).toISOString()
-                : undefined,
+                : null,
             rentedDate:
               req.body.rentedDate && typeof req.body.rentedDate === "string"
                 ? new Date(req.body.rentedDate.trim()).toISOString()
-                : undefined,
+                : null,
             soldDate:
               req.body.soldDate && typeof req.body.soldDate === "string"
                 ? new Date(req.body.soldDate.trim()).toISOString()
-                : undefined,
+                : null,
             addedBy: JSON.parse(req.body.addedBy.trim()),
             owner: req.body.owner.trim(),
             // End Listing Management

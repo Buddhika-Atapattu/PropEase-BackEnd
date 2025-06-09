@@ -415,11 +415,11 @@ const PropertySchema = new Schema<IProperty>(
     // End Media
 
     // Listing Management
-    listingDate: { type: Date, required: true, default: undefined },
-    availabilityDate: { type: Date, required: false, default: undefined },
-    listingExpiryDate: { type: Date, required: false, default: undefined },
-    rentedDate: { type: Date, required: false, default: undefined },
-    soldDate: { type: Date, required: false, default: undefined },
+    listingDate: { type: Date, required: true, default: null },
+    availabilityDate: { type: Date, required: false, default: null },
+    listingExpiryDate: { type: Date, required: false, default: null },
+    rentedDate: { type: Date, required: false, default: null },
+    soldDate: { type: Date, required: false, default: null },
     addedBy: { type: AddedBySchema, required: true, default: {} },
     owner: { type: String, required: true, default: "" },
     // End Listing Management
