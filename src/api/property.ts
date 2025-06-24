@@ -582,6 +582,7 @@ export default class Property {
           const { start, end } = req.params;
           const safeStart = Math.max(0, parseInt(start, 10));
           const safeEnd = Math.max(1, parseInt(end, 10));
+          const priorityOrder = { high: 1, medium: 2, low: 3 };
 
           const search = req.query.search as string | "";
           const filter = req.query.filter as string | "";
@@ -671,10 +672,31 @@ export default class Property {
 
           const filterQuery = andFilters.length > 0 ? { $and: andFilters } : {};
 
-          const properties = await PropertyModel.find(filterQuery)
-            .skip(safeStart)
-            .limit(safeEnd - safeStart)
-            .sort({ createdAt: -1 });
+          // const properties = await PropertyModel.find(filterQuery)
+          //   .skip(safeStart)
+          //   .limit(safeEnd - safeStart)
+          //   .sort({ createdAt: -1 });
+
+          const properties = await PropertyModel.aggregate([
+            { $match: filterQuery },
+            {
+              $addFields: {
+                priorityOrder: {
+                  $switch: {
+                    branches: [
+                      { case: { $eq: ["$priority", "high"] }, then: 1 },
+                      { case: { $eq: ["$priority", "medium"] }, then: 2 },
+                      { case: { $eq: ["$priority", "low"] }, then: 3 },
+                    ],
+                    default: 4,
+                  },
+                },
+              },
+            },
+            { $sort: { priorityOrder: 1, updatedAt: -1 } },
+            { $skip: safeStart },
+            { $limit: safeEnd - safeStart },
+          ]);
 
           const totalCount = await PropertyModel.countDocuments(filterQuery);
 
@@ -743,35 +765,56 @@ export default class Property {
           const { id } = req.params;
           const safeID = id.trim();
 
-          if (!safeID) {
-            throw new Error("Property ID is required.");
-          }
+          if (!safeID) throw new Error("Property ID is required.");
+
+          const property = await PropertyModel.findOne({ id: safeID });
+
+          if (!property) throw new Error("Property not found.");
 
           const fileFolderPath = path.join(
             __dirname,
             `../../public/propertyUploads/${safeID}`
           );
 
-          const deleteFolder = fs.promises.rm(fileFolderPath, {
-            recursive: true,
-            force: true,
-          });
+          const recyclebin = path.join(
+            __dirname,
+            `../../public/recyclebin/properties/${safeID}/`
+          );
 
-          if (!deleteFolder) {
-            throw new Error(
-              "Error occurred while deleting folder: " + deleteFolder
-            );
+          // Create recycle bin folder
+          await fs.promises.mkdir(recyclebin, { recursive: true });
+
+          // Move files to recycle bin
+          await fs.promises.rename(fileFolderPath, recyclebin);
+
+          // Save property data
+          fs.writeFileSync(
+            path.join(recyclebin, "property.json"),
+            JSON.stringify(
+              property.toObject ? property.toObject() : property,
+              null,
+              2
+            ),
+            "utf-8"
+          );
+
+          // Just in case some files still remain (e.g. if rename didn't remove source fully)
+          if (fs.existsSync(fileFolderPath)) {
+            await fs.promises.rm(fileFolderPath, {
+              recursive: true,
+              force: true,
+            });
           }
 
+          // Delete property from DB
           const deleteProperty = await PropertyModel.findOneAndDelete({
             id: safeID,
           });
 
-          if (!deleteProperty) {
+          if (!deleteProperty)
             throw new Error(
               "Error occurred while deleting property: " + deleteProperty
             );
-          }
 
           res.status(200).json({
             status: "success",
@@ -943,14 +986,11 @@ export default class Property {
       upload.fields([{ name: "images" }, { name: "documents" }]),
       async (req: Request<{ id: string }>, res: Response) => {
         try {
-          // configure the property id
-          const { id } = req.params || req.body.id;
           // make the property id more reliable without and empty string
-          const propertyID = id.trim();
+          const propertyID = (req.params?.id || req.body?.id || "").trim();
           // Check the property id
-          if (!propertyID) {
-            throw new Error("Property ID is required. from body");
-          }
+          if (!propertyID)
+            throw new Error("Property ID is required in URL or request body.");
 
           // define the property files to check whether the files are uploaded
           const propertyFiles = req.files as
@@ -967,36 +1007,81 @@ export default class Property {
           // Exsiting images and documents
           const existingImages: UploadedImage[] =
             JSON.parse(req.body.existingImages.trim()) || [];
+
+          if (!Array.isArray(existingImages))
+            throw new Error("Invalid existingImages");
+
           const existingDocuments: UploadedDocument[] =
             JSON.parse(req.body.existingDocuments.trim()) || [];
+
+          if (!Array.isArray(existingDocuments))
+            throw new Error("Invalid existingDocuments");
 
           // Push existing images and documents to the Images and Docs array
           Images.push(...existingImages);
           Docs.push(...existingDocuments);
 
           // Remove Images
-          const removeImages = JSON.parse(req.body.removeImages.trim());
+          const removeImages: UploadedImage[] = this.safeJSONPass(
+            req.body.removeImages.trim(),
+            []
+          );
+
+          // Check if the removeImages is an array
           if (removeImages && removeImages.length > 0) {
-            removeImages.forEach((image: UploadedImage) => {
+            for (let i = 0; i < removeImages.length; i++) {
+              // Define the image
+              const image = removeImages[i];
+
+              // Define the image path
               const removeImagePath = path.join(
                 __dirname,
                 `../../public/propertyUploads/${propertyID}/images/${image.filename}`
-                // ../../public/propertyUploads/${propertyID}/images/${image.filename}
               );
-              fs.unlinkSync(removeImagePath);
-            });
+
+              // Define the recycle bin path for the image
+              const recyclebinForImages = path.join(
+                __dirname,
+                `../../public/recyclebin/properties/${propertyID}/removeredImages/`
+              );
+
+              await this.moveToTheRecycleBin(
+                recyclebinForImages,
+                removeImagePath
+              );
+            }
           }
 
           // Remove Documents
-          const removeDocuments = JSON.parse(req.body.removeDocuments.trim());
+          const removeDocuments: UploadedDocument[] = this.safeJSONPass(
+            req.body.removeDocuments.trim(),
+            []
+          );
+
+          // Check if the removeDocuments is an array
           if (removeDocuments && removeDocuments.length > 0) {
-            removeDocuments.forEach((document: UploadedDocument) => {
+            // Loop through the removeDocuments array
+            for (let i = 0; i < removeDocuments.length; i++) {
+              //Define the document
+              const document = removeDocuments[i];
+
+              // Define the document path
               const removeDocumentPath = path.join(
                 __dirname,
                 `../../public/propertyUploads/${propertyID}/documents/${document.filename}`
               );
-              fs.unlinkSync(removeDocumentPath);
-            });
+
+              // Define the recyclebin for documents
+              const recyclebinForDocuments = path.join(
+                __dirname,
+                `../../public/recyclebin/properties/${propertyID}/removeredDocuments/`
+              );
+
+              await this.moveToTheRecycleBin(
+                recyclebinForDocuments,
+                removeDocumentPath
+              );
+            }
           }
 
           // Array to hold promises
@@ -1212,8 +1297,6 @@ export default class Property {
             // End Administrative & Internal Use
           };
 
-          console.log(DbData);
-
           const updateThePropertyByID = await PropertyModel.findOneAndUpdate(
             { id: propertyID },
             { $set: DbData },
@@ -1243,7 +1326,10 @@ export default class Property {
           }
         } catch (error) {
           if (error) {
-            console.log("Error occurred while updating property: ", error);
+            console.log(
+              "Error while updating property:",
+              error instanceof Error ? error.stack : error
+            );
             res.status(500).json({
               status: "error",
               message: "Error occurred while updating property: " + error,
@@ -1253,6 +1339,45 @@ export default class Property {
       }
     );
   }
-
   //<==================== END UPDATE THE PROPERTY BY PROPERTY ID ====================>
+
+  //<==================== MOVE THE DELETING FILE TO THE RECYCLE BIN ====================>
+  private async moveToTheRecycleBin(
+    recycleBinPath: string,
+    filePath: string
+  ): Promise<void> {
+    try {
+      // Create the recyclebin folder if it doesn't exist
+      if (!fs.existsSync(recycleBinPath)) {
+        await fs.promises.mkdir(recycleBinPath, { recursive: true });
+      }
+
+      //Rename the file and create the new file in the recyclebin folder
+      const targetPath = path.join(
+        recycleBinPath,
+        `${Date.now()}-${path.basename(filePath)}`
+      );
+
+      // Move the document to the recyclebin
+      await fs.promises.rename(filePath, targetPath);
+
+      console.log(`Moved file to recycle bin: ${targetPath}`);
+    } catch (error) {
+      console.log(
+        "Error while moving file to recycle bin:",
+        error instanceof Error ? error.stack : error
+      );
+    }
+  }
+  //<==================== END MOVE THE DELETING FILE TO THE RECYCLE BIN ====================>
+
+  //<==================== SAFE JSON PASS ====================>
+  private safeJSONPass<T>(input: string, fallback: T): T {
+    try {
+      return JSON.parse(input);
+    } catch {
+      return fallback;
+    }
+  }
+  //<==================== END SAFE JSON PASS ====================>
 }

@@ -1,0 +1,83 @@
+{
+  "_id": "684b19068cac0d16bbd42303",
+  "name": "James Johnson",
+  "username": "tammymorgan",
+  "email": "crystalnelson@barry-cruz.com",
+  "password": "$argon2id$v=19$m=65536,t=3,p=4$P7uPs7P5LZy0P8OPqm4rlA$TBJT12vVfidUofx2XYQ8xvrY/HfUmNhGuR1iHS5l1Z8",
+  "dateOfBirth": "1981-09-25T18:30:00.000Z",
+  "age": 43,
+  "gender": "female",
+  "image": "http://localhost:3000/users/tammymorgan/image.webp",
+  "bio": "<p>James Johnson is a detail-oriented operations specialist with over 7 years of experience in managing day-to-day workflow efficiency, coordinating cross-functional teams, and ensuring consistent service delivery. Known for his analytical thinking and hands-on problem-solving skills, James thrives in fast-paced environments and is passionate about optimizing operational procedures through data-driven decision-making. His ability to streamline processes and maintain high standards of accuracy has made him a trusted contributor in every organization he has served.</p>",
+  "phoneNumber": "242949707804529",
+  "role": "operator",
+  "address": {
+    "street": "Bailey Fall",
+    "houseNumber": "936",
+    "city": "South Michellestad",
+    "postcode": "90749",
+    "country": "Dominican Republic",
+    "stateOrProvince": "New York",
+    "_id": "685175f377d7c596e6b96777"
+  },
+  "isActive": true,
+  "access": {
+    "role": "operator",
+    "permissions": [
+      {
+        "module": "User Management",
+        "actions": [
+          "view",
+          "create",
+          "update",
+          "delete",
+          "activate",
+          "deactivate",
+          "reset password",
+          "change username",
+          "assign roles"
+        ],
+        "_id": "685175f377d7c596e6b96779"
+      },
+      {
+        "module": "Maintenance Requests",
+        "actions": [
+          "view",
+          "create",
+          "assign technician",
+          "update status",
+          "close",
+          "track progress",
+          "upload documents",
+          "add cost",
+          "generate report"
+        ],
+        "_id": "685175f377d7c596e6b9677a"
+      },
+      {
+        "module": "Tenant Management",
+        "actions": [
+          "view",
+          "create",
+          "update",
+          "delete",
+          "assign to property",
+          "view lease history"
+        ],
+        "_id": "685175f377d7c596e6b9677b"
+      }
+    ],
+    "_id": "685175f377d7c596e6b96778"
+  },
+  "otpVerifycation": false,
+  "otpToken": "910122",
+  "emailVerified": true,
+  "emailVerificationToken": "39ebd2f4b172f31d3c2f19f26f8ce01d9fa10d0249ede04144ca729753b80b12",
+  "emailVerificationTokenExpires": "2025-06-13T18:14:26.603Z",
+  "autoDelete": true,
+  "creator": "Atapattu",
+  "createdAt": "2025-06-12T18:14:30.673Z",
+  "updatedAt": "2025-06-17T14:04:35.598Z",
+  "__v": 0,
+  "updator": "Atapattu"
+}

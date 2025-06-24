@@ -7,6 +7,7 @@ import express, {
 } from "express";
 import * as path from "path";
 import * as fs from "fs-extra";
+
 import { UserModel, IUser } from "../models/user.model";
 import * as Argon2 from "argon2";
 import multer from "multer";
@@ -18,6 +19,14 @@ import twilio from "twilio";
 import { TokenMap } from "../models/token.model";
 import crypto from "crypto";
 import { UserDocument } from "../models/file-upload.model";
+import {
+  PropertyModel,
+  IProperty,
+  Address,
+  CountryDetails,
+  AddedBy,
+  GoogleMapLocation,
+} from "../models/property.model";
 
 dotenv.config();
 
@@ -39,6 +48,7 @@ export default class UserRoute {
     this.uploadDocument();
     this.getUserDocuments();
     this.getUserDataByUsername();
+    this.deleteUserByUsername();
   }
 
   get route(): Router {
@@ -148,7 +158,12 @@ export default class UserRoute {
   private getAllUsers() {
     this.router.get("/users", async (req: Request, res: Response) => {
       try {
-        const users = await UserModel.find({});
+        const users = await UserModel.find(
+          {},
+          {
+            password: 0,
+          }
+        );
         if (users.length === 0) {
           throw new Error("No users found");
         } else {
@@ -278,8 +293,7 @@ export default class UserRoute {
   //<========== END PHONE NUMBER VERIFICATION ==========>
 
   //<========== CREATE USER ==========>
-
-  private createUser(): Promise<any> {
+  private createUser(): void {
     const storage = multer.memoryStorage();
     const allowedTypes = [
       "image/jpeg",
@@ -433,14 +447,12 @@ export default class UserRoute {
         }
       }
     );
-
-    return Promise.resolve();
   }
 
   //<=========== UPDATE USER ==============>
-
   private updateUser(): void {
     const storage = multer.memoryStorage();
+
     const allowedTypes = [
       "image/jpeg",
       "image/png",
@@ -464,129 +476,139 @@ export default class UserRoute {
     this.router.put(
       "/user-update/:username",
       upload.fields([{ name: "userimage", maxCount: 1 }]),
-      async (
-        req: Request<{ username: string }>,
-        res: Response,
-        next: NextFunction
-      ) => {
+      async (req: Request<{ username: string }>, res: Response) => {
         try {
-          const username = req.params.username;
+          const username = req.params.username?.trim();
+
           if (!username) throw new Error("Invalid username");
+
+          const isUserExist = await UserModel.findOne({ username });
+
+          if (!isUserExist) {
+            throw new Error("User not found");
+          }
 
           const files = req.files as {
             [fieldname: string]: Express.Multer.File[];
           };
 
           const image = files?.userimage?.[0];
+
+          const host = req.get("host");
+          const protocol = req.protocol;
+          let imageUrl: string;
+
           if (image) {
-            // Create user-specific directory
             const userDir = path.join(
               __dirname,
-              "../../public/users",
-              username
+              `../../public/users/${username}`
             );
             const imagePath = path.join(userDir, "image.webp");
 
+            if (fs.existsSync(userDir)) {
+              fs.rmSync(userDir, { recursive: true, force: true });
+            }
+
             fs.mkdirSync(userDir, { recursive: true });
 
-            // Convert and save image as .webp
-            const imagetoWebp = await sharp(image.buffer)
-              .webp({ quality: 80 })
-              .toFile(imagePath);
-            if (imagetoWebp) {
-              const host = req.get("host");
-              const protocol = req.protocol;
-              const baseUrl = `${protocol}://${host}`;
-              const publicPath = `${baseUrl}/users/${username}/image.webp`;
+            await sharp(image.buffer).webp({ quality: 80 }).toFile(imagePath);
 
-              const updatedUser = await UserModel.findOneAndUpdate(
-                { username }, // filter
-                {
-                  $set: {
-                    name: req.body.name,
-                    gender: req.body.gender,
-                    email: req.body.email,
-                    age: req.body.age,
-                    image: publicPath,
-                    bio: req.body.bio,
-                    phoneNumber: req.body.phone,
-                    role: req.body.role,
-                    address: {
-                      street: req.body.street,
-                      houseNumber: req.body.houseNumber,
-                      city: req.body.city,
-                      postcode: req.body.postcode,
-                      country: req.body.country,
-                      stateOrProvince: req.body.stateOrProvince,
-                    },
-                    isActive: req.body.isActive,
-                    updatedAt: req.body.updatedAt,
-                    dateOfBirth: req.body.dateOfBirth,
-                  },
-                },
-                {
-                  new: true, // Return the updated user
-                  upsert: false, // Don't insert if the user doesn't exist
-                }
-              );
-
-              if (!updatedUser) throw new Error("User not found in DB");
-
-              res.status(200).json({
-                status: "success",
-                message: `Image saved and user updated for ${username}`,
-                user: updatedUser,
-              });
-            } else {
-              throw new Error("Failed to convert image");
-            }
+            imageUrl = `${protocol}://${host}/users/${username}/image.webp`;
           } else {
-            const updatedUser = await UserModel.findOneAndUpdate(
-              { username }, // filter
-              {
-                $set: {
-                  name: req.body.name,
-                  gender: req.body.gender,
-                  email: req.body.email,
-                  age: req.body.age,
-                  phoneNumber: req.body.phone,
-                  role: req.body.role,
-                  address: {
-                    street: req.body.street,
-                    houseNumber: req.body.houseNumber,
-                    city: req.body.city,
-                    postcode: req.body.postcode,
-                    country: req.body.country,
-                    stateOrProvince: req.body.stateOrProvince,
-                  },
-                  isActive: req.body.isActive,
-                  updatedAt: req.body.updatedAt,
-                  dateOfBirth: req.body.dateOfBirth,
-                },
-              },
-              {
-                new: true, // Return the updated user
-                upsert: false, // Don't insert if the user doesn't exist
-              }
-            );
+            imageUrl = req.body.userimage?.trim();
+          }
 
-            if (!updatedUser) throw new Error("User not found in DB");
+          // Compare old and new email
+          const oldEmail = req.body.oldEmail?.trim();
+          const newEmail = req.body.email?.trim();
 
-            res.status(200).json({
-              status: "success",
-              message: `User updated for ${username} without image`,
-              user: updatedUser,
+          let verifyToken: { token?: string; expires?: string } = {};
+          let otpValidTimeJson: { otpValidTime?: string } = {};
+
+          if (oldEmail !== newEmail) {
+            try {
+              verifyToken = JSON.parse(req.body.otpToken || "{}");
+              otpValidTimeJson = JSON.parse(req.body.otpValidTime || "{}");
+            } catch {
+              verifyToken = {};
+              otpValidTimeJson = {};
+            }
+          }
+
+          const pw = req.body.password.trim();
+
+          const access = JSON.parse(req.body.access || "{}");
+
+          const data: any = {
+            name: req.body.name?.trim(),
+            username: username.trim(),
+            email: newEmail,
+            dateOfBirth: req.body.dateOfBirth?.trim(),
+            age: req.body.age?.trim(),
+            gender: req.body.gender?.trim(),
+            bio: req.body.bio?.trim(),
+            phoneNumber: req.body.phoneNumber?.trim(),
+            image: imageUrl,
+            role: req.body.role?.trim(),
+            isActive: req.body.isActive?.trim(),
+            address: {
+              street: req.body.street?.trim(),
+              houseNumber: req.body.houseNumber?.trim(),
+              city: req.body.city?.trim(),
+              postcode: req.body.postcode?.trim(),
+              country: req.body.country?.trim(),
+              stateOrProvince: req.body.stateOrProvince?.trim(),
+            },
+            access,
+            creator: req.body.creator?.trim(),
+            updator: req.body.updator?.trim(),
+            updatedAt: new Date(),
+          };
+
+          if (pw) {
+            data.password = await this.hashPassword(pw);
+          }
+
+          console.log(data);
+
+          // Append token & time if email was changed
+          if (oldEmail !== newEmail) {
+            Object.assign(data, {
+              otpToken: verifyToken?.token,
+              otpValidTime: otpValidTimeJson?.otpValidTime,
+              emailVerificationToken: verifyToken?.token,
+              emailVerificationTokenExpires: verifyToken?.expires
+                ? new Date(verifyToken.expires)
+                : undefined,
             });
           }
-        } catch (error) {
-          console.error("Error in updateUser:", error);
-          res
-            .status(500)
-            .json({ status: "error", message: "Error: server side error..." });
+
+          const updatedUser = await UserModel.findOneAndUpdate(
+            { username },
+            data,
+            { new: true, upsert: false }
+          );
+
+          if (!updatedUser) {
+            throw new Error("User not found or update failed");
+          }
+
+          res.status(200).json({
+            status: "success",
+            message: "User updated successfully",
+            user: updatedUser,
+          });
+        } catch (error: any) {
+          console.error("User update error:", error.message);
+          res.status(500).json({
+            status: "error",
+            message: error.message || "Internal server error",
+          });
         }
       }
     );
   }
+  //<=========== END UPDATE USER ==============>
 
   //<========= FIND USER BY USERNAME ==========>
 
@@ -987,4 +1009,88 @@ export default class UserRoute {
     );
   }
   //<============= END GET USER DATA BY USERNAME =============>
+
+  //<============= DELETE USER BY USERNAME =============>
+  private deleteUserByUsername() {
+    this.router.delete(
+      "/user-delete/:username",
+      async (req: Request<{ username: string }>, res: Response) => {
+        try {
+          const username = req.params.username?.trim();
+          if (!username) {
+            throw new Error("Username is required");
+          }
+          const user = await UserModel.findOne({ username });
+
+          const recycalBinPath = path.join(
+            __dirname,
+            `../../public/recyclebin/users/${username}/`
+          );
+
+          const userImage = path.join(
+            __dirname,
+            `../../public/users/${username}/`
+          );
+
+          const userFiles = path.join(
+            __dirname,
+            `../../public/uploads/${username}/`
+          );
+
+          await fs.mkdir(recycalBinPath, { recursive: true });
+
+          // Save user data as JSON in recycle bin if user exists
+          if (user) {
+            const userJsonPath = path.join(recycalBinPath, "user.json");
+            fs.writeFileSync(
+              userJsonPath,
+              JSON.stringify(user.toObject ? user.toObject() : user, null, 2),
+              "utf-8"
+            );
+          }
+
+          if (fs.existsSync(userImage)) {
+            await fs.copy(userImage, path.join(recycalBinPath, "user-image"));
+            fs.rmSync(userImage, { recursive: true });
+          }
+
+          if (fs.existsSync(userFiles)) {
+            await fs.copy(
+              userFiles,
+              path.join(recycalBinPath, "user-documents")
+            );
+            fs.rmSync(userFiles, { recursive: true });
+          }
+
+          // Update owner and addedBy references
+          await PropertyModel.updateMany(
+            { owner: username },
+            { $unset: { owner: 1 } }
+          );
+          await PropertyModel.updateMany(
+            { "addedBy.username": username },
+            { $unset: { addedBy: {} } }
+          );
+
+          // Delete user
+          const deleteUser = await UserModel.findOneAndDelete({ username });
+
+          if (deleteUser) {
+            res.status(200).json({
+              status: "success",
+              message: "User deleted successfully",
+            });
+          } else {
+            throw new Error("User not found");
+          }
+        } catch (error) {
+          if (error instanceof Error) {
+            console.error(error.message);
+            res.status(500).json({ status: "error", message: error.message });
+          }
+        }
+      }
+    );
+  }
+  //<============= END DELETE USER BY USERNAME =============>
 }

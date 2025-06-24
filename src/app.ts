@@ -16,6 +16,7 @@ import "./services/auto-delete.service";
 import Tracking from "./api/tracking";
 import Property from "./api/property";
 import { PlacesController } from "./api/PlacesController";
+import Tenant from "./api/tenant";
 Dotenv.config();
 
 export default class App {
@@ -23,6 +24,7 @@ export default class App {
   private tracking: Tracking = new Tracking();
   private property: Property = new Property();
   private placesController: PlacesController = new PlacesController();
+  private tenant: Tenant = new Tenant();
 
   constructor(private app: Express = express()) {
     Database.connect().then(() => {
@@ -33,6 +35,7 @@ export default class App {
       this.app.use("/api-tracking", this.tracking.route);
       this.app.use("/api-property", this.property.route);
       this.app.use("/api-places", this.placesController.router);
+      this.app.use("/api-tenant", this.tenant.route);
       this.app.use(express.static(path.join(__dirname, "../public")));
       this.indexPage();
     });
