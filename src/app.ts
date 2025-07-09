@@ -17,6 +17,9 @@ import Tracking from "./api/tracking";
 import Property from "./api/property";
 import { PlacesController } from "./api/PlacesController";
 import Tenant from "./api/tenant";
+import FileTransfer from "./api/fileTransfer";
+import Lease from "./api/lease";
+
 Dotenv.config();
 
 export default class App {
@@ -25,18 +28,35 @@ export default class App {
   private property: Property = new Property();
   private placesController: PlacesController = new PlacesController();
   private tenant: Tenant = new Tenant();
+  private fileTransfer: FileTransfer = new FileTransfer();
+  private lease: Lease = new Lease();
 
   constructor(private app: Express = express()) {
     Database.connect().then(() => {
-      this.app.use(cors());
+      this.app.set("view engine", "ejs"); // Enable EJS
+      this.app.set("views", path.join(__dirname, "../public/view")); // Views folder
+
+      this.app.use(
+        cors({
+          origin: ["http://localhost:4200", process.env.FRONTEND_ORIGIN].filter(
+            Boolean
+          ) as string[],
+          credentials: true,
+        })
+      );
+
       this.app.use(express.json());
       this.app.use(express.urlencoded({ extended: true }));
+
       this.app.use("/api-user", this.user.route);
       this.app.use("/api-tracking", this.tracking.route);
       this.app.use("/api-property", this.property.route);
       this.app.use("/api-places", this.placesController.router);
       this.app.use("/api-tenant", this.tenant.route);
+      this.app.use("/api-file-transfer", this.fileTransfer.route);
+      this.app.use("/api-lease", this.lease.route);
       this.app.use(express.static(path.join(__dirname, "../public")));
+
       this.indexPage();
     });
   }
@@ -55,8 +75,10 @@ export default class App {
   }
 
   public listen(port: number): void {
-    this.app.listen(port, () => {
-      console.log(`Server running on http://localhost:${port}`);
+    this.app.listen(port, "0.0.0.0", () => {
+      console.log(
+        `Server running on http://localhost:${port} / http://0.0.0.0:3000`
+      );
     });
   }
 }

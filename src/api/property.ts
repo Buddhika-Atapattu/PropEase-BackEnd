@@ -71,6 +71,8 @@ export default class Property {
     this.deleteProperty();
     // Update the property by ID and used muter to file handle
     this.updateProperty();
+    // Get all properties
+    this.getAllProperties();
   }
 
   get route(): Router {
@@ -1380,4 +1382,35 @@ export default class Property {
     }
   }
   //<==================== END SAFE JSON PASS ====================>
+
+  //<==================== GET ALL PROPERTIE ====================>
+  private getAllProperties(): void {
+    this.router.get(
+      "/get-all-properties/",
+      async (req: Request, res: Response) => {
+        try {
+          const properties = await PropertyModel.find();
+          if (!properties) throw new Error("No properties found.");
+          res.status(200).json({
+            status: "success",
+            message: "Properties fetched successfully.",
+            data: properties,
+          });
+        } catch (error) {
+          if (error instanceof Error) {
+            res.status(500).json({
+              status: "error",
+              message: "Error: " + error.message,
+            });
+          } else {
+            res.status(500).json({
+              status: "error",
+              message: "Error: " + error,
+            });
+          }
+        }
+      }
+    );
+  }
+  //<==================== END GET ALL PROPERTIE ====================>
 }

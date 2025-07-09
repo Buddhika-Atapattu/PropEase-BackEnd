@@ -1,0 +1,26 @@
+{
+  "kenneth08": [
+    {
+      "date": "2025-07-09T14:41:18.129Z",
+      "tenant": "kenneth08",
+      "token": "PkZRXvRV27v_zquOBEYQ8DiFrfw1MJqVx1N7BkVWFsyCGyt3NCRufixsvnb7Thin2QzjZ9106ICU8cY7Nl7vOlFzNawbs5-xFvmc_cOZt9h37y4",
+      "files": [
+        {
+          "ageInMinutes": 0,
+          "date": "2025-07-09T14:41:18.129Z",
+          "file": {
+            "fieldname": "image",
+            "originalname": "image.png",
+            "mimetype": "image/png",
+            "size": 330892,
+            "filename": "1752072077906-image.png",
+            "URL": "http://localhost:3000/tenants/scanned-files/kenneth08/1752072077906-image.png"
+          },
+          "token": "PkZRXvRV27v_zquOBEYQ8DiFrfw1MJqVx1N7BkVWFsyCGyt3NCRufixsvnb7Thin2QzjZ9106ICU8cY7Nl7vOlFzNawbs5-xFvmc_cOZt9h37y4",
+          "folder": "D:\\Project\\PropEase\\Code\\back-end\\public\\tenants\\scanned-files\\kenneth08\\"
+        }
+      ],
+      "folder": "D:\\Project\\PropEase\\Code\\back-end\\public\\tenants\\scanned-files\\kenneth08\\"
+    }
+  ]
+}

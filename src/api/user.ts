@@ -219,6 +219,7 @@ export default class UserRoute {
     userEmail: string,
     token: string
   ): Promise<boolean> {
+    
     const verifyLink = `http://localhost:3000/api-user/emailverifycation/${token}`;
     const html = `
   <div style="max-width: 600px; margin: auto; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; font-family: Arial, sans-serif;">
