@@ -9,13 +9,13 @@ export interface IProperty extends Document {
   id: string;
   title: string;
   type:
-    | "apartment"
-    | "house"
-    | "villa"
-    | "commercial"
-    | "land"
-    | "stodio"
-    | string;
+  | "apartment"
+  | "house"
+  | "villa"
+  | "commercial"
+  | "land"
+  | "stodio"
+  | string;
   listing: "sale" | "rent" | "sold" | "rented" | string;
   description: string;
   // End Basic Property Details
@@ -44,12 +44,12 @@ export interface IProperty extends Document {
   // Construction & Age
   builtYear: number;
   propertyCondition:
-    | "new"
-    | "old"
-    | "excellent"
-    | "good"
-    | "needs renovation"
-    | string;
+  | "new"
+  | "old"
+  | "excellent"
+  | "good"
+  | "needs renovation"
+  | string;
   developerName: string;
   projectName?: string;
   ownerShipType: "freehold" | "leasehold" | "company" | "trust" | string;
@@ -67,11 +67,112 @@ export interface IProperty extends Document {
   serviceCharges: number;
   transferFees?: number;
   availabilityStatus:
-    | "available"
-    | "not available"
-    | "pending"
-    | "ready to move"
-    | string;
+  | "available"
+  | "not available"
+  | "pending"
+  | "ready to move"
+  | string;
+  // End Financial Details
+
+  // Features & Amenities
+  featuresAndAmenities: string[];
+  // End Features & Amenities
+
+  // Media
+  images: propertyImages[];
+  uploadedImages?: propertyImages[];
+  documents: propertyDocs[];
+  uploadedDocuments?: propertyDocs[];
+  videoTour?: string;
+  virtualTour?: string;
+  // End Media
+
+  // Listing Management
+  listingDate: Date;
+  availabilityDate?: Date;
+  listingExpiryDate?: Date;
+  rentedDate?: Date;
+  soldDate?: Date;
+  addedBy: AddedBy;
+  owner: string;
+  // End Listing Management
+
+  // Administrative & Internal Use
+  referenceCode: string;
+  verificationStatus: "pending" | "verified" | "rejected" | "approved";
+  priority: "high" | "medium" | "low";
+  status: "draft" | "published" | "archived";
+  internalNote: string;
+  // End Administrative & Internal Use
+}
+export interface Property {
+  // Basic Property Details
+  id: string;
+  title: string;
+  type:
+  | "apartment"
+  | "house"
+  | "villa"
+  | "commercial"
+  | "land"
+  | "stodio"
+  | string;
+  listing: "sale" | "rent" | "sold" | "rented" | string;
+  description: string;
+  // End Basic Property Details
+
+  // Location Details
+  countryDetails: CountryDetails;
+  address: Address;
+  location?: GoogleMapLocation;
+  // End Location Details
+
+  // Property Specifications
+  totalArea: number; // in square feet or meters
+  builtInArea: number; // in square feet or meters
+  livingRooms: number;
+  balconies: number;
+  kitchen: number;
+  bedrooms: number;
+  bathrooms: number;
+  maidrooms: number;
+  driverRooms: number;
+  furnishingStatus: "furnished" | "semi-furnished" | "unfurnished" | string;
+  totalFloors: number;
+  numberOfParking: number;
+  // End Property Specifications
+
+  // Construction & Age
+  builtYear: number;
+  propertyCondition:
+  | "new"
+  | "old"
+  | "excellent"
+  | "good"
+  | "needs renovation"
+  | string;
+  developerName: string;
+  projectName?: string;
+  ownerShipType: "freehold" | "leasehold" | "company" | "trust" | string;
+  // End Construction & Age
+
+  // Financial Details
+  price: number;
+  currency: string;
+  pricePerSqurFeet: number;
+  expectedRentYearly?: number;
+  expectedRentQuartely?: number;
+  expectedRentMonthly?: number;
+  expectedRentDaily?: number;
+  maintenanceFees: number;
+  serviceCharges: number;
+  transferFees?: number;
+  availabilityStatus:
+  | "available"
+  | "not available"
+  | "pending"
+  | "ready to move"
+  | string;
   // End Financial Details
 
   // Features & Amenities
@@ -301,7 +402,7 @@ const AddedBySchema = new Schema<AddedBy>({
 const GoogleMapLocationSchema = new Schema<GoogleMapLocation>({
   lat: Number,
   lng: Number,
-  embeddedUrl: {type: String, required: false, default: ''},
+  embeddedUrl: { type: String, required: false, default: '' },
 });
 
 const PropertySchema = new Schema<IProperty>(

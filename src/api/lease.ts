@@ -32,19 +32,18 @@ import {
   SystemMetadata,
   LeaseType,
   CountryCodes,
-  GoogleMapLocation,
-  CountryDetails,
   AddedBy,
-  Property,
   FILE,
   TokenViceData,
   ScannedFileRecordJSON,
   TenantScannedFilesDataJSON,
   LeasePayload,
+  LeasePayloadWithPropert,
 } from "../models/lease.model";
 import { CryptoService } from "../services/crypto.service";
 import puppeteer from "puppeteer";
 import ejs from "ejs";
+import { Property } from "../models/property.model";
 
 dotenv.config();
 
@@ -188,6 +187,7 @@ export default class Lease {
       ]),
       async (req: Request<{ leaseID: string }>, res: Response) => {
         try {
+          console.log(req.body);
           // define the files to check whether the files are uploaded
           const files = req.files as
             | { [fieldname: string]: Express.Multer.File[] }
@@ -277,7 +277,7 @@ export default class Lease {
             req.body.tenantNICOrPassport.trim();
 
           // Tenant address
-          if (!this.isValidAddress(req.body.tenantAddress.trim()))
+          if (!this.isValidTenantAddress(req.body.tenantAddress.trim()))
             throw new Error(
               "Invalid tenant address: expected a valid address object with houseNumber, street, city, stateOrProvince, postalCode, and country."
             );
@@ -286,12 +286,12 @@ export default class Lease {
           );
 
           // Emergency Contact
-          if (!this.checkIsEmergencyContact(req.body.tenantEmergencyContact))
+          if (!this.checkIsEmergencyContact(req.body.emergencyContact))
             throw new Error(
               "Invalid tenant emergency contact: expected a valid emergency contact object with name, relationship, and contact."
             );
           const tenantEmergencyContact: EmergencyContact = JSON.parse(
-            req.body.tenantEmergencyContact
+            req.body.emergencyContact
           );
 
           // Co-Tenant Details
@@ -313,10 +313,6 @@ export default class Lease {
           const coTenantRelationship = req.body.coTenantRelationship.trim();
 
           // Property Details
-          if (!this.isValidProperty(req.body.propertyInformation))
-            throw new Error(
-              "Invalid or malformed property information. Please ensure all required fields are provided and properly formatted."
-            );
           const selectedProperty: Property = JSON.parse(
             req.body.selectedProperty
           );
@@ -722,7 +718,20 @@ export default class Lease {
             leaseID: leaseID,
             tenantInformation: INSERT_DATA_TenantInformation,
             coTenant: INSERT_DATA_coTenant,
-            propertyInformation: selectedProperty,
+            propertyID: selectedProperty.id,
+            leaseAgreement: INSERT_DATA_leaseAgreement,
+            rulesAndRegulations: selectedRuleAndRegulations,
+            isReadTheCompanyPolicy: isReadTheCompanyPolicy,
+            signatures: INSERT_DATA_signatures,
+            systemMetadata: systemMetaData,
+          };
+
+          // Parent Lease document
+          const INSERT_DOCUMENT_DATA: LeasePayloadWithPropert = {
+            leaseID: leaseID,
+            tenantInformation: INSERT_DATA_TenantInformation,
+            coTenant: INSERT_DATA_coTenant,
+            property: selectedProperty,
             leaseAgreement: INSERT_DATA_leaseAgreement,
             rulesAndRegulations: selectedRuleAndRegulations,
             isReadTheCompanyPolicy: isReadTheCompanyPolicy,
@@ -741,7 +750,7 @@ export default class Lease {
           );
           await fs.promises.writeFile(
             LEASE_AGREEMENT_JSON_DATA_FILE_PATH,
-            JSON.stringify(INSERT_DATA, null, 2)
+            JSON.stringify(INSERT_DOCUMENT_DATA, null, 2)
           );
 
           // Insert data
@@ -762,6 +771,7 @@ export default class Lease {
             });
           }
         } catch (error) {
+          console.log("Error in register lease agreement:", error);
           if (error instanceof Error) {
             res.status(500).json({ status: "error", error: error.message });
           } else {
@@ -803,6 +813,7 @@ export default class Lease {
           // Render the EJS file and pass JSON_DATA as "data"
           res.render("lease-agreement-pdf.ejs", { data: JSON_DATA });
         } catch (error) {
+          console.log("Error in preview lease agreement:", error);
           if (error instanceof Error) {
             res.status(500).json({ status: "error", error: error.message });
           } else {
@@ -828,16 +839,14 @@ export default class Lease {
   //<============================================== CHECK ADDED BY FORMAT TYPE ==============================================>
   private checkSystemMetaDataFormat(input: any): input is SystemMetadata {
     const data = typeof input === "string" ? JSON.parse(input) : input;
-    const dataArray: string[] = ["pending", "validated", "rejected"];
-
+    if (!data || typeof data !== "object") return false;
     return (
       data &&
       typeof data.ocrAutoFillStatus === "boolean" &&
       typeof data.validationStatus === "string" &&
       typeof data.language === "string" &&
       typeof data.leaseTemplateVersion === "string" &&
-      typeof data.lastUpdated === "string" &&
-      dataArray.includes(data.validationStatus.toLowerCase())
+      typeof data.lastUpdated === "string"
     );
   }
   //<============================================== END CHECK ADDED BY FORMAT TYPE ==============================================>
@@ -845,7 +854,7 @@ export default class Lease {
   //<============================================== CHECK ADDED BY FORMAT TYPE ==============================================>
   private checkRentDueDateFormat(input: any): input is RentDueDate {
     const data = typeof input === "string" ? JSON.parse(input) : input;
-
+    if (!data || typeof data !== "object") return false;
     return (
       data && typeof data.id === "string" && typeof data.label === "string"
     );
@@ -855,16 +864,14 @@ export default class Lease {
   //<============================================== CHECK ADDED BY FORMAT TYPE ==============================================>
   private checkAddedBy(input: any): input is AddedBy {
     const data = typeof input === "string" ? JSON.parse(input) : input;
-    const dataArray: string[] = ["admin", "agent", "owner"];
-
+    if (!data || typeof data !== "object") return false;
     return (
       data &&
       typeof data.username === "string" &&
       typeof data.name === "string" &&
       typeof data.email === "string" &&
       typeof data.role === "string" &&
-      (typeof data.addedAt === "string" || data.addedAt instanceof Date) &&
-      dataArray.includes(data.role.toLowerCas())
+      (typeof data.addedAt === "string" || data.addedAt instanceof Date)
     );
   }
   //<============================================== END CHECK ADDED BY FORMAT TYPE ==============================================>
@@ -894,13 +901,13 @@ export default class Lease {
   //<============================================== CHECK NOTICE PERIOD DAYS FORMAT TYPE ==============================================>
   private checkNoticePeriodDaysFormat(input: any): input is NoticePeriod {
     const data = typeof input === "string" ? JSON.parse(input) : input;
-
+    if (!data || typeof data !== "object") return false;
     return (
       data &&
       typeof data.id === "string" &&
       typeof data.label === "string" &&
       typeof data.days === "number" &&
-      typeof data.description === "boolean"
+      typeof data.description === "string"
     );
   }
   //<============================================== END CHECK NOTICE PERIOD DAYS FORMAT TYPE ==============================================>
@@ -911,20 +918,14 @@ export default class Lease {
   ): input is UtilityResponsibility[] {
     const data = typeof input === "string" ? JSON.parse(input) : input;
     if (!Array.isArray(data)) return false;
-    const dataArray: string[] = [
-      "landlord",
-      "tenant",
-      "shared",
-      "real estate company",
-    ];
+
     return data.every(
       (item) =>
         item &&
         typeof item.id === "string" &&
         typeof item.utility === "string" &&
         typeof item.paidBy === "string" &&
-        typeof item.description === "string" &&
-        dataArray.includes(item.paidBy.toLowerCase())
+        typeof item.description === "string"
     );
   }
   //<============================================== END CHECK LATE PAYMENT PENALTIES FORMAT TYPE ==============================================>
@@ -935,15 +936,13 @@ export default class Lease {
   ): input is LatePaymentPenalty[] {
     const data = typeof input === "string" ? JSON.parse(input) : input;
     if (!Array.isArray(data)) return false;
-    const dataArray: string[] = ["fixed", "percentage", "per-day"];
     return data.every(
       (item) =>
         item &&
         typeof item.label === "string" &&
         typeof item.type === "string" &&
         typeof item.value === "number" &&
-        typeof item.description === "string" &&
-        dataArray.includes(item.type.toLowerCase())
+        typeof item.description === "string"
     );
   }
   //<============================================== END CHECK LATE PAYMENT PENALTIES FORMAT TYPE ==============================================>
@@ -951,14 +950,13 @@ export default class Lease {
   //<============================================== CHECK SECURITY DEPOSIT FORMAT TYPE ==============================================>
   private checkSecurityDepositFormat(input: any): input is SecurityDeposit {
     const data = typeof input === "string" ? JSON.parse(input) : input;
-    const dataArray: string[] = ["fixed", "percentage", "duration"];
+    if (!data || typeof data !== "object") return false;
     return (
       data &&
       typeof data.id === "string" &&
-      typeof data.type === "string" &&
-      typeof data.value === "number" &&
-      typeof data.refundable === "boolean" &&
-      dataArray.includes(data.type.toLowerCase())
+      typeof data.name === "string" &&
+      typeof data.description === "string" &&
+      typeof data.refundable === "boolean"
     );
   }
   //<============================================== END CHECK SECURITY DEPOSIT FORMAT TYPE ==============================================>
@@ -966,21 +964,12 @@ export default class Lease {
   //<============================================== CHECK PAYMENT METHOD FORMAT TYPE ==============================================>
   private checkPaymentMethodFormat(input: any): input is PaymentMethod {
     const data = typeof input === "string" ? JSON.parse(input) : input;
-    const dataArray: string[] = [
-      "card",
-      "wallet",
-      "bank",
-      "gateway",
-      "cash",
-      "crypto",
-      "bnpl",
-    ];
+    if (!data || typeof data !== "object") return false;
     return (
       data &&
       typeof data.id === "string" &&
       typeof data.name === "string" &&
-      typeof data.category === "string" &&
-      dataArray.includes(data.category.toLowerCase())
+      typeof data.category === "string"
     );
   }
   //<============================================== END CHECK PAYMENT METHOD FORMAT TYPE ==============================================>
@@ -988,14 +977,13 @@ export default class Lease {
   //<============================================== CHECK PAYMENT FREQUENCY FORMAT TYPE ==============================================>
   private checkPaymentFrequencyFormat(input: any): input is PaymentFrequency {
     const data = typeof input === "string" ? JSON.parse(input) : input;
-    const dataArray: string[] = ["day", "week", "month", "year", "one-time"];
+    if (!data || typeof data !== "object") return false;
     return (
       data &&
       typeof data.id === "string" &&
       typeof data.name === "string" &&
-      typeof data.duration === "object" &&
-      typeof data.unit === "string" &&
-      dataArray.includes(data.unit.toLowerCase())
+      typeof data.duration === "string" &&
+      typeof data.unit === "string"
     );
   }
   //<============================================== END CHECK PAYMENT FREQUENCY FORMAT TYPE ==============================================>
@@ -1003,6 +991,7 @@ export default class Lease {
   //<============================================== CHECK CURRENCY FORMAT TYPE ==============================================>
   private checkCurrencyFormat(input: any): input is CurrencyFormat {
     const data = typeof input === "string" ? JSON.parse(input) : input;
+    if (!data || typeof data !== "object") return false;
     return (
       data &&
       typeof data.country === "string" &&
@@ -1033,32 +1022,55 @@ export default class Lease {
   //<============================================== CHECK PHONE CODE DETAILS TYPE ==============================================>
   private checkIsPhoneCodeDetails(input: any): boolean {
     const data = typeof input === "string" ? JSON.parse(input) : input;
+    if (!data || typeof data !== "object") return false;
     return (
       typeof data.name === "string" &&
       typeof data.code === "string" &&
       typeof data.flags === "object" &&
       typeof data.flags.png === "string" &&
-      typeof data.flags.svg === "string" &&
-      (input.flags.alt === undefined || typeof input.flags.alt === "string")
+      typeof data.flags.svg === "string"
     );
   }
   //<============================================== END CHECK PHONE CODE DETAILS TYPE ==============================================>
 
   //<============================================== CHECK EMERGENCY CONTACT TYPE ==============================================>
-  private checkIsEmergencyContact(input: any): boolean {
-    const data = typeof input === "string" ? JSON.parse(input) : input;
-    return (
-      data &&
-      typeof data.name === "string" &&
-      typeof data.relationship === "string" &&
-      typeof data.contact === "string"
-    );
+  private checkIsEmergencyContact(input: any): input is EmergencyContact {
+    try {
+      const data = typeof input === "string" ? JSON.parse(input) : input;
+      if (!data || typeof data !== "object") return false;
+      return (
+        data &&
+        typeof data.name === "string" &&
+        typeof data.relationship === "string" &&
+        typeof data.contact === "string"
+      );
+    } catch (error) {
+      console.error("Failed to parse emergency contact:", error);
+      return false;
+    }
   }
   //<============================================== END CHECK EMERGENCY CONTACT TYPE ==============================================>
 
   //<============================================== CHECK ADDRESS TYPE ==============================================>
+  private isValidTenantAddress(input: any): input is Address {
+    const data = typeof input === "string" ? JSON.parse(input) : input;
+    if (!data || typeof data !== "object") return false;
+    return (
+      data &&
+      typeof data.houseNumber === "string" &&
+      typeof data.street === "string" &&
+      typeof data.city === "string" &&
+      typeof data.stateOrProvince === "string" &&
+      typeof data.postalCode === "string" &&
+      typeof data.country === "object"
+    );
+  }
+  //<============================================== END CHECK ADDRESS TYPE ==============================================>
+
+  //<============================================== CHECK ADDRESS TYPE ==============================================>
   private isValidAddress(input: any): input is Address {
     const data = typeof input === "string" ? JSON.parse(input) : input;
+    if (!data || typeof data !== "object") return false;
     return (
       data &&
       typeof data.houseNumber === "string" &&
@@ -1071,40 +1083,10 @@ export default class Lease {
   }
   //<============================================== END CHECK ADDRESS TYPE ==============================================>
 
-  //<============================================== CHECK GOOGLE MAP LOCATION TYPE ==============================================>
-  private isValidGoogleMapLocation(input: any): input is GoogleMapLocation {
-    const data = typeof input === "string" ? JSON.parse(input) : input;
-    return (
-      data &&
-      typeof data.lat === "number" &&
-      typeof data.lng === "number" &&
-      typeof data.embeddedUrl === "string"
-    );
-  }
-  //<============================================== END CHECK GOOGLE MAP LOCATION TYPE ==============================================>
-
-  //<============================================== CHECK COUNTRY DETAILS TYPE ==============================================>
-  private isValidCountryDetails(input: any): input is CountryDetails {
-    const data = typeof input === "string" ? JSON.parse(input) : input;
-    return (
-      data &&
-      typeof data.name?.common === "string" &&
-      typeof data.name?.official === "string" &&
-      typeof data.cca2 === "string" &&
-      typeof data.region === "string" &&
-      Array.isArray(data.timezones) &&
-      Array.isArray(data.continents) &&
-      typeof data.flags?.png === "string" &&
-      typeof data.flags?.svg === "string" &&
-      typeof data.area === "number" &&
-      Array.isArray(data.latlng)
-    );
-  }
-  //<============================================== END CHECK COUNTRY DETAILS TYPE ==============================================>
-
   //<============================================== CHECK ADDED BY TYPE ==============================================>
   private isValidAddedBy(input: any): input is AddedBy {
     const data = typeof input === "string" ? JSON.parse(input) : input;
+    if (!data || typeof data !== "object") return false;
     return (
       data &&
       typeof data.username === "string" &&
@@ -1114,55 +1096,6 @@ export default class Lease {
     );
   }
   //<============================================== END CHECK ADDED BY TYPE ==============================================>
-
-  //<============================================== CHECK PROPERTY TYPE ==============================================>
-  private isValidProperty(input: any): input is Property {
-    const data = typeof input === "string" ? JSON.parse(input) : input;
-    return (
-      data &&
-      typeof data.id === "string" &&
-      typeof data.title === "string" &&
-      typeof data.type === "string" &&
-      typeof data.listing === "string" &&
-      typeof data.description === "string" &&
-      this.isValidCountryDetails(data.countryDetails) &&
-      this.isValidAddress(data.address) &&
-      (!data.location || this.isValidGoogleMapLocation(data.location)) &&
-      typeof data.totalArea === "number" &&
-      typeof data.builtInArea === "number" &&
-      typeof data.livingRooms === "number" &&
-      typeof data.balconies === "number" &&
-      typeof data.kitchen === "number" &&
-      typeof data.bedrooms === "number" &&
-      typeof data.bathrooms === "number" &&
-      typeof data.maidrooms === "number" &&
-      typeof data.driverRooms === "number" &&
-      typeof data.furnishingStatus === "string" &&
-      typeof data.totalFloors === "number" &&
-      typeof data.numberOfParking === "number" &&
-      typeof data.builtYear === "number" &&
-      typeof data.propertyCondition === "string" &&
-      typeof data.developerName === "string" &&
-      typeof data.ownerShipType === "string" &&
-      typeof data.price === "number" &&
-      typeof data.currency === "string" &&
-      typeof data.pricePerSqurFeet === "number" &&
-      typeof data.maintenanceFees === "number" &&
-      typeof data.serviceCharges === "number" &&
-      typeof data.availabilityStatus === "string" &&
-      Array.isArray(data.featuresAndAmenities) &&
-      Array.isArray(data.images) &&
-      Array.isArray(data.documents) &&
-      this.isValidAddedBy(data.addedBy) &&
-      typeof data.owner === "string" &&
-      typeof data.referenceCode === "string" &&
-      typeof data.verificationStatus === "string" &&
-      typeof data.priority === "string" &&
-      typeof data.status === "string" &&
-      typeof data.internalNote === "string"
-    );
-  }
-  //<============================================== END CHECK PROPERTY TYPE ==============================================>
 
   //********************************************************** END TYPE CHECKING *******************************************************************/
 }

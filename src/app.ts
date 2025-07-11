@@ -19,6 +19,7 @@ import { PlacesController } from "./api/PlacesController";
 import Tenant from "./api/tenant";
 import FileTransfer from "./api/fileTransfer";
 import Lease from "./api/lease";
+import Validator from "./api/validator";
 
 Dotenv.config();
 
@@ -30,6 +31,7 @@ export default class App {
   private tenant: Tenant = new Tenant();
   private fileTransfer: FileTransfer = new FileTransfer();
   private lease: Lease = new Lease();
+  private validator: Validator = new Validator();
 
   constructor(private app: Express = express()) {
     Database.connect().then(() => {
@@ -55,8 +57,9 @@ export default class App {
       this.app.use("/api-tenant", this.tenant.route);
       this.app.use("/api-file-transfer", this.fileTransfer.route);
       this.app.use("/api-lease", this.lease.route);
-      this.app.use(express.static(path.join(__dirname, "../public")));
+      this.app.use("/api-validator", this.validator.route);
 
+      this.app.use(express.static(path.join(__dirname, "../public")));
       this.indexPage();
     });
   }
