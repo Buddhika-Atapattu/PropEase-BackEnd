@@ -134,6 +134,7 @@ export interface PaymentMethod {
   category: string;
   region?: string; // Optional region or origin (e.g., EU, US, Asia)
   supported?: boolean; // Can be used to toggle availability
+  description?: string;
 }
 
 // Security Deposit Fromat For The Lease Agreement
@@ -339,6 +340,7 @@ const PaymentMethodSchema = new Schema<PaymentMethod>({
   },
   region: { type: String, required: true },
   supported: { type: Boolean, required: true, default: false },
+  description: { type: String, required: false },
 });
 
 const SecurityDepositSchema = new Schema<SecurityDeposit>({

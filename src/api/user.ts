@@ -27,6 +27,7 @@ import {
   AddedBy,
   GoogleMapLocation,
 } from "../models/property.model";
+import { MSG } from "../controller/commonTypeSetting";
 
 dotenv.config();
 
@@ -80,7 +81,12 @@ export default class UserRoute {
             if (isPasswordValid) {
               const plainUser = user.toObject ? user.toObject() : user; // fallback if toObject() doesn't exist
               const { password, ...userWithoutPassword } = plainUser;
-              res.status(200).json(userWithoutPassword);
+              const respondData: MSG = {
+                status: 'success',
+                message: 'User verified successfully!',
+                data: userWithoutPassword
+              }
+              res.status(200).json(respondData);
             } else {
               res.status(401).json({ error: "Invalid password" });
             }
@@ -121,12 +127,12 @@ export default class UserRoute {
 
           const searchFilter = search
             ? {
-                $or: [
-                  nameFilter,
-                  { username: { $regex: search, $options: "i" } },
-                  { email: { $regex: search, $options: "i" } },
-                ],
-              }
+              $or: [
+                nameFilter,
+                { username: { $regex: search, $options: "i" } },
+                { email: { $regex: search, $options: "i" } },
+              ],
+            }
             : {};
 
           const userCount = await UserModel.countDocuments(searchFilter);
@@ -162,6 +168,9 @@ export default class UserRoute {
           {},
           {
             password: 0,
+          },
+          {
+            sort: { createdAt: -1 },
           }
         );
         if (users.length === 0) {
@@ -219,7 +228,7 @@ export default class UserRoute {
     userEmail: string,
     token: string
   ): Promise<boolean> {
-    
+
     const verifyLink = `http://localhost:3000/api-user/emailverifycation/${token}`;
     const html = `
   <div style="max-width: 600px; margin: auto; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; font-family: Arial, sans-serif;">
@@ -685,16 +694,17 @@ export default class UserRoute {
   private findUserByPhone() {
     this.router.get(
       "/user-phone/:phone",
-      async (req: Request<{ phone: string }>, res: Response) => {
+      async (req: Request<{ phone: string }>, res: Response): Promise<any> => {
         try {
           const phoneNumber = req.params.phone.trim();
 
           // Simple phone validation
-          const phoneRegex = /^\+?[0-9\s\-()]{10,15}$/;
+          const phoneRegex = /^(?:\+?[1-9]\d{1,3}|0)[\d\s\-()]{7,20}$/;
           if (!phoneRegex.test(phoneNumber)) {
-            res.status(400).json({
+            return res.status(400).json({
               status: "error",
               message: "Invalid phone number format",
+              data: phoneNumber
             });
           }
 
@@ -706,13 +716,21 @@ export default class UserRoute {
           });
 
           if (user) {
-            res.status(200).json({ status: "true" }); // phone exists
+            return res.status(200).json({
+              status: "success",
+              message: "Phone number exists!",
+              data: user,
+            });
           } else {
-            res.status(200).json({ status: "false" }); // phone does not exist
+            return res.status(200).json({
+              status: "error",
+              message: "Phone number does not exist!",
+              data: null,
+            });
           }
         } catch (error) {
-          console.error("Error in findUserByEmail:", error);
-          res
+          console.error("Error in findUserByPhone:", error);
+          return res
             .status(500)
             .json({ status: "error", message: "Server error occurred" });
         }

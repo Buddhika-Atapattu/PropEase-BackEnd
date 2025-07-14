@@ -12,6 +12,8 @@ import path from "path";
 import multer from "multer";
 import sharp from "sharp";
 import { ITenant, TenantModel } from "../models/tenant.model";
+import { LeaseModel, LeaseType } from "../models/lease.model";
+import Lease from "./lease";
 
 dotenv.config();
 
@@ -131,47 +133,110 @@ export default class Tenant {
       async (req: Request<{ username: string }>, res: Response) => {
         try {
           const { username } = req.params;
-          if (!username) {
-            throw new Error("Username required!");
-          }
+          if (!username) throw new Error("Username required!");
 
           const userData = await TenantModel.findOne({ username });
+          if (!userData) throw new Error("Tenant not found!");
 
-          const recyclebin = path.join(
-            __dirname,
-            `../../public/recyclebin/tenants/${username}/`
-          );
+          const leases = await LeaseModel.find({
+            "tenantInformation.tenantUsername": username,
+          });
 
+          const today = new Date().toISOString().split("T")[0];
+          const insertUserData = { today, data: userData };
+
+          const recyclebin = path.join(__dirname, `../../public/recyclebin/tenants/${username}`);
+          const userDataPath = path.join(recyclebin, "userData.json");
           await fs.promises.mkdir(recyclebin, { recursive: true });
 
-          const fileSavePath = path.join(
-            __dirname,
-            `../../public/recyclebin/tenants/${username}/userData.json`
-          );
-
-          await fs.promises.writeFile(fileSavePath, JSON.stringify(userData));
-
-          if (userData) {
-            const tenant = await TenantModel.findOneAndDelete({ username });
-            if (tenant) {
-              res.status(200).json({
-                status: "success",
-                message: "Tenant deleted successfully",
-              });
-            } else {
-              throw new Error("Tenant not found!");
-            }
+          // Save userData
+          if (fs.existsSync(userDataPath)) {
+            const existingData = JSON.parse(await fs.promises.readFile(userDataPath, "utf-8"));
+            existingData.push(insertUserData);
+            await fs.promises.writeFile(userDataPath, JSON.stringify(existingData, null, 2));
           } else {
-            throw new Error("Tenant not found!");
+            await fs.promises.writeFile(userDataPath, JSON.stringify([insertUserData], null, 2));
           }
-        } catch (error) {
-          if (error) {
-            console.log("Error: ", error);
-            res.status(500).json({
-              status: "error",
-              message: "Error deleting tenant: " + error,
+
+          if (leases.length > 0) {
+            const leaseRecyclebin = path.join(recyclebin, "leases");
+            await fs.promises.mkdir(leaseRecyclebin, { recursive: true });
+
+            const leaseSavePath = path.join(leaseRecyclebin, "leasesDB.json");
+
+            // Save lease data
+            if (fs.existsSync(leaseSavePath)) {
+              const existingLeases = JSON.parse(await fs.promises.readFile(leaseSavePath, "utf-8"));
+              const merged = Array.isArray(existingLeases) ? [...existingLeases, ...leases] : leases;
+              await fs.promises.writeFile(leaseSavePath, JSON.stringify(merged, null, 2));
+            } else {
+              await fs.promises.writeFile(leaseSavePath, JSON.stringify(leases, null, 2));
+            }
+
+            for (const lease of leases) {
+              const leaseID = lease.leaseID;
+
+              const currentRoot = path.join(__dirname, `../../public/lease/${leaseID}`);
+              const destRoot = path.join(leaseRecyclebin, `${today}_${leaseID}`);
+
+              const pathsToMove = [
+                {
+                  from: path.join(currentRoot, `agreement-data/${leaseID}.json`),
+                  to: path.join(destRoot, `agreement-data/${today}_${leaseID}.json`)
+                },
+                {
+                  from: path.join(currentRoot, `documents`),
+                  to: path.join(destRoot, `${today}_documents`)
+                },
+                {
+                  from: path.join(currentRoot, `signatures/landlord`),
+                  to: path.join(destRoot, `${today}_signatures/landlord`)
+                },
+                {
+                  from: path.join(currentRoot, `signatures/tenant`),
+                  to: path.join(destRoot, `${today}_signatures/tenant`)
+                }
+              ];
+
+              for (const { from, to } of pathsToMove) {
+                if (fs.existsSync(from)) {
+                  await fs.promises.mkdir(path.dirname(to), { recursive: true });
+                  try {
+                    await fs.promises.rename(from, to);
+                  } catch (e) {
+                    console.warn(`Failed to move from ${from} to ${to}:`, e);
+                  }
+                } else {
+                  console.warn(`Skipped move: Source path does not exist → ${from}`);
+                }
+              }
+            }
+
+            const deleteResult = await LeaseModel.deleteMany({
+              "tenantInformation.tenantUsername": username,
             });
+
+            if (deleteResult.deletedCount === 0) {
+              throw new Error("Failed to delete leases from database!");
+            }
           }
+
+          await TenantModel.findOneAndDelete({ username });
+
+          res.status(200).json({
+            status: "success",
+            message: "Tenant and all related lease records have been successfully removed.",
+          });
+        } catch (error) {
+          console.error("Error deleting tenant:", error);
+          let message = "Unexpected error occurred during tenant deletion.";
+          if (error instanceof Error) message = error.message;
+          else if (typeof error === "string") message = error;
+
+          res.status(500).json({
+            status: "error",
+            message,
+          });
         }
       }
     );

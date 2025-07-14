@@ -479,7 +479,7 @@ export default class Property {
                 : null,
             rentedDate:
               typeof req.body.rentedDate === "string" &&
-              req.body.rentedDate !== ""
+                req.body.rentedDate !== ""
                 ? new Date(req.body.rentedDate.trim()).toISOString()
                 : null,
             soldDate:
@@ -605,14 +605,14 @@ export default class Property {
           const filterDialogData: filterDialogData = safeFilter
             ? JSON.parse(safeFilter)
             : {
-                minPrice: 0,
-                maxPrice: Number.MAX_SAFE_INTEGER,
-                beds: "",
-                bathrooms: "",
-                amenities: [],
-                type: "",
-                status: "",
-              };
+              minPrice: 0,
+              maxPrice: Number.MAX_SAFE_INTEGER,
+              beds: "",
+              bathrooms: "",
+              amenities: [],
+              type: "",
+              status: "",
+            };
 
           const andFilters: any[] = [];
 
@@ -1389,7 +1389,9 @@ export default class Property {
       "/get-all-properties/",
       async (req: Request, res: Response) => {
         try {
-          const properties = await PropertyModel.find();
+          const properties = await PropertyModel.find().sort({
+            createdAt: -1,
+          });
           if (!properties) throw new Error("No properties found.");
           res.status(200).json({
             status: "success",

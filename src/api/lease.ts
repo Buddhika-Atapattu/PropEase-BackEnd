@@ -56,6 +56,9 @@ export default class Lease {
     this.router = express.Router();
     this.registerLeaseAgreement();
     this.setupEjsPreview();
+    this.getAllLeaseAgreementsByUsername();
+    this.getLeaseAgreementsByLeaseID();
+    this.getLeaseAgreementByIDAndUpdateValidationStatus();
   }
 
   get route(): Router {
@@ -828,9 +831,166 @@ export default class Lease {
   }
   //<============================================== END PREVIEW EJS FILE ==============================================>
 
+  //<============================================== GET LEASE AGREEMENTS BASE ON THE LEASE ID ==============================================>
+  private getLeaseAgreementsByLeaseID() {
+    this.router.get(
+      "/lease-agreements/:leaseID", async (req: Request<{ leaseID: string }>, res: Response) => {
+        try {
+          const { leaseID } = req.params;
+          const safeLeaseID = leaseID.trim()
+          if (!safeLeaseID) throw new Error("Lease ID is required!");
+
+          const data = await LeaseModel.findOne({ leaseID: safeLeaseID }, {});
+          if (data) {
+            res.status(200).json({
+              status: "success",
+              message: "Lease agreements retrieved successfully!",
+              data: data,
+            })
+          }
+          else {
+            res.status(404).json({
+              status: "error",
+              message: `No lease agreements found for this lease ID (${leaseID}).`,
+            })
+          }
+        }
+        catch (error) {
+          console.log("Error in preview lease agreement:", error);
+          if (error instanceof Error) {
+            res.status(500).json({ status: "error", error: error.message });
+          } else {
+            res.status(500).json({
+              status: "error",
+              error: "An unknown error occurred." + error,
+            });
+          }
+        }
+      })
+  }
+  //<============================================== END GET LEASE AGREEMENTS BASE ON THE LEASE ID ==============================================>
+
+  //<============================================== GET ALL LEASE AGREEMENTS BASE ON THE USERNAME ==============================================>
+  private getAllLeaseAgreementsByUsername() {
+    this.router.get(
+      "/lease-agreements/:username",
+      async (req: Request<{ username: string }>, res: Response) => {
+        try {
+          const { username } = req.params;
+          const safeUsername = this.sanitizeInput(username);
+          if (!safeUsername) throw new Error("Username is required!");
+
+          const leaseAgreements = await LeaseModel.find({
+            "tenantInformation.tenantUsername": safeUsername,
+          }).sort({ "systemMetadata.lastUpdated": -1 });
+
+          if (leaseAgreements) {
+            res.status(200).json({
+              status: "success",
+              message: "Lease agreements retrieved successfully!",
+              data: leaseAgreements,
+            });
+          } else {
+            res.status(404).json({
+              status: "error",
+              message: "No lease agreements found for this user.",
+            });
+          }
+
+        } catch (error) {
+          console.log("Error in get all lease agreements:", error);
+          if (error instanceof Error) {
+            res.status(500).json({ status: "error", error: error.message });
+          } else {
+            res.status(500).json({
+              status: "error",
+              error: "An unknown error occurred." + error,
+            });
+          }
+        }
+      }
+    );
+  }
+  //<============================================== END GET ALL LEASE AGREEMENTS BASE ON THE USERNAME ==============================================>
+
+  //<============================================== GET THE LEASE AGREEMENT BY ID AND UPDATE LEASE VALIDATION STATUS ==============================================>
+  private getLeaseAgreementByIDAndUpdateValidationStatus() {
+    const upload = multer();
+    this.router.put("/lease-status-updated/:leaseID", upload.none(), async (req: Request<{ leaseID: string }>, res: Response) => {
+      try {
+        const { leaseID } = req.params;
+        const safeLeaseID = leaseID.trim();
+        if (!safeLeaseID) throw new Error("Lease ID is required!");
+
+        const validationStatus = req.body.validationStatus;
+        if (!validationStatus) throw new Error("Validation status is required!");
+
+        if (!this.checkIsString(validationStatus.trim())) throw new Error("Validation should be string!");
+
+        const today = new Date();
+        const lastUpdated = today.toISOString();
+
+        const leaseAgreement = await LeaseModel.findOneAndUpdate(
+          { leaseID: safeLeaseID },
+          {
+            "systemMetadata.validationStatus": validationStatus,
+            "systemMetadata.lastUpdated": lastUpdated
+          },
+          { new: true }
+        );
+
+        if (leaseAgreement) {
+          res.status(200).json({
+            status: "success",
+            message: "Lease agreement has been updated successfully!",
+            data: leaseAgreement,
+          });
+        }
+        else {
+          res.status(404).json({
+            status: "error",
+            message: "No lease agreement found for this lease ID.",
+          });
+        }
+      }
+      catch (error) {
+        console.log("Error in get all lease agreements:", error);
+        if (error instanceof Error) {
+          res.status(500).json({ status: "error", error: error.message });
+        } else {
+          res.status(500).json({
+            status: "error",
+            error: "An unknown error occurred." + error,
+          });
+        }
+      }
+    })
+  }
+  //<============================================== END GET THE LEASE AGREEMENT BY ID AND UPDATE LEASE VALIDATION STATUS ==============================================>
+
   //********************************************************** END ROUTERS *******************************************************************/
 
   //********************************************************** OPERATIONS *******************************************************************/
+
+  //<============================================== SANITIZE INPUT ==============================================>
+  private sanitizeInput(input: string): string {
+    if (typeof input !== 'string') return '';
+
+    // Trim whitespace
+    let sanitized = input.trim();
+
+    // Replace common HTML special characters
+    sanitized = sanitized
+      .replace(/&/g, '&amp;')   // Escape ampersands first
+      .replace(/</g, '&lt;')    // Escape <
+      .replace(/>/g, '&gt;')    // Escape >
+      .replace(/"/g, '&quot;')  // Escape double quotes
+      .replace(/'/g, '&#x27;')  // Escape single quotes
+      .replace(/\//g, '&#x2F;'); // Escape forward slashes
+
+    return sanitized;
+  }
+  //<============================================== END SANITIZE INPUT ==============================================>
 
   //********************************************************** END OPERATIONS *******************************************************************/
 
