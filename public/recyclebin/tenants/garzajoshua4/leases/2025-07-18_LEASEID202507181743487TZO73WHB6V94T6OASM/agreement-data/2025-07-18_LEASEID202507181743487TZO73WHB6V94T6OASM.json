@@ -1,0 +1,331 @@
+{
+  "leaseID": "LEASEID202507181743487TZO73WHB6V94T6OASM",
+  "tenantInformation": {
+    "tenantUsername": "garzajoshua4",
+    "fullName": "Cassandra Neal",
+    "nicOrPassport": "978872558v",
+    "gender": "female",
+    "nationality": "Sri Lankan",
+    "dateOfBirth": "1975-10-17T00:00:00.000Z",
+    "phoneCodeDetails": {
+      "name": "Sri Lanka",
+      "code": "+94",
+      "flags": {
+        "png": "https://flagcdn.com/w320/lk.png",
+        "svg": "https://flagcdn.com/lk.svg",
+        "alt": "The flag of Sri Lanka features two large adjacent but separate rectangular areas, centered on a golden-yellow field. The smaller hoist-side rectangle is divided into two equal vertical bands of teal and orange, and the larger fly-side rectangle is maroon with a centered golden-yellow lion holding a Kastane sword in its right fore-paw and four golden-yellow Bo leaves, one in each corner."
+      }
+    },
+    "phoneNumber": "777999786",
+    "email": "user5@example.com",
+    "permanentAddress": {
+      "houseNumber": "No.988",
+      "street": "Somewhere",
+      "city": "Somecity",
+      "stateOrProvince": "Somestate",
+      "country": {
+        "name": "Sri Lanka",
+        "code": "LK",
+        "emoji": "🇱🇰",
+        "unicode": "U+1F1F1 U+1F1F0",
+        "image": "https://cdn.jsdelivr.net/npm/country-flag-emoji-json@2.0.0/dist/images/LK.svg"
+      },
+      "postalCode": "10000"
+    },
+    "emergencyContact": {
+      "name": "Someone",
+      "relationship": "Friend",
+      "contact": "+94777888877"
+    },
+    "scannedDocuments": [
+      {
+        "date": "2025-07-18T17:43:49.653Z",
+        "tenant": "garzajoshua4",
+        "token": "WCFuoqCkjytwtfvFVAMVU4j8s0k3PJkRkPWxkX0CeFrUScJ58YYGrDResO4VI5_mePrvnjDRlQFkgEY7XNW_adrGmEo7XyDo8ikA-kfM",
+        "files": [
+          {
+            "ageInMinutes": 0,
+            "file": {
+              "fieldname": "tenantScanedDocuments",
+              "originalname": "document.pdf",
+              "mimetype": "application/pdf",
+              "size": 149890,
+              "filename": "1752860629119-41850316-document.pdf",
+              "URL": "http://localhost:3000/lease/LEASEID202507181743487TZO73WHB6V94T6OASM/documents/1752860629119-41850316-document.pdf"
+            }
+          }
+        ],
+        "folder": "C:\\Users\\buddh\\OneDrive\\Desktop\\Project\\PropEase\\Code\\back-end\\public\\lease\\LEASEID202507181743487TZO73WHB6V94T6OASM\\documents\\"
+      }
+    ]
+  },
+  "coTenant": {
+    "fullName": "Goto",
+    "email": "goto1234@gmail.com",
+    "phoneCode": "+94",
+    "phoneNumber": "777444777",
+    "gender": "male",
+    "nicOrPassport": "878985123v",
+    "age": 45,
+    "relationship": "Friend"
+  },
+  "property": {
+    "_id": "68737f3902a266731eb50ddc",
+    "id": "bca7a812-a851-4c92-a9da-084d01c3211d",
+    "title": "Re-contextualized clear-thinking groupware",
+    "type": "studio",
+    "listing": "sale",
+    "description": "Save cup under but thousand.",
+    "countryDetails": {
+      "name": {
+        "common": "Sri Lanka",
+        "official": "Democratic Socialist Republic of Sri Lanka"
+      },
+      "idd": {
+        "suffixes": []
+      },
+      "flags": {
+        "png": "https://flagcdn.com/w320/lk.png",
+        "svg": "https://flagcdn.com/lk.svg"
+      },
+      "car": {
+        "signs": []
+      },
+      "capitalInfo": {
+        "latlng": []
+      },
+      "cca2": "LK",
+      "region": "Asia",
+      "latlng": [
+        7.8731,
+        80.7718
+      ],
+      "timezones": [
+        "UTC+05:30"
+      ],
+      "continents": [
+        "Asia"
+      ],
+      "tld": [],
+      "capital": [],
+      "altSpellings": [],
+      "borders": [],
+      "_id": "687a87138e54e80c5080275d"
+    },
+    "address": {
+      "houseNumber": "669",
+      "street": "Jackson Neck",
+      "city": "South Jeremyborough",
+      "stateOrProvince": "Western Province",
+      "postcode": "71349",
+      "country": "Sri Lanka",
+      "_id": "687a87138e54e80c5080275e"
+    },
+    "location": {
+      "lat": 8.598004,
+      "lng": 81.574777,
+      "embeddedUrl": "https://www.google.com/maps?q=9.310688,81.899341&output=embed",
+      "_id": "687a87138e54e80c5080275f"
+    },
+    "totalArea": 2010,
+    "builtInArea": 1859,
+    "livingRooms": 2,
+    "balconies": 1,
+    "kitchen": 1,
+    "bedrooms": 4,
+    "bathrooms": 2,
+    "maidrooms": 1,
+    "driverRooms": 1,
+    "furnishingStatus": "furnished",
+    "totalFloors": 10,
+    "numberOfParking": 2,
+    "builtYear": 1991,
+    "propertyCondition": "new",
+    "developerName": "Richardson-Barnes",
+    "projectName": "Generation Residency",
+    "ownerShipType": "trust",
+    "price": 56741841,
+    "currency": "LKR",
+    "pricePerSqurFeet": 28229.77,
+    "expectedRentYearly": 2837092.0500000003,
+    "expectedRentQuartely": 709273.0125000001,
+    "expectedRentMonthly": 226967.364,
+    "expectedRentDaily": 7376.439329999999,
+    "maintenanceFees": 9968,
+    "serviceCharges": 4598,
+    "transferFees": 88982,
+    "availabilityStatus": "not available",
+    "featuresAndAmenities": [
+      "Balcony",
+      "Gym",
+      "Playground",
+      "Elevator"
+    ],
+    "images": [
+      {
+        "_id": "687a87138e54e80c50802760",
+        "originalname": "image.jpg",
+        "filename": "property_0_image.jpg",
+        "mimetype": "image/jpeg",
+        "size": 157532,
+        "imageURL": "https://picsum.photos/id/93/800/600"
+      }
+    ],
+    "documents": [
+      {
+        "_id": "687a87138e54e80c50802761",
+        "originalname": "deed.pdf",
+        "filename": "property_0_deed.pdf",
+        "mimetype": "application/pdf",
+        "size": 292388,
+        "documentURL": "https://example.com/documents/property_0_deed.pdf"
+      }
+    ],
+    "videoTour": "",
+    "virtualTour": "",
+    "listingDate": "2025-07-13T09:35:03.689Z",
+    "availabilityDate": "2025-07-13T09:35:03.689Z",
+    "listingExpiryDate": null,
+    "rentedDate": null,
+    "soldDate": null,
+    "addedBy": {
+      "username": "jamesprice0",
+      "name": "Roger Kirk",
+      "email": "user1@example.com",
+      "role": "admin",
+      "contactNumber": "+94777540158",
+      "addedAt": "2025-07-13T09:35:03.689Z",
+      "_id": "687a87138e54e80c50802762"
+    },
+    "owner": "jamesprice0",
+    "referenceCode": "PROP-0001",
+    "verificationStatus": "rejected",
+    "priority": "high",
+    "status": "archived",
+    "internalNote": "Building benefit sport."
+  },
+  "leaseAgreement": {
+    "startDate": "2025-07-18T17:37:52.480Z",
+    "endDate": "2026-07-17T18:30:00.000Z",
+    "durationMonths": 12,
+    "monthlyRent": 700000,
+    "currency": {
+      "country": "Sri Lanka",
+      "currency": "LKR",
+      "symbol": "Rs  රු",
+      "flags": {
+        "png": "https://flagcdn.com/w320/lk.png",
+        "svg": "https://flagcdn.com/lk.svg",
+        "alt": "The flag of Sri Lanka features two large adjacent but separate rectangular areas, centered on a golden-yellow field. The smaller hoist-side rectangle is divided into two equal vertical bands of teal and orange, and the larger fly-side rectangle is maroon with a centered golden-yellow lion holding a Kastane sword in its right fore-paw and four golden-yellow Bo leaves, one in each corner."
+      }
+    },
+    "paymentFrequency": {
+      "id": "monthly",
+      "name": "Monthly",
+      "duration": "P1M",
+      "unit": "month",
+      "isEditable": false
+    },
+    "paymentMethod": {
+      "id": "handcash",
+      "name": "Cash (In Person)",
+      "category": "cash",
+      "region": "Local",
+      "isEditable": false,
+      "description": "Direct cash payment to landlord or office"
+    },
+    "securityDeposit": {
+      "id": "two-months",
+      "name": "Two Months Deposit",
+      "description": "Two Months Deposit deposit (refundable).",
+      "refundable": true
+    },
+    "rentDueDate": {
+      "id": "mid-month",
+      "label": "15th of Every Month",
+      "day": 15,
+      "description": "Rent is due on the 15th of each month.",
+      "offsetDays": 0,
+      "isEditable": false
+    },
+    "latePaymentPenalties": [
+      {
+        "label": "Fixed Fee - LKR 100",
+        "type": "Fixed Fee",
+        "value": 100,
+        "description": "A fixed penalty of 100 will be charged for any late payment, regardless of the amount or duration.",
+        "isEditable": false
+      }
+    ],
+    "utilityResponsibilities": [
+      {
+        "id": "Electricity-Tenant-2025-07-18T17:42:36.944Z",
+        "utility": "Electricity",
+        "paidBy": "tenant",
+        "description": "Electricity has to pay by Tenant",
+        "isEditable": false
+      },
+      {
+        "id": "Water-Tenant-2025-07-18T17:42:41.504Z",
+        "utility": "Water",
+        "paidBy": "tenant",
+        "description": "Water has to pay by Tenant",
+        "isEditable": false
+      }
+    ],
+    "noticePeriodDays": {
+      "id": "14-days",
+      "label": "14 Days Notice",
+      "days": 14,
+      "description": "Either party must give at least 14 days’ written notice before ending the lease.",
+      "isEditable": false
+    }
+  },
+  "rulesAndRegulations": [
+    {
+      "rule": "No Unauthorized Alterations",
+      "description": "The tenant shall not make any structural changes, paint, or install fixtures without prior written consent from the landlord.",
+      "isEditable": false
+    },
+    {
+      "rule": "Noise and Disturbance",
+      "description": "The tenant shall not cause or permit any nuisance or disturbance that interferes with the peaceful enjoyment of neighbors or other tenants.",
+      "isEditable": false
+    }
+  ],
+  "isReadTheCompanyPolicy": true,
+  "signatures": {
+    "tenantSignature": {
+      "fieldname": "tenantSignature",
+      "originalname": "signature.png",
+      "mimetype": "image/png",
+      "size": 12915,
+      "filename": "1752860629127-140903793-signature.png",
+      "URL": "http://localhost:3000/lease/LEASEID202507181743487TZO73WHB6V94T6OASM/signatures/tenant/1752860629127-140903793-signature.png"
+    },
+    "landlordSignature": {
+      "fieldname": "landlordSignature",
+      "originalname": "signature.png",
+      "mimetype": "image/png",
+      "size": 17218,
+      "filename": "1752860629539-767830481-signature.png",
+      "URL": "http://localhost:3000/lease/LEASEID202507181743487TZO73WHB6V94T6OASM/signatures/landlord/1752860629539-767830481-signature.png"
+    },
+    "signedAt": "2025-07-18T17:37:52.480Z",
+    "ipAddress": "127.0.0.1",
+    "userAgent": {
+      "name": "Buddhika Lahiru Atapattu",
+      "email": "atapattu.buddhika@gmail.com",
+      "addedAt": "2025-07-18T17:37:52.480Z",
+      "role": "admin",
+      "username": "Atapattu"
+    }
+  },
+  "systemMetadata": {
+    "ocrAutoFillStatus": false,
+    "validationStatus": "pending",
+    "language": "en",
+    "leaseTemplateVersion": "1.0.0",
+    "lastUpdated": "2025-07-18T17:37:52.480Z"
+  }
+}

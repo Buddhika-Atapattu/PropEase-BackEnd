@@ -1,0 +1,51 @@
+<div
+  style="
+    position: relative;
+    width: 100%;
+    font-size: 10px;
+    height: 70px;
+    background: #00134d;
+    color: #ffffff;
+    padding: 10px 20px;
+    text-align: center;
+    display: flex;
+    align-items: center;
+    justify-content: space-around;
+    box-sizing: border-box;
+  "
+>
+  <div>
+    Page <span class="pageNumber"></span> of
+    <span class="totalPages"></span> &nbsp;|&nbsp; Printed on
+    <span class="date"></span>
+    &nbsp;|&nbsp;
+    <span style="color: #ffd700; font-weight: bold">PropEase Real Estate</span>
+  </div>
+
+  <div
+    style="
+      position: absolute;
+      right: 5px;
+      bottom: -20px;
+      width: 60px;
+      height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding: 10px;
+      border-radius: 5px;
+      background-color: #ffffff;
+    "
+  >
+    <img
+      src="<%=qrCodeSrc%>"
+      alt="QR code"
+      style="
+        object-fit: contain;
+        object-position: center;
+        width: 100%;
+        height: 100%;
+      "
+    />
+  </div>
+</div>

@@ -1,0 +1,227 @@
+[
+  {
+    "_id": "687a87d58e54e80c5080284e",
+    "leaseID": "LEASEID202507181743487TZO73WHB6V94T6OASM",
+    "tenantInformation": {
+      "tenantUsername": "garzajoshua4",
+      "fullName": "Cassandra Neal",
+      "nicOrPassport": "978872558v",
+      "gender": "female",
+      "nationality": "Sri Lankan",
+      "dateOfBirth": "1975-10-17T00:00:00.000Z",
+      "phoneCodeDetails": {
+        "name": "Sri Lanka",
+        "code": "+94",
+        "flags": {
+          "png": "https://flagcdn.com/w320/lk.png",
+          "svg": "https://flagcdn.com/lk.svg",
+          "alt": "The flag of Sri Lanka features two large adjacent but separate rectangular areas, centered on a golden-yellow field. The smaller hoist-side rectangle is divided into two equal vertical bands of teal and orange, and the larger fly-side rectangle is maroon with a centered golden-yellow lion holding a Kastane sword in its right fore-paw and four golden-yellow Bo leaves, one in each corner.",
+          "_id": "687a87d58e54e80c50802857"
+        },
+        "_id": "687a87d58e54e80c50802856"
+      },
+      "phoneNumber": "777999786",
+      "email": "user5@example.com",
+      "permanentAddress": {
+        "street": "Somewhere",
+        "houseNumber": "No.988",
+        "city": "Somecity",
+        "stateOrProvince": "Somestate",
+        "postalCode": "10000",
+        "country": {
+          "name": "Sri Lanka",
+          "code": "LK",
+          "emoji": "🇱🇰",
+          "unicode": "U+1F1F1 U+1F1F0",
+          "image": "https://cdn.jsdelivr.net/npm/country-flag-emoji-json@2.0.0/dist/images/LK.svg",
+          "_id": "687a87d58e54e80c5080285a"
+        },
+        "_id": "687a87d58e54e80c50802859"
+      },
+      "emergencyContact": {
+        "name": "Someone",
+        "relationship": "Friend",
+        "contact": "+94777888877",
+        "_id": "687a87d58e54e80c5080285b"
+      },
+      "scannedDocuments": [
+        [
+          {
+            "date": "2025-07-18T17:43:49.653Z",
+            "tenant": "garzajoshua4",
+            "token": "WCFuoqCkjytwtfvFVAMVU4j8s0k3PJkRkPWxkX0CeFrUScJ58YYGrDResO4VI5_mePrvnjDRlQFkgEY7XNW_adrGmEo7XyDo8ikA-kfM",
+            "files": [
+              {
+                "ageInMinutes": 0,
+                "file": {
+                  "fieldname": "tenantScanedDocuments",
+                  "originalname": "document.pdf",
+                  "mimetype": "application/pdf",
+                  "size": 149890,
+                  "filename": "1752860629119-41850316-document.pdf",
+                  "URL": "http://localhost:3000/lease/LEASEID202507181743487TZO73WHB6V94T6OASM/documents/1752860629119-41850316-document.pdf",
+                  "_id": "687a87d58e54e80c5080285e"
+                },
+                "_id": "687a87d58e54e80c5080285d"
+              }
+            ],
+            "folder": "C:\\Users\\buddh\\OneDrive\\Desktop\\Project\\PropEase\\Code\\back-end\\public\\lease\\LEASEID202507181743487TZO73WHB6V94T6OASM\\documents\\",
+            "_id": "687a87d58e54e80c5080285c"
+          }
+        ]
+      ],
+      "_id": "687a87d58e54e80c50802854"
+    },
+    "coTenant": {
+      "fullName": "Goto",
+      "email": "goto1234@gmail.com",
+      "phoneNumber": "777444777",
+      "phoneCode": "+94",
+      "gender": "male",
+      "nicOrPassport": "878985123v",
+      "age": 45,
+      "relationship": "Friend",
+      "_id": "687a87d58e54e80c5080285f"
+    },
+    "propertyID": "bca7a812-a851-4c92-a9da-084d01c3211d",
+    "leaseAgreement": {
+      "startDate": "2025-07-18T17:37:52.480Z",
+      "endDate": "2026-07-17T18:30:00.000Z",
+      "durationMonths": 12,
+      "monthlyRent": 700000,
+      "currency": {
+        "flags": {
+          "png": "https://flagcdn.com/w320/lk.png",
+          "svg": "https://flagcdn.com/lk.svg",
+          "alt": "The flag of Sri Lanka features two large adjacent but separate rectangular areas, centered on a golden-yellow field. The smaller hoist-side rectangle is divided into two equal vertical bands of teal and orange, and the larger fly-side rectangle is maroon with a centered golden-yellow lion holding a Kastane sword in its right fore-paw and four golden-yellow Bo leaves, one in each corner."
+        },
+        "country": "Sri Lanka",
+        "symbol": "Rs  රු",
+        "currency": "LKR",
+        "_id": "687a87d58e54e80c50802867"
+      },
+      "paymentFrequency": {
+        "id": "monthly",
+        "name": "Monthly",
+        "duration": "P1M",
+        "unit": "month",
+        "_id": "687a87d58e54e80c50802868"
+      },
+      "paymentMethod": {
+        "id": "handcash",
+        "name": "Cash (In Person)",
+        "category": "cash",
+        "region": "Local",
+        "supported": false,
+        "description": "Direct cash payment to landlord or office",
+        "_id": "687a87d58e54e80c50802869"
+      },
+      "securityDeposit": {
+        "id": "two-months",
+        "name": "Two Months Deposit",
+        "description": "Two Months Deposit deposit (refundable).",
+        "refundable": true,
+        "_id": "687a87d58e54e80c5080286a"
+      },
+      "rentDueDate": {
+        "id": "mid-month",
+        "label": "15th of Every Month",
+        "day": 15,
+        "offsetDays": 0,
+        "description": "Rent is due on the 15th of each month.",
+        "_id": "687a87d58e54e80c5080286b"
+      },
+      "latePaymentPenalties": [
+        {
+          "label": "Fixed Fee - LKR 100",
+          "type": "Fixed Fee",
+          "value": 100,
+          "description": "A fixed penalty of 100 will be charged for any late payment, regardless of the amount or duration.",
+          "isEditable": false,
+          "_id": "687a87d58e54e80c5080286c"
+        }
+      ],
+      "utilityResponsibilities": [
+        {
+          "id": "Electricity-Tenant-2025-07-18T17:42:36.944Z",
+          "utility": "Electricity",
+          "paidBy": "tenant",
+          "description": "Electricity has to pay by Tenant",
+          "isEditable": false,
+          "_id": "687a87d58e54e80c5080286d"
+        },
+        {
+          "id": "Water-Tenant-2025-07-18T17:42:41.504Z",
+          "utility": "Water",
+          "paidBy": "tenant",
+          "description": "Water has to pay by Tenant",
+          "isEditable": false,
+          "_id": "687a87d58e54e80c5080286e"
+        }
+      ],
+      "noticePeriodDays": {
+        "id": "14-days",
+        "label": "14 Days Notice",
+        "days": 14,
+        "description": "Either party must give at least 14 days’ written notice before ending the lease.",
+        "_id": "687a87d58e54e80c5080286f"
+      },
+      "_id": "687a87d58e54e80c50802866"
+    },
+    "rulesAndRegulations": [
+      {
+        "rule": "No Unauthorized Alterations",
+        "description": "The tenant shall not make any structural changes, paint, or install fixtures without prior written consent from the landlord.",
+        "_id": "687a87d58e54e80c50802870"
+      },
+      {
+        "rule": "Noise and Disturbance",
+        "description": "The tenant shall not cause or permit any nuisance or disturbance that interferes with the peaceful enjoyment of neighbors or other tenants.",
+        "_id": "687a87d58e54e80c50802871"
+      }
+    ],
+    "isReadTheCompanyPolicy": true,
+    "signatures": {
+      "tenantSignature": {
+        "fieldname": "tenantSignature",
+        "originalname": "signature.png",
+        "mimetype": "image/png",
+        "size": 12915,
+        "filename": "1752860629127-140903793-signature.png",
+        "URL": "http://localhost:3000/lease/LEASEID202507181743487TZO73WHB6V94T6OASM/signatures/tenant/1752860629127-140903793-signature.png",
+        "_id": "687a87d58e54e80c50802875"
+      },
+      "landlordSignature": {
+        "fieldname": "landlordSignature",
+        "originalname": "signature.png",
+        "mimetype": "image/png",
+        "size": 17218,
+        "filename": "1752860629539-767830481-signature.png",
+        "URL": "http://localhost:3000/lease/LEASEID202507181743487TZO73WHB6V94T6OASM/signatures/landlord/1752860629539-767830481-signature.png",
+        "_id": "687a87d58e54e80c50802876"
+      },
+      "signedAt": "2025-07-18T17:37:52.480Z",
+      "ipAddress": "127.0.0.1",
+      "userAgent": {
+        "username": "Atapattu",
+        "name": "Buddhika Lahiru Atapattu",
+        "email": "atapattu.buddhika@gmail.com",
+        "role": "admin",
+        "addedAt": "2025-07-18T17:37:52.480Z",
+        "_id": "687a87d58e54e80c50802877"
+      },
+      "_id": "687a87d58e54e80c50802874"
+    },
+    "systemMetadata": {
+      "ocrAutoFillStatus": false,
+      "validationStatus": "active",
+      "language": "en",
+      "leaseTemplateVersion": "1.0.0",
+      "lastUpdated": "2025-07-18T17:43:55.507Z",
+      "_id": "687a87d58e54e80c50802878"
+    },
+    "createdAt": "2025-07-18T17:43:49.712Z",
+    "updatedAt": "2025-07-18T17:43:55.508Z",
+    "__v": 0
+  }
+]

@@ -1,0 +1,18 @@
+[
+  {
+    "today": "2025-07-18",
+    "data": {
+      "_id": "687a861f8e54e80c50801c6e",
+      "username": "garzajoshua4",
+      "image": "https://randomuser.me/api/portraits/women/75.jpg",
+      "name": "Cassandra Neal",
+      "contactNumber": "+94777999786",
+      "email": "user5@example.com",
+      "gender": "female",
+      "addedBy": "Atapattu",
+      "createdAt": "2025-07-18T17:36:31.809Z",
+      "updatedAt": "2025-07-18T17:36:31.809Z",
+      "__v": 0
+    }
+  }
+]

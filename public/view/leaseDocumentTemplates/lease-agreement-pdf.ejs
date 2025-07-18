@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Lease Agreement - <%= data.leaseID %></title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
+    />
+    <style>
+      @page {
+        size: A4 portrait;
+        margin-top: 150px;
+        margin-bottom: 150px;
+        margin-left: 60px;
+        margin-right: 60px;
+        marks: crop;
+        bleed: 5mm;
+      }
+
+      html,
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        font-size: 12px;
+        background: #ffffff;
+        color: #1a237e;
+        margin: 0;
+      }
+
+      .container-content {
+        margin-top: 150px; /* header height + margin */
+        margin-bottom: 150px; /* footer height + margin */
+      }
+      h1 {
+        color: #0d47a1;
+        font-size: 28px;
+        margin-bottom: 10px;
+        page-break-after: avoid;
+        break-after: avoid;
+        text-transform: capitalize;
+      }
+      h2 {
+        background-color: #00134d;
+        color: white;
+        padding: 10px 15px;
+        border-bottom: 2px solid #ffd700;
+        padding-bottom: 5px;
+        margin-top: 30px;
+        margin-bottom: 15px;
+        border-radius: 2px;
+        page-break-after: avoid;
+        break-after: avoid;
+        text-transform: capitalize;
+      }
+      .section {
+        background: #ffffff;
+        padding: 20px;
+        border-radius: 20px;
+        box-shadow: 0px 2px 10px 0px rgba(0, 0, 0, 0.038);
+        margin-bottom: 25px;
+        flex-wrap: wrap;
+      }
+      .label {
+        font-weight: 600;
+        color: #0d47a1;
+        text-transform: capitalize;
+      }
+      .map-container iframe {
+        width: 100%;
+        height: 300px;
+        border: 2px solid #ffd700;
+        border-radius: 6px;
+      }
+      .images img {
+        max-width: 100px;
+        margin: 5px;
+        border-radius: 6px;
+        border: 1px solid #ccc;
+      }
+      .signature {
+        height: 60px;
+        border-radius: 4px;
+        margin-top: 5px;
+      }
+      .badge {
+        display: inline-block;
+        padding: 3px 10px;
+        background: #ffd700;
+        color: #0d47a1;
+        font-size: 11px;
+        border-radius: 4px;
+      }
+
+      .last-page-wrapper {
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        height: fit-content;
+        margin-top: auto; /* or 100% depending on context */
+      }
+
+      .last-page-content {
+        margin-top: auto;
+      }
+      .avoid-page-break {
+        break-inside: avoid;
+        page-break-inside: avoid;
+        /* These help reinforce the rule in different engines */
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container-fluid p-1">
+      <div style="page: contentPage">
+        <!-- LeaseID -->
+        <% if(data.leaseID){%>
+        <div class="row avoid-page-break">
+          <div class="col-12">
+            <div class="section">
+              <h4 class="text-center badge">Lease ID: <%= data.leaseID %></h4>
+            </div>
+          </div>
+        </div>
+        <%}%>
+        <!-- End LeaseID -->
+
+        <!-- Tenant Information -->
+        <% if(data.tenantInformation){%>
+        <div class="row avoid-page-break">
+          <div class="col-12">
+            <div class="section">
+              <h2>Tenant Details</h2>
+              <div class="row">
+                <div class="col-md-6">
+                  <p>
+                    <span class="label">Full Name:</span> <%=
+                    data.tenantInformation.fullName %>
+                  </p>
+                  <p>
+                    <span class="label">NIC/Passport:</span> <%=
+                    data.tenantInformation.nicOrPassport %>
+                  </p>
+                  <p>
+                    <span class="label">Gender:</span> <%=
+                    data.tenantInformation.gender %>
+                  </p>
+                  <p>
+                    <span class="label">Nationality:</span> <%=
+                    data.tenantInformation.nationality %>
+                  </p>
+                  <p>
+                    <span class="label">DOB:</span> <%=
+                    data.tenantInformation.dateOfBirth %>
+                  </p>
+                </div>
+                <div class="col-md-6">
+                  <p>
+                    <span class="label">Phone:</span> <%=
+                    data.tenantInformation.phoneCodeDetails.code + ' ' +
+                    data.tenantInformation.phoneNumber %>
+                  </p>
+                  <p>
+                    <span class="label">Email:</span> <%=
+                    data.tenantInformation.email %>
+                  </p>
+                  <p>
+                    <span class="label">Address:</span> <%=
+                    data.tenantInformation.permanentAddress.houseNumber %>, <%=
+                    data.tenantInformation.permanentAddress.street %>, <%=
+                    data.tenantInformation.permanentAddress.city %>, <%=
+                    data.tenantInformation.permanentAddress.stateOrProvince %>,
+                    <%= data.tenantInformation.permanentAddress.country.name %>
+                    - <%= data.tenantInformation.permanentAddress.postalCode %>
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <%}%>
+        <!-- End Tenant Information -->
+
+        <!-- Co-Tenant Information -->
+        <% if(data.coTenant){%>
+        <div class="row avoid-page-break">
+          <div class="col-12">
+            <div class="section">
+              <h2>Co-Tenant</h2>
+              <div class="row">
+                <div class="col-md-6">
+                  <% if(data.coTenant.fullName){%>
+                  <p>
+                    <span class="label">Name:</span> <%= data.coTenant.fullName
+                    %>
+                  </p>
+                  <%}%> <% if(data.coTenant.email){%>
+                  <p>
+                    <span class="label">Email:</span> <%= data.coTenant.email %>
+                  </p>
+                  <%}%> <% if(data.coTenant.phoneCodeDetails){%>
+                  <p>
+                    <span class="label">Phone:</span> <%=
+                    data.coTenant.phoneCode + ' ' + data.coTenant.phoneNumber %>
+                  </p>
+                  <%}%>
+                </div>
+                <div class="col-md-6">
+                  <% if(data.coTenant.nicOrPassport){%>
+                  <p>
+                    <span class="label">NIC/Passport:</span> <%=
+                    data.coTenant.nicOrPassport %>
+                  </p>
+                  <%}%> <% if(data.coTenant.relationship){%>
+                  <p>
+                    <span class="label">Relationship:</span> <%=
+                    data.coTenant.relationship %>
+                  </p>
+                  <%}%>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <%}%>
+        <!-- End Co-Tenant Information -->
+
+        <!-- Lease Agreement -->
+        <% if(data.leaseAgreement){%>
+        <div class="row">
+          <div class="col-12">
+            <div class="section">
+              <h2>Lease Agreement</h2>
+              <ul class="list-group list-group-flush">
+                <li class="list-group-item">
+                  <p>
+                    <span class="label">Start Date:</span> <%=
+                    data.leaseAgreement.startDate %>
+                  </p>
+                </li>
+                <li class="list-group-item">
+                  <p>
+                    <span class="label">End Date:</span> <%=
+                    data.leaseAgreement.endDate %>
+                  </p>
+                </li>
+                <li class="list-group-item">
+                  <p>
+                    <span class="label">Monthly Rent:</span> <%=
+                    data.leaseAgreement.monthlyRent %> <%=
+                    data.leaseAgreement.currency.currency %>
+                  </p>
+                </li>
+                <li class="list-group-item">
+                  <p>
+                    <span class="label">Payment Frequency:</span> <%=
+                    data.leaseAgreement.paymentFrequency.name %>
+                  </p>
+                  <p class="mt-2">
+                    <%if (data.leaseAgreement.paymentFrequency.unit &&
+                    data.leaseAgreement.paymentFrequency.duration) {%>
+                    <span class="label">Unit:</span> <%=
+                    data.leaseAgreement.paymentFrequency.unit %><br />
+                    <span class="label">Duration:</span>
+                    <%=data.leaseAgreement.paymentFrequency.duration %> <%}%>
+                  </p>
+                </li>
+                <li class="list-group-item">
+                  <p>
+                    <span class="label">Payment Method:</span> <%=
+                    data.leaseAgreement.paymentMethod.name %>
+                  </p>
+                  <p class="mt-2">
+                    <%if (data.leaseAgreement.paymentMethod.description) {%>
+                    <span class="label">Description:<br /></span> <%=
+                    data.leaseAgreement.paymentMethod.description %> <%}%>
+                  </p>
+                </li>
+                <li class="list-group-item">
+                  <p>
+                    <span class="label">Security Deposit:</span> <%=
+                    data.leaseAgreement.securityDeposit.name %>
+                  </p>
+                  <p class="mt-2">
+                    <%if (data.leaseAgreement.securityDeposit.description) {%>
+                    <span class="label">Description:<br /></span> <%=
+                    data.leaseAgreement.securityDeposit.description %> <%}%>
+                  </p>
+                </li>
+                <li class="list-group-item">
+                  <p>
+                    <span class="label">Rent Deu Date:</span> <%=
+                    data.leaseAgreement.rentDueDate.label %>
+                  </p>
+                  <p class="mt-2">
+                    <%if (data.leaseAgreement.rentDueDate.description) {%>
+                    <span class="label">Description:<br /></span> <%=
+                    data.leaseAgreement.rentDueDate.description %> <%}%>
+                  </p>
+                </li>
+                <li class="list-group-item">
+                  <p>
+                    <span class="label">Notice Period:</span> <%=
+                    data.leaseAgreement.noticePeriodDays.label %>
+                  </p>
+                  <p class="mt-2">
+                    <%if (data.leaseAgreement.noticePeriodDays.description) {%>
+                    <span class="label">Description:<br /></span> <%=
+                    data.leaseAgreement.noticePeriodDays.description %> <%}%>
+                  </p>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        <%}%>
+        <!-- End Lease Agreement -->
+
+        <!-- Lease Terms -->
+        <% if(data.leaseAgreement.latePaymentPenalties.length > 0){%>
+        <div class="row">
+          <div class="col-12">
+            <div class="section">
+              <h2>Late Payment Penalties</h2>
+              <ul class="list-group list-group-flush">
+                <%for(let i = 0; i <
+                data.leaseAgreement.latePaymentPenalties.length; i++) {%>
+                <li class="list-group-item">
+                  <p class="mt-2">
+                    <span class="label">Late Payment Penalty:</span> <%=
+                    data.leaseAgreement.latePaymentPenalties[i].type %> - <%=
+                    data.leaseAgreement.latePaymentPenalties[i].value %>
+                  </p>
+                  <p class="mt-2">
+                    <%if
+                    (data.leaseAgreement.latePaymentPenalties[i].description)
+                    {%> <span class="label">Description:<br /></span> <%=
+                    data.leaseAgreement.latePaymentPenalties[i].description %>
+                    <%}%>
+                  </p>
+                </li>
+                <%}%>
+              </ul>
+            </div>
+          </div>
+        </div>
+        <%}%>
+        <!-- End Lease Terms -->
+
+        <!-- Rules and Regulations -->
+        <% if(data.rulesAndRegulations.length > 0){%>
+        <div class="row">
+          <div class="col-12">
+            <div class="section">
+              <h2>Rules and Regulations</h2>
+              <ol style="padding-left: 20px">
+                <% for (let i = 0; i < data.rulesAndRegulations.length; i++) {
+                %>
+                <li style="margin-bottom: 15px">
+                  <p class="mt-2">
+                    <span class="label">Rule:</span>
+                    <%= data.rulesAndRegulations[i].rule %>
+                  </p>
+                  <% if (data.rulesAndRegulations[i].description) { %>
+                  <p class="mt-2">
+                    <span class="label">Description:</span><br />
+                    <%= data.rulesAndRegulations[i].description %>
+                  </p>
+                  <% } %>
+                </li>
+                <% } %>
+              </ol>
+            </div>
+          </div>
+        </div>
+        <% } %>
+        <!-- End Rules and Regulations -->
+
+        <!-- Emergency Contact -->
+        <% if(data.tenantInformation.emergencyContact){%>
+        <div class="row">
+          <div class="col-12">
+            <div class="section avoid-page-break">
+              <h2>Emergency Contact</h2>
+              <p>
+                <span class="label">Name:</span> <%=
+                data.tenantInformation.emergencyContact.name %>
+              </p>
+              <p>
+                <span class="label">Relationship:</span> <%=
+                data.tenantInformation.emergencyContact.relationship %>
+              </p>
+              <p>
+                <span class="label">Contact:</span> <%=
+                data.tenantInformation.emergencyContact.contact %>
+              </p>
+            </div>
+          </div>
+        </div>
+        <% } %>
+        <!-- End Emergency Contact -->
+
+        <!-- Property Details -->
+        <% if(data.property){%>
+        <div class="row avoid-page-break">
+          <div class="col-12">
+            <div class="section">
+              <h2>Property Details</h2>
+              <p>
+                <span class="label">Title:</span> <%= data.property.title %>
+              </p>
+              <p><span class="label">Type:</span> <%= data.property.type %></p>
+              <p>
+                <span class="label">Property ID:</span> <%= data.property.id %>
+              </p>
+              <p>
+                <span class="label">Location:</span> <%=
+                data.property.address.street %>, <%= data.property.address.city
+                %>, <%= data.property.address.stateOrProvince %>
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="row avoid-page-break">
+          <div class="col-12">
+            <div class="section">
+              <div style="width: 100%; margin-bottom: 20px">
+                <h2>Property Location In Google Map</h2>
+                <div
+                  style="
+                    width: 100%;
+                    height: 100%;
+                    border: none;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    flex-wrap: wrap;
+                    border-radius: 2rem;
+                  "
+                >
+                  <img
+                    src="<%= data.property.location?.embeddedUrl %>"
+                    alt="Property Location Map"
+                    style="
+                      width: 100%;
+                      min-height: 200px;
+                      height: 100%;
+                      max-height: auto;
+                      border: none;
+                      display: flex;
+                      align-items: center;
+                      justify-content: center;
+                      flex-wrap: wrap;
+                    "
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="row avoid-page-break">
+          <div class="col-12">
+            <div class="section">
+              <h2>Property Images</h2>
+              <div class="images">
+                <% data.property.images.slice(0, 5).forEach(img => { %>
+                <img src="<%= img.imageURL %>" alt="Property Image" />
+                <% }) %>
+              </div>
+            </div>
+          </div>
+        </div>
+        <% } %>
+        <!-- End Property Details -->
+
+        <!-- Company Policies -->
+        <div class="row">
+          <div class="col-12">
+            <div class="section">
+              <div class="company-policy">
+                <h2>PropEase – Company Policies</h2>
+
+                <ol>
+                  <li>
+                    <strong>Professional Conduct</strong>
+                    <p>
+                      All PropEase employees, partners, tenants, and landlords
+                      are expected to maintain professional behavior and
+                      communicate respectfully. Discrimination, harassment, or
+                      abusive language of any kind will not be tolerated.
+                    </p>
+                  </li>
+                  <li>
+                    <strong>Fair Housing Compliance</strong>
+                    <p>
+                      PropEase is committed to upholding equal opportunity
+                      housing practices. We strictly follow all local and
+                      international housing laws and do not discriminate based
+                      on race, religion, gender, age, marital status,
+                      disability, or nationality.
+                    </p>
+                  </li>
+                  <li>
+                    <strong>Tenant Screening & Verification</strong>
+                    <p>
+                      All prospective tenants will undergo standard
+                      verification, including background, credit, employment,
+                      and reference checks to ensure a secure and trustworthy
+                      rental environment for all parties.
+                    </p>
+                  </li>
+                  <li>
+                    <strong>Property Maintenance Policy</strong>
+                    <p>
+                      Landlords are responsible for major property repairs,
+                      while tenants must handle basic cleanliness and minor
+                      upkeep. Emergency repairs must be reported immediately via
+                      the PropEase platform or hotline.
+                    </p>
+                  </li>
+                  <li>
+                    <strong>Late Payment & Penalties</strong>
+                    <p>
+                      Rent is due on the specified date in the lease agreement.
+                      Late payments may incur a penalty fee based on predefined
+                      lease terms. Continuous defaults may lead to legal action
+                      or lease termination.
+                    </p>
+                  </li>
+                  <li>
+                    <strong>Use of Premises</strong>
+                    <p>
+                      Properties listed through PropEase must be used for
+                      residential or commercial purposes only, as stated in the
+                      lease. Illegal activities or unauthorized subletting are
+                      grounds for immediate action.
+                    </p>
+                  </li>
+                  <li>
+                    <strong>Privacy & Data Protection</strong>
+                    <p>
+                      PropEase values user privacy. All data shared on our
+                      platform is protected under our privacy policy and will
+                      not be shared without consent, except where legally
+                      required.
+                    </p>
+                  </li>
+                  <li>
+                    <strong>Inspection & Entry</strong>
+                    <p>
+                      Landlords must provide at least 24 hours' notice before
+                      entering a rented property unless there is an emergency.
+                      Inspections will be documented and scheduled through
+                      PropEase.
+                    </p>
+                  </li>
+                  <li>
+                    <strong>Termination & Eviction Policy</strong>
+                    <p>
+                      Lease termination must follow proper notice periods as
+                      outlined in the lease. In case of violations (e.g., unpaid
+                      rent, property damage), PropEase reserves the right to
+                      initiate legal eviction processes in accordance with
+                      governing laws.
+                    </p>
+                  </li>
+                  <li>
+                    <strong>Customer Support</strong>
+                    <p>
+                      Our support team is available 24/7 to address complaints,
+                      resolve disputes, and ensure fair practices are upheld.
+                      Users can contact us via the PropEase platform, email, or
+                      hotline.
+                    </p>
+                  </li>
+                </ol>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Last Page Signatures Section (Starts from Bottom) -->
+        <div class="last-page-wrapper" class="last-page-wrapper">
+          <div class="last-page-content">
+            <div class="row avoid-page-break">
+              <div class="col-12">
+                <div class="section">
+                  <h2>Signatures</h2>
+                  <div class="row">
+                    <div
+                      class="col-md-6 d-flex justify-content-start align-items-center position-relative"
+                    >
+                      <div class="d-block">
+                        <p><span class="label">Tenant Signature:</span></p>
+                        <img
+                          class="signature"
+                          src="<%= data.signatures.tenantSignature.URL %>"
+                          alt="Tenant Signature"
+                        />
+                      </div>
+                    </div>
+                    <div
+                      class="col-md-6 d-flex justify-content-end align-items-center position-relative"
+                    >
+                      <div class="d-block">
+                        <p><span class="label">Landlord Signature:</span></p>
+                        <img
+                          class="signature landlord-signature"
+                          src="<%= data.signatures.landlordSignature.URL %>"
+                          alt="Landlord Signature"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="row avoid-page-break">
+              <div class="col-12">
+                <div class="section">
+                  <p>
+                    <span class="label">Signed At:</span> <%=
+                    data.signatures.signedAt %>
+                  </p>
+                  <p>
+                    <span class="label">Agent who assigned:</span> <%=
+                    data.signatures.userAgent.name %> (<%=
+                    data.signatures.userAgent.email %>)
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- End Last Page Signatures Section (Starts from Bottom) -->
+      </div>
+    </div>
+  </body>
+</html>

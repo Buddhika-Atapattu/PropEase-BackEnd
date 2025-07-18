@@ -33,7 +33,7 @@ dotenv.config();
 
 export default class UserRoute {
   private router: express.Router;
-  constructor() {
+  constructor () {
     this.router = express.Router();
     this.createUser();
     this.getAllUsers();
@@ -58,8 +58,8 @@ export default class UserRoute {
 
   //<=========== HASH THE PASSWORD WITH ARGON2 ============>
 
-  public async hashPassword(password: string): Promise<string> {
-    return await Argon2.hash(password);
+  public async hashPassword( password: string ): Promise<string> {
+    return await Argon2.hash( password );
   }
 
   //<====== VERIFY THE LOGIN USER ============>
@@ -67,18 +67,18 @@ export default class UserRoute {
   private getUserData() {
     this.router.post(
       "/verify-user",
-      async (req: Request, res: Response, next: NextFunction) => {
+      async ( req: Request, res: Response, next: NextFunction ) => {
         try {
-          const user: IUser | null = await UserModel.findOne({
+          const user: IUser | null = await UserModel.findOne( {
             username: req.body.username,
-          });
+          } );
 
-          if (user !== null) {
+          if ( user !== null ) {
             const isPasswordValid = await Argon2.verify(
               user.password,
               req.body.password
             );
-            if (isPasswordValid) {
+            if ( isPasswordValid ) {
               const plainUser = user.toObject ? user.toObject() : user; // fallback if toObject() doesn't exist
               const { password, ...userWithoutPassword } = plainUser;
               const respondData: MSG = {
@@ -86,18 +86,18 @@ export default class UserRoute {
                 message: 'User verified successfully!',
                 data: userWithoutPassword
               }
-              res.status(200).json(respondData);
+              res.status( 200 ).json( respondData );
             } else {
-              res.status(401).json({ error: "Invalid password" });
+              res.status( 401 ).json( { error: "Invalid password" } );
             }
           } else {
-            res.status(401).json({ error: "Invalid username" });
+            res.status( 401 ).json( { error: "Invalid username" } );
           }
-        } catch (error) {
+        } catch ( error ) {
           res
-            .status(500)
-            .json({ error: "Error getting user data", details: error });
-          next(error);
+            .status( 500 )
+            .json( { error: "Error getting user data", details: error } );
+          next( error );
         }
       }
     );
@@ -108,21 +108,21 @@ export default class UserRoute {
   private getAllUsersWithPagination() {
     this.router.get(
       "/users-with-pagination/:start/:limit",
-      async (req: Request, res: Response, next: NextFunction) => {
+      async ( req: Request, res: Response, next: NextFunction ) => {
         try {
-          const start = parseInt(req.params.start as string) || 0;
-          const limit = parseInt(req.params.limit as string) || 10;
-          const search = (req.query.search as string)?.trim() || "";
+          const start = parseInt( req.params.start as string ) || 0;
+          const limit = parseInt( req.params.limit as string ) || 10;
+          const search = ( req.query.search as string )?.trim() || "";
 
-          const safeStart = Math.max(0, start);
-          const safeLimit = Math.max(1, limit);
+          const safeStart = Math.max( 0, start );
+          const safeLimit = Math.max( 1, limit );
 
           const searchArray = search.trim(); // Split and remove extra spaces
 
           let nameFilter: any = {};
 
           nameFilter = {
-            $or: [{ name: { $regex: searchArray, $options: "i" } }],
+            $or: [ { name: { $regex: searchArray, $options: "i" } } ],
           };
 
           const searchFilter = search
@@ -135,25 +135,25 @@ export default class UserRoute {
             }
             : {};
 
-          const userCount = await UserModel.countDocuments(searchFilter);
-          const users = await UserModel.find(searchFilter)
-            .sort({ createdAt: -1 })
-            .skip(safeStart)
-            .limit(safeLimit)
+          const userCount = await UserModel.countDocuments( searchFilter );
+          const users = await UserModel.find( searchFilter )
+            .sort( { createdAt: -1 } )
+            .skip( safeStart )
+            .limit( safeLimit )
             .lean();
 
           const data = {
             count: userCount,
             start: safeStart,
-            end: Math.min(safeStart + safeLimit, userCount),
+            end: Math.min( safeStart + safeLimit, userCount ),
             limit: safeLimit,
             data: users,
           };
 
-          res.status(200).json(data);
-        } catch (error) {
-          console.error("Pagination error:", error);
-          res.status(500).json({ message: "Internal server error: " + error });
+          res.status( 200 ).json( data );
+        } catch ( error ) {
+          console.error( "Pagination error:", error );
+          res.status( 500 ).json( { message: "Internal server error: " + error } );
         }
       }
     );
@@ -162,7 +162,7 @@ export default class UserRoute {
   //<=========== GET ALL USERS ==========>
 
   private getAllUsers() {
-    this.router.get("/users", async (req: Request, res: Response) => {
+    this.router.get( "/users", async ( req: Request, res: Response ) => {
       try {
         const users = await UserModel.find(
           {},
@@ -173,15 +173,15 @@ export default class UserRoute {
             sort: { createdAt: -1 },
           }
         );
-        if (users.length === 0) {
-          throw new Error("No users found");
+        if ( users.length === 0 ) {
+          throw new Error( "No users found" );
         } else {
-          res.status(201).json(users);
+          res.status( 201 ).json( users );
         }
-      } catch (error) {
-        res.status(500).json({ error: `Failed to fetch users: ${error}` });
+      } catch ( error ) {
+        res.status( 500 ).json( { error: `Failed to fetch users: ${ error }` } );
       }
-    });
+    } );
   }
 
   //<========== VERIFY NEW USER EMAIL ==========>
@@ -189,30 +189,30 @@ export default class UserRoute {
   private verifyNewUserEmail() {
     this.router.get(
       "/emailverifycation/:token",
-      async (req: Request<{ token: string }>, res: Response) => {
+      async ( req: Request<{ token: string }>, res: Response ) => {
         const token = req.params.token;
 
-        const user = await UserModel.findOne({
+        const user = await UserModel.findOne( {
           emailVerificationToken: token,
           emailVerificationTokenExpires: { $gt: new Date() },
-        });
+        } );
 
-        if (user) {
+        if ( user ) {
           user.emailVerified = true;
           user.emailVerificationToken = undefined;
           user.emailVerificationTokenExpires = undefined;
           user.autoDelete = false;
 
           await user.save();
-          res.redirect("https://localhost:4200/login");
+          res.redirect( "https://localhost:4200/login" );
         } else {
           res
-            .status(400)
+            .status( 400 )
             .sendFile(
-              path.join(__dirname, "../../public/error/emailExpire.html"),
-              (error) => {
-                if (error) {
-                  console.log(error);
+              path.join( __dirname, "../../public/error/emailExpire.html" ),
+              ( error ) => {
+                if ( error ) {
+                  console.log( error );
                 }
               }
             );
@@ -229,7 +229,7 @@ export default class UserRoute {
     token: string
   ): Promise<boolean> {
 
-    const verifyLink = `http://localhost:3000/api-user/emailverifycation/${token}`;
+    const verifyLink = `http://localhost:3000/api-user/emailverifycation/${ token }`;
     const html = `
   <div style="max-width: 600px; margin: auto; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; font-family: Arial, sans-serif;">
     <h2 style="text-align: center; color: #007bff;">Verify Your Email Address</h2>
@@ -240,7 +240,7 @@ export default class UserRoute {
       Thank you for registering with us. To complete your sign-up and activate your account, please verify your email address by clicking the button below:
     </p>
     <div style="text-align: center; margin: 30px 0;">
-      <a href="${verifyLink}" style="background-color: #007bff; color: white; padding: 12px 24px; text-decoration: none; font-size: 16px; border-radius: 5px; display: inline-block;">
+      <a href="${ verifyLink }" style="background-color: #007bff; color: white; padding: 12px 24px; text-decoration: none; font-size: 16px; border-radius: 5px; display: inline-block;">
         Verify Email
       </a>
     </div>
@@ -248,7 +248,7 @@ export default class UserRoute {
       If the button above does not work, copy and paste the following link into your browser:
     </p>
     <p style="font-size: 14px; word-break: break-word; color: #555;">
-      ${verifyLink}
+      ${ verifyLink }
     </p>
     <hr style="margin: 30px 0; border: none; border-top: 1px solid #eee;" />
     <p style="font-size: 12px; color: #999; text-align: center;">
@@ -257,22 +257,22 @@ export default class UserRoute {
   </div>
 `;
 
-    const transporter = nodemailer.createTransport({
+    const transporter = nodemailer.createTransport( {
       service: "gmail", // or SMTP details
       auth: {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS,
       },
-    });
+    } );
 
-    const sendmail = await transporter.sendMail({
+    const sendmail = await transporter.sendMail( {
       from: '"PropEase Real Estate" <no-reply@propease.com>',
       to: userEmail,
       subject: "Verify Your Email",
       html: html,
-    });
+    } );
 
-    if (sendmail) {
+    if ( sendmail ) {
       return true;
     } else {
       return false;
@@ -283,21 +283,21 @@ export default class UserRoute {
 
   //<========== PHONE NUMBER VERIFICATION *USE THIS FOR ONLY IN THE PRODUCTION* ==========>
 
-  private async verifyPhoneNumber(to: string, otp: string) {
+  private async verifyPhoneNumber( to: string, otp: string ) {
     const accountSid = process.env.TWILIO_ACCOUNT_SID;
     const authToken = process.env.TWILIO_ACCOUNT_AUTH_TOKEN;
     const twilioPhone = process.env.TWILIO_ACCOUNT_PHONE_NUMBER;
 
-    const client = twilio(accountSid, authToken);
-    return client.messages.create({
-      body: `Your verification code is: ${otp}`,
+    const client = twilio( accountSid, authToken );
+    return client.messages.create( {
+      body: `Your verification code is: ${ otp }`,
       from: twilioPhone,
       to,
-    });
+    } );
   }
 
   private generateOTP(): string {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+    return Math.floor( 100000 + Math.random() * 900000 ).toString();
   }
 
   //<========== END PHONE NUMBER VERIFICATION ==========>
@@ -314,31 +314,31 @@ export default class UserRoute {
       "image/ico",
     ];
 
-    const upload = multer({
+    const upload = multer( {
       storage,
-      fileFilter: (req, file, cb) => {
-        if (allowedTypes.includes(file.mimetype)) {
-          cb(null, true);
+      fileFilter: ( req, file, cb ) => {
+        if ( allowedTypes.includes( file.mimetype ) ) {
+          cb( null, true );
         } else {
-          cb(new Error("Only image files are allowed"));
+          cb( new Error( "Only image files are allowed" ) );
         }
       },
-    });
+    } );
     this.router.post(
       "/create-user",
-      upload.fields([{ name: "userimage", maxCount: 1 }]),
-      async (req: Request, res: Response, next: NextFunction) => {
+      upload.fields( [ { name: "userimage", maxCount: 1 } ] ),
+      async ( req: Request, res: Response, next: NextFunction ) => {
         try {
           const files = req.files as {
-            [fieldname: string]: Express.Multer.File[];
+            [ fieldname: string ]: Express.Multer.File[];
           };
 
-          const image = files?.userimage?.[0];
+          const image = files?.userimage?.[ 0 ];
           const username = req.body.username;
 
-          if (!username) throw new Error("Invalid username");
+          if ( !username ) throw new Error( "Invalid username" );
 
-          if (image) {
+          if ( image ) {
             // Create user-specific directory
             const userDir = path.join(
               __dirname,
@@ -347,47 +347,47 @@ export default class UserRoute {
             );
 
             //Define the image path
-            const imagePath = path.join(userDir, "image.webp");
-            fs.mkdirSync(userDir, { recursive: true });
+            const imagePath = path.join( userDir, "image.webp" );
+            fs.mkdirSync( userDir, { recursive: true } );
 
             // Convert and save image as .webp
-            const imagetoWebp = await sharp(image.buffer)
-              .webp({ quality: 80 })
-              .toFile(imagePath);
+            const imagetoWebp = await sharp( image.buffer )
+              .webp( { quality: 80 } )
+              .toFile( imagePath );
 
             //Checking the image is converted and stored
-            if (imagetoWebp) {
+            if ( imagetoWebp ) {
               //Define the local Variables
-              const host = req.get("host");
+              const host = req.get( "host" );
               const protocol = req.protocol;
-              const baseUrl = `${protocol}://${host}`;
-              const verifyEmail = JSON.parse(req.body.verifyEmail);
+              const baseUrl = `${ protocol }://${ host }`;
+              const verifyEmail = JSON.parse( req.body.verifyEmail );
               const token = verifyEmail.token;
-              const verifyDate = new Date(verifyEmail.expires);
+              const verifyDate = new Date( verifyEmail.expires );
               const otp = this.generateOTP();
-              const otpValidTimeJson = JSON.parse(req.body.otpValidTime);
+              const otpValidTimeJson = JSON.parse( req.body.otpValidTime );
               const otpValidTime = otpValidTimeJson.otpValidTime;
               const email = req.body.email.trim();
               const phone = req.body.phoneNumber.trim();
-              const publicPath = `${baseUrl}/users/${username}/image.webp`;
+              const publicPath = `${ baseUrl }/users/${ username }/image.webp`;
               const pass = req.body.userPassword.trim();
-              if (!pass) throw new Error("Password is required");
+              if ( !pass ) throw new Error( "Password is required" );
 
               //Hashing the password
-              const password = await this.hashPassword(pass);
-              const access = JSON.parse(req.body.access);
+              const password = await this.hashPassword( pass );
+              const access = JSON.parse( req.body.access );
 
               //Calling the method to verify the email
-              if (email) {
+              if ( email ) {
                 const sendEmail = await this.sendVerificationEmail(
                   email,
                   token
                 );
-                if (!sendEmail) {
-                  throw new Error("Failed to send email");
+                if ( !sendEmail ) {
+                  throw new Error( "Failed to send email" );
                 }
               } else {
-                throw new Error("Email is required");
+                throw new Error( "Email is required" );
               }
 
               //Calling the method to verify the phone number *USE THIS ONLY FOR THE PRODUCTION*
@@ -400,9 +400,9 @@ export default class UserRoute {
               //   throw new Error("Contact number is required");
               // }
 
-              if (!phone) throw new Error("Contact number is required");
+              if ( !phone ) throw new Error( "Contact number is required" );
 
-              const newUser = new UserModel({
+              const newUser = new UserModel( {
                 name: req.body.name,
                 username: req.body.username,
                 email: req.body.email,
@@ -431,29 +431,29 @@ export default class UserRoute {
                 creator: req.body.creator,
                 createdAt: new Date(),
                 updatedAt: new Date(),
-              });
+              } );
               const save = await newUser.save();
-              if (save) {
-                res.status(201).json({
+              if ( save ) {
+                res.status( 201 ).json( {
                   status: "success",
                   message: "User created successfully",
                   user: newUser,
-                });
+                } );
               } else {
-                throw new Error("Failed to create user");
+                throw new Error( "Failed to create user" );
               }
             } else {
-              throw new Error("Failed to convert image");
+              throw new Error( "Failed to convert image" );
             }
           } else {
-            throw new Error("Image is required");
+            throw new Error( "Image is required" );
           }
-        } catch (error) {
-          console.error("User creation error:", error);
-          res.status(500).json({
+        } catch ( error ) {
+          console.error( "User creation error:", error );
+          res.status( 500 ).json( {
             status: "error",
             message: "Failed to create user: " + error,
-          });
+          } );
         }
       }
     );
@@ -472,58 +472,58 @@ export default class UserRoute {
       "image/ico",
     ];
 
-    const upload = multer({
+    const upload = multer( {
       storage,
-      fileFilter: (req, file, cb) => {
-        if (allowedTypes.includes(file.mimetype)) {
-          cb(null, true);
+      fileFilter: ( req, file, cb ) => {
+        if ( allowedTypes.includes( file.mimetype ) ) {
+          cb( null, true );
         } else {
-          cb(new Error("Only image files are allowed"));
+          cb( new Error( "Only image files are allowed" ) );
         }
       },
-    });
+    } );
 
     this.router.put(
       "/user-update/:username",
-      upload.fields([{ name: "userimage", maxCount: 1 }]),
-      async (req: Request<{ username: string }>, res: Response) => {
+      upload.fields( [ { name: "userimage", maxCount: 1 } ] ),
+      async ( req: Request<{ username: string }>, res: Response ) => {
         try {
           const username = req.params.username?.trim();
 
-          if (!username) throw new Error("Invalid username");
+          if ( !username ) throw new Error( "Invalid username" );
 
-          const isUserExist = await UserModel.findOne({ username });
+          const isUserExist = await UserModel.findOne( { username } );
 
-          if (!isUserExist) {
-            throw new Error("User not found");
+          if ( !isUserExist ) {
+            throw new Error( "User not found" );
           }
 
           const files = req.files as {
-            [fieldname: string]: Express.Multer.File[];
+            [ fieldname: string ]: Express.Multer.File[];
           };
 
-          const image = files?.userimage?.[0];
+          const image = files?.userimage?.[ 0 ];
 
-          const host = req.get("host");
+          const host = req.get( "host" );
           const protocol = req.protocol;
           let imageUrl: string;
 
-          if (image) {
+          if ( image ) {
             const userDir = path.join(
               __dirname,
-              `../../public/users/${username}`
+              `../../public/users/${ username }`
             );
-            const imagePath = path.join(userDir, "image.webp");
+            const imagePath = path.join( userDir, "image.webp" );
 
-            if (fs.existsSync(userDir)) {
-              fs.rmSync(userDir, { recursive: true, force: true });
+            if ( fs.existsSync( userDir ) ) {
+              fs.rmSync( userDir, { recursive: true, force: true } );
             }
 
-            fs.mkdirSync(userDir, { recursive: true });
+            fs.mkdirSync( userDir, { recursive: true } );
 
-            await sharp(image.buffer).webp({ quality: 80 }).toFile(imagePath);
+            await sharp( image.buffer ).webp( { quality: 80 } ).toFile( imagePath );
 
-            imageUrl = `${protocol}://${host}/users/${username}/image.webp`;
+            imageUrl = `${ protocol }://${ host }/users/${ username }/image.webp`;
           } else {
             imageUrl = req.body.userimage?.trim();
           }
@@ -535,10 +535,10 @@ export default class UserRoute {
           let verifyToken: { token?: string; expires?: string } = {};
           let otpValidTimeJson: { otpValidTime?: string } = {};
 
-          if (oldEmail !== newEmail) {
+          if ( oldEmail !== newEmail ) {
             try {
-              verifyToken = JSON.parse(req.body.otpToken || "{}");
-              otpValidTimeJson = JSON.parse(req.body.otpValidTime || "{}");
+              verifyToken = JSON.parse( req.body.otpToken || "{}" );
+              otpValidTimeJson = JSON.parse( req.body.otpValidTime || "{}" );
             } catch {
               verifyToken = {};
               otpValidTimeJson = {};
@@ -547,7 +547,7 @@ export default class UserRoute {
 
           const pw = req.body.password.trim();
 
-          const access = JSON.parse(req.body.access || "{}");
+          const access = JSON.parse( req.body.access || "{}" );
 
           const data: any = {
             name: req.body.name?.trim(),
@@ -575,22 +575,21 @@ export default class UserRoute {
             updatedAt: new Date(),
           };
 
-          if (pw) {
-            data.password = await this.hashPassword(pw);
+          if ( pw ) {
+            data.password = await this.hashPassword( pw );
           }
 
-          console.log(data);
 
           // Append token & time if email was changed
-          if (oldEmail !== newEmail) {
-            Object.assign(data, {
+          if ( oldEmail !== newEmail ) {
+            Object.assign( data, {
               otpToken: verifyToken?.token,
               otpValidTime: otpValidTimeJson?.otpValidTime,
               emailVerificationToken: verifyToken?.token,
               emailVerificationTokenExpires: verifyToken?.expires
-                ? new Date(verifyToken.expires)
+                ? new Date( verifyToken.expires )
                 : undefined,
-            });
+            } );
           }
 
           const updatedUser = await UserModel.findOneAndUpdate(
@@ -599,21 +598,21 @@ export default class UserRoute {
             { new: true, upsert: false }
           );
 
-          if (!updatedUser) {
-            throw new Error("User not found or update failed");
+          if ( !updatedUser ) {
+            throw new Error( "User not found or update failed" );
           }
 
-          res.status(200).json({
+          res.status( 200 ).json( {
             status: "success",
             message: "User updated successfully",
             user: updatedUser,
-          });
-        } catch (error: any) {
-          console.error("User update error:", error.message);
-          res.status(500).json({
+          } );
+        } catch ( error: any ) {
+          console.error( "User update error:", error.message );
+          res.status( 500 ).json( {
             status: "error",
             message: error.message || "Internal server error",
-          });
+          } );
         }
       }
     );
@@ -625,20 +624,20 @@ export default class UserRoute {
   private findUserByUsername() {
     this.router.get(
       "/user-username/:username",
-      async (req: Request<{ username: string }>, res: Response) => {
+      async ( req: Request<{ username: string }>, res: Response ) => {
         const username = req.params.username;
-        const user = await UserModel.findOne({ username: username });
+        const user = await UserModel.findOne( { username: username } );
         try {
-          if (!user) {
-            res.status(200).json({ status: "false" });
+          if ( !user ) {
+            res.status( 200 ).json( { status: "false" } );
           } else {
-            res.status(200).json({ status: "true", user: user });
+            res.status( 200 ).json( { status: "true", user: user } );
           }
-        } catch (error) {
-          console.error("Error in updateUser:", error);
+        } catch ( error ) {
+          console.error( "Error in updateUser:", error );
           res
-            .status(500)
-            .json({ status: "error", message: "Error: server side error..." });
+            .status( 500 )
+            .json( { status: "error", message: "Error: server side error..." } );
         }
       }
     );
@@ -646,8 +645,8 @@ export default class UserRoute {
 
   //<======== Before inserting user input into a regex, escape it: ===========>
 
-  private escapeRegex(str: string): string {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  private escapeRegex( str: string ): string {
+    return str.replace( /[.*+?^${}()|[\]\\]/g, "\\$&" );
   }
 
   //<======== End Before inserting user input into a regex, escape it: ===========>
@@ -657,33 +656,33 @@ export default class UserRoute {
   private findUserByEmail() {
     this.router.get(
       "/user-email/:email",
-      async (req: Request<{ email: string }>, res: Response) => {
+      async ( req: Request<{ email: string }>, res: Response ) => {
         try {
           const rawEmail = req.params.email;
-          const email = decodeURIComponent(rawEmail ?? "").trim();
+          const email = decodeURIComponent( rawEmail ?? "" ).trim();
 
           // Simple email validation
           const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-          if (!emailRegex.test(email)) {
+          if ( !emailRegex.test( email ) ) {
             res
-              .status(400)
-              .json({ status: "error", message: "Invalid email format" });
+              .status( 400 )
+              .json( { status: "error", message: "Invalid email format" } );
           }
 
-          const user = await UserModel.findOne({
-            email: { $regex: `^${this.escapeRegex(email)}$`, $options: "i" },
-          });
+          const user = await UserModel.findOne( {
+            email: { $regex: `^${ this.escapeRegex( email ) }$`, $options: "i" },
+          } );
 
-          if (user) {
-            res.status(200).json({ status: "true" }); // Email exists
+          if ( user ) {
+            res.status( 200 ).json( { status: "true" } ); // Email exists
           } else {
-            res.status(200).json({ status: "false" }); // Email does not exist
+            res.status( 200 ).json( { status: "false" } ); // Email does not exist
           }
-        } catch (error) {
-          console.error("Error in findUserByEmail:", error);
+        } catch ( error ) {
+          console.error( "Error in findUserByEmail:", error );
           res
-            .status(500)
-            .json({ status: "error", message: "Server error occurred" });
+            .status( 500 )
+            .json( { status: "error", message: "Server error occurred" } );
         }
       }
     );
@@ -694,45 +693,45 @@ export default class UserRoute {
   private findUserByPhone() {
     this.router.get(
       "/user-phone/:phone",
-      async (req: Request<{ phone: string }>, res: Response): Promise<any> => {
+      async ( req: Request<{ phone: string }>, res: Response ): Promise<any> => {
         try {
           const phoneNumber = req.params.phone.trim();
 
           // Simple phone validation
           const phoneRegex = /^(?:\+?[1-9]\d{1,3}|0)[\d\s\-()]{7,20}$/;
-          if (!phoneRegex.test(phoneNumber)) {
-            return res.status(400).json({
+          if ( !phoneRegex.test( phoneNumber ) ) {
+            return res.status( 400 ).json( {
               status: "error",
               message: "Invalid phone number format",
               data: phoneNumber
-            });
+            } );
           }
 
-          const user = await UserModel.findOne({
+          const user = await UserModel.findOne( {
             phoneNumber: {
-              $regex: `^${this.escapeRegex(phoneNumber)}$`,
+              $regex: `^${ this.escapeRegex( phoneNumber ) }$`,
               $options: "i",
             },
-          });
+          } );
 
-          if (user) {
-            return res.status(200).json({
+          if ( user ) {
+            return res.status( 200 ).json( {
               status: "success",
               message: "Phone number exists!",
               data: user,
-            });
+            } );
           } else {
-            return res.status(200).json({
+            return res.status( 200 ).json( {
               status: "error",
               message: "Phone number does not exist!",
               data: null,
-            });
+            } );
           }
-        } catch (error) {
-          console.error("Error in findUserByPhone:", error);
+        } catch ( error ) {
+          console.error( "Error in findUserByPhone:", error );
           return res
-            .status(500)
-            .json({ status: "error", message: "Server error occurred" });
+            .status( 500 )
+            .json( { status: "error", message: "Server error occurred" } );
         }
       }
     );
@@ -743,37 +742,37 @@ export default class UserRoute {
   private generateToken() {
     this.router.post(
       "/generate-token",
-      async (req: Request, res: Response, next: NextFunction) => {
+      async ( req: Request, res: Response, next: NextFunction ) => {
         try {
           const { username } = req.body;
-          if (username) {
-            const token = crypto.randomBytes(32).toString("hex");
-            const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min TTL
+          if ( username ) {
+            const token = crypto.randomBytes( 32 ).toString( "hex" );
+            const expiresAt = new Date( Date.now() + 10 * 60 * 1000 ); // 10 min TTL
             const data = {
               token,
               username,
               type: "view",
               expiresAt,
             };
-            const saveToken = await TokenMap.create(data);
-            if (saveToken) {
-              res.status(201).json({
+            const saveToken = await TokenMap.create( data );
+            if ( saveToken ) {
+              res.status( 201 ).json( {
                 status: "success",
                 message: "Token generated successfully",
                 token: saveToken.token,
-              });
+              } );
             } else {
-              throw new Error("Failed to generate token");
+              throw new Error( "Failed to generate token" );
             }
           } else {
-            throw new Error("Invalid username");
+            throw new Error( "Invalid username" );
           }
-        } catch (error) {
-          console.log(error);
-          res.status(500).json({
+        } catch ( error ) {
+          console.log( error );
+          res.status( 500 ).json( {
             status: "error",
             message: "Server error occurred: " + error,
-          });
+          } );
         }
       }
     );
@@ -793,29 +792,29 @@ export default class UserRoute {
       ) => {
         try {
           const token = req.params.token;
-          if (token) {
-            const data = await TokenMap.findOne({ token });
-            if (data) {
-              const user = await UserModel.findOne({ username: data.username });
-              if (user) {
-                res.status(200).json({
+          if ( token ) {
+            const data = await TokenMap.findOne( { token } );
+            if ( data ) {
+              const user = await UserModel.findOne( { username: data.username } );
+              if ( user ) {
+                res.status( 200 ).json( {
                   status: "success",
                   message: "User found",
                   user: user,
-                });
+                } );
               } else {
-                throw new Error("User not found");
+                throw new Error( "User not found" );
               }
             } else {
-              throw new Error("Token not found");
+              throw new Error( "Token not found" );
             }
           }
-        } catch (error) {
-          console.log(error);
-          res.status(500).json({
+        } catch ( error ) {
+          console.log( error );
+          res.status( 500 ).json( {
             status: "error",
             message: "Server error occurred: " + error,
-          });
+          } );
         }
       }
     );
@@ -865,104 +864,104 @@ export default class UserRoute {
       "image/svg+xml",
     ];
 
-    const storage = multer.diskStorage({
-      destination: (req, file, cb) => {
+    const storage = multer.diskStorage( {
+      destination: ( req, file, cb ) => {
         const username = req.params.username;
 
-        if (!username)
-          return cb(new Error("Username is required in form data."), "");
+        if ( !username )
+          return cb( new Error( "Username is required in form data." ), "" );
 
         const uploadPath = path.join(
           __dirname,
-          `../../public/uploads/${username}/documents`
+          `../../public/uploads/${ username }/documents`
         );
-        fs.mkdirSync(uploadPath, { recursive: true });
-        cb(null, uploadPath);
+        fs.mkdirSync( uploadPath, { recursive: true } );
+        cb( null, uploadPath );
       },
-      filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-        const sanitized = file.originalname.replace(/\s+/g, "_");
-        cb(null, `${uniqueSuffix}-${sanitized}`);
+      filename: ( req, file, cb ) => {
+        const uniqueSuffix = Date.now() + "-" + Math.round( Math.random() * 1e9 );
+        const sanitized = file.originalname.replace( /\s+/g, "_" );
+        cb( null, `${ uniqueSuffix }-${ sanitized }` );
       },
-    });
+    } );
 
-    const upload = multer({
+    const upload = multer( {
       storage,
-      fileFilter: (req, file, cb) => {
-        if (allowedTypes.includes(file.mimetype)) {
-          cb(null, true);
+      fileFilter: ( req, file, cb ) => {
+        if ( allowedTypes.includes( file.mimetype ) ) {
+          cb( null, true );
         } else {
-          cb(new Error(`File type not allowed: ${file.mimetype}`));
+          cb( new Error( `File type not allowed: ${ file.mimetype }` ) );
         }
       },
-    });
+    } );
 
     this.router.post(
       "/user-document-upload/:username",
-      upload.array("files", 10),
-      async (req: Request<{ username: string }>, res: Response) => {
+      upload.array( "files", 10 ),
+      async ( req: Request<{ username: string }>, res: Response ) => {
         try {
-          if (req.files) {
-            console.log(req.body);
+          if ( req.files ) {
+            console.log( req.body );
             const username = req.body.username;
-            if (!username) throw new Error("Username is required.");
+            if ( !username ) throw new Error( "Username is required." );
 
             const uploader = req.body.uploader;
-            if (!uploader) throw new Error("Uploader is required.");
+            if ( !uploader ) throw new Error( "Uploader is required." );
 
             const files = req.files as Express.Multer.File[];
-            if (!files || files.length === 0) {
-              throw new Error("No files uploaded.");
+            if ( !files || files.length === 0 ) {
+              throw new Error( "No files uploaded." );
             }
 
-            const savedFiles = files.map((file) => ({
+            const savedFiles = files.map( ( file ) => ( {
               originalName: file.originalname,
               storedName: file.filename,
               mimeType: file.mimetype,
               size: file.size,
               path: file.path,
-              extension: path.extname(file.originalname),
-              download: `${username}/documents/${file.filename}`,
-              URL: `${req.protocol}://${req.get(
+              extension: path.extname( file.originalname ),
+              download: `${ username }/documents/${ file.filename }`,
+              URL: `${ req.protocol }://${ req.get(
                 "host"
-              )}/uploads/${username}/documents/${file.filename}`,
+              ) }/uploads/${ username }/documents/${ file.filename }`,
               uploader: uploader,
-            }));
+            } ) );
 
             // Check if username exists in DB
-            let doc = await UserDocument.findOne({ username });
+            let doc = await UserDocument.findOne( { username } );
 
-            if (doc) {
+            if ( doc ) {
               // Append new files
-              doc.files.push(...savedFiles);
+              doc.files.push( ...savedFiles );
             } else {
               // Create new document
-              doc = new UserDocument({
+              doc = new UserDocument( {
                 username,
                 files: savedFiles,
-              });
+              } );
             }
 
             const save = await doc.save();
-            if (save) {
-              res.status(200).json({
+            if ( save ) {
+              res.status( 200 ).json( {
                 status: "success",
                 message: "Files uploaded and saved successfully.",
                 fileCount: files.length,
                 uploadedFiles: savedFiles,
-              });
+              } );
             } else {
-              throw new Error("Failed to save files.");
+              throw new Error( "Failed to save files." );
             }
           } else {
-            throw new Error("Files are required.");
+            throw new Error( "Files are required." );
           }
-        } catch (error) {
-          console.error("Upload error:", error);
-          res.status(500).json({
+        } catch ( error ) {
+          console.error( "Upload error:", error );
+          res.status( 500 ).json( {
             status: "error",
             message: "Server error: " + error,
-          });
+          } );
         }
       }
     );
@@ -974,28 +973,28 @@ export default class UserRoute {
   private getUserDocuments() {
     this.router.get(
       "/uploads/:username/documents",
-      async (req: Request<{ username: string }>, res: Response) => {
+      async ( req: Request<{ username: string }>, res: Response ) => {
         try {
           const username = req.params.username;
-          if (!username) throw new Error("Username is required.");
-          const user = await UserDocument.findOne({ username }).sort({
+          if ( !username ) throw new Error( "Username is required." );
+          const user = await UserDocument.findOne( { username } ).sort( {
             updatedAt: -1,
-          });
-          if (user) {
-            res.status(200).json({
+          } );
+          if ( user ) {
+            res.status( 200 ).json( {
               status: "success",
               message: "Files retrieved successfully.",
               data: user.files,
-            });
+            } );
           } else {
-            throw new Error("User not found");
+            throw new Error( "User not found" );
           }
-        } catch (error) {
-          console.error("Upload error:", error);
-          res.status(500).json({
+        } catch ( error ) {
+          console.error( "Upload error:", error );
+          res.status( 500 ).json( {
             status: "error",
             message: "Server error: " + error,
-          });
+          } );
         }
       }
     );
@@ -1005,24 +1004,24 @@ export default class UserRoute {
   private getUserDataByUsername() {
     this.router.get(
       "/user-data/:username",
-      async (req: Request<{ username: string }>, res: Response) => {
+      async ( req: Request<{ username: string }>, res: Response ) => {
         try {
           const username = req.params.username;
           const user = await UserModel.findOne(
             { username: username },
             { password: 0 }
           );
-          if (!user) {
-            throw new Error("User not founded!");
+          if ( !user ) {
+            throw new Error( "User not founded!" );
           } else {
-            res.status(200).json({
+            res.status( 200 ).json( {
               status: "success",
               message: "User data founded",
               data: user,
-            });
+            } );
           }
-        } catch (error) {
-          res.status(500).json({ status: "error", message: error });
+        } catch ( error ) {
+          res.status( 500 ).json( { status: "error", message: error } );
         }
       }
     );
@@ -1033,52 +1032,52 @@ export default class UserRoute {
   private deleteUserByUsername() {
     this.router.delete(
       "/user-delete/:username",
-      async (req: Request<{ username: string }>, res: Response) => {
+      async ( req: Request<{ username: string }>, res: Response ) => {
         try {
           const username = req.params.username?.trim();
-          if (!username) {
-            throw new Error("Username is required");
+          if ( !username ) {
+            throw new Error( "Username is required" );
           }
-          const user = await UserModel.findOne({ username });
+          const user = await UserModel.findOne( { username } );
 
           const recycalBinPath = path.join(
             __dirname,
-            `../../public/recyclebin/users/${username}/`
+            `../../public/recyclebin/users/${ username }/`
           );
 
           const userImage = path.join(
             __dirname,
-            `../../public/users/${username}/`
+            `../../public/users/${ username }/`
           );
 
           const userFiles = path.join(
             __dirname,
-            `../../public/uploads/${username}/`
+            `../../public/uploads/${ username }/`
           );
 
-          await fs.mkdir(recycalBinPath, { recursive: true });
+          await fs.mkdir( recycalBinPath, { recursive: true } );
 
           // Save user data as JSON in recycle bin if user exists
-          if (user) {
-            const userJsonPath = path.join(recycalBinPath, "user.json");
+          if ( user ) {
+            const userJsonPath = path.join( recycalBinPath, "user.json" );
             fs.writeFileSync(
               userJsonPath,
-              JSON.stringify(user.toObject ? user.toObject() : user, null, 2),
+              JSON.stringify( user.toObject ? user.toObject() : user, null, 2 ),
               "utf-8"
             );
           }
 
-          if (fs.existsSync(userImage)) {
-            await fs.copy(userImage, path.join(recycalBinPath, "user-image"));
-            fs.rmSync(userImage, { recursive: true });
+          if ( fs.existsSync( userImage ) ) {
+            await fs.copy( userImage, path.join( recycalBinPath, "user-image" ) );
+            fs.rmSync( userImage, { recursive: true } );
           }
 
-          if (fs.existsSync(userFiles)) {
+          if ( fs.existsSync( userFiles ) ) {
             await fs.copy(
               userFiles,
-              path.join(recycalBinPath, "user-documents")
+              path.join( recycalBinPath, "user-documents" )
             );
-            fs.rmSync(userFiles, { recursive: true });
+            fs.rmSync( userFiles, { recursive: true } );
           }
 
           // Update owner and addedBy references
@@ -1092,20 +1091,20 @@ export default class UserRoute {
           );
 
           // Delete user
-          const deleteUser = await UserModel.findOneAndDelete({ username });
+          const deleteUser = await UserModel.findOneAndDelete( { username } );
 
-          if (deleteUser) {
-            res.status(200).json({
+          if ( deleteUser ) {
+            res.status( 200 ).json( {
               status: "success",
               message: "User deleted successfully",
-            });
+            } );
           } else {
-            throw new Error("User not found");
+            throw new Error( "User not found" );
           }
-        } catch (error) {
-          if (error instanceof Error) {
-            console.error(error.message);
-            res.status(500).json({ status: "error", message: error.message });
+        } catch ( error ) {
+          if ( error instanceof Error ) {
+            console.error( error.message );
+            res.status( 500 ).json( { status: "error", message: error.message } );
           }
         }
       }
