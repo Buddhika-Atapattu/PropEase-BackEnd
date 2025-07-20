@@ -702,9 +702,8 @@
         "label": "Fixed Fee - LKR 1000",
         "type": "Fixed Fee",
         "value": 100,
-        "description": "A fixed penalty of 1000 LKR will be charged for any late payment, regardless of the amount or duration.",
-        "isEditable": false,
-        "_id": "687cacde1ced76940b42db9d"
+        "description": "A fixed penalty of 100 will be charged for any late payment, regardless of the amount or duration.",
+        "isEditable": false
       }
     ],
     "utilityResponsibilities": [
@@ -783,7 +782,7 @@
     "ocrAutoFillStatus": false,
     "validationStatus": "active",
     "language": "en",
-    "leaseTemplateVersion": "1.0.3",
-    "lastUpdated": "2025-07-20T08:47:39.138Z"
+    "leaseTemplateVersion": "1.0.2",
+    "lastUpdated": "2025-07-20T08:46:22.206Z"
   }
 }

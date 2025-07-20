@@ -1776,8 +1776,12 @@ export default class Lease {
           const dt = new Date(d);
           return `${dt.getFullYear()}/${(dt.getMonth() + 1).toString().padStart(2, '0')}/${dt.getDate().toString().padStart(2, '0')}`;
         };
+        leaseData.tenantInformation.dateOfBirth = formatDate(leaseData.tenantInformation.dateOfBirth);
         leaseData.leaseAgreement.startDate = formatDate(leaseData.leaseAgreement.startDate);
         leaseData.leaseAgreement.endDate = formatDate(leaseData.leaseAgreement.endDate);
+
+        leaseData.signatures.signedAt = formatDate(leaseData.signatures.signedAt);
+        leaseData.systemMetadata.lastUpdated = formatDate(new Date(leaseData.systemMetadata.lastUpdated).toISOString());
 
         const html = await ejs.render(this.cachedTemplates.main, {data: leaseData});
         const header = await ejs.render(this.cachedTemplates.header, {
