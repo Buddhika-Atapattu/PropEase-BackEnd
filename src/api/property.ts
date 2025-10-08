@@ -9,8 +9,8 @@ import express, {
 } from "express";
 import crypto from "crypto";
 import dotenv from "dotenv";
-import { UserDocument } from "../models/file-upload.model";
-import { UserModel } from "../models/user.model";
+import {UserDocument} from "../models/file-upload.model";
+import {UserModel} from "../models/user.model";
 import {
   PropertyModel,
   IProperty,
@@ -23,6 +23,9 @@ import fs from "fs";
 import path from "path";
 import multer from "multer";
 import sharp from "sharp";
+import {NotificationService} from '../services/notification.service';
+
+
 
 dotenv.config();
 
@@ -58,7 +61,7 @@ export default class Property {
   private router: express.Router;
   // This is the constructor for the Property class
   // It initializes the router and sets up the routes
-  constructor() {
+  constructor () {
     this.router = express.Router();
     // Insert property and used muter for file handle
     this.insertProperty();
@@ -149,7 +152,7 @@ export default class Property {
 
         // If property ID is not provided, return an error
         // This is important to ensure that files are saved in the correct location
-        if (!propertyID) {
+        if(!propertyID) {
           // If property ID is not provided, return an error
           // This is important to ensure that files are saved in the correct location
           return cb(new Error("Property ID is required in form data."), "");
@@ -160,7 +163,7 @@ export default class Property {
         let uploadPath = "";
         // Check the field name to determine the upload path
         // If the field name is "images", save to the images folder
-        if (file.fieldname === "images") {
+        if(file.fieldname === "images") {
           // Create the upload path for images
           // This will create a unique folder for each property
           uploadPath = path.join(
@@ -169,7 +172,7 @@ export default class Property {
           );
           // If the field name is "documents", save to the documents folder
           // This will create a unique folder for each property
-        } else if (file.fieldname === "documents") {
+        } else if(file.fieldname === "documents") {
           // Create the upload path for documents
           // This will create a unique folder for each property
           uploadPath = path.join(
@@ -185,7 +188,7 @@ export default class Property {
         }
         // Create the upload path if it doesn't exist
         // This is important to ensure that files are saved in the correct location
-        fs.mkdirSync(uploadPath, { recursive: true });
+        fs.mkdirSync(uploadPath, {recursive: true});
         // Return the upload path to multer
         // This is important to ensure that files are saved in the correct location
         cb(null, uploadPath);
@@ -210,7 +213,7 @@ export default class Property {
     const fileFilter = (req: Request, file: Express.Multer.File, cb: any) => {
       // Check if the image type is allowed
       // This is important to ensure that files are saved in the correct location
-      if (
+      if(
         file.fieldname === "images" &&
         allowedImageTypes.includes(file.mimetype)
       ) {
@@ -219,7 +222,7 @@ export default class Property {
         cb(null, true);
         // Check if the document type is allowed
         // This is important to ensure that files are saved in the correct location
-      } else if (
+      } else if(
         file.fieldname === "documents" &&
         allowedDocumentTypes.includes(file.mimetype)
       ) {
@@ -235,15 +238,15 @@ export default class Property {
 
     // Create the multer instance with the defined storage and file filter
     // This will check the file type and size before uploading
-    const upload = multer({ storage, fileFilter });
+    const upload = multer({storage, fileFilter});
 
     // Define the route for inserting a property
     // This will handle the file upload and save the property to the database
     this.router.post(
       "/insert-property/:propertyID",
-      upload.fields([{ name: "images" }, { name: "documents" }]),
+      upload.fields([{name: "images"}, {name: "documents"}]),
       async (
-        req: Request<{ propertyID: string }>,
+        req: Request<{propertyID: string}>,
         res: Response,
         next: NextFunction
       ): Promise<any> => {
@@ -251,18 +254,21 @@ export default class Property {
           // Get the property ID from the form data
           const propertyID = req.body.id;
 
+          // Get the io instance from the app
+          const io = req.app.get('io');
+
           // Define the property files
           const propertyFiles = req.files as
-            | { [fieldname: string]: Express.Multer.File[] }
+            | {[fieldname: string]: Express.Multer.File[]}
             | undefined;
 
           // Check if the property files are provided in the form data
-          if (!propertyFiles) {
+          if(!propertyFiles) {
             throw new Error("No property files were uploaded.");
           }
 
           // Check if the property ID is provided in the form data
-          if (!propertyID) {
+          if(!propertyID) {
             throw new Error("Property ID is required in form data.");
           }
 
@@ -278,9 +284,9 @@ export default class Property {
           const conversionPromises: Promise<void>[] = [];
 
           // Check if the property documents are provided
-          if (documents) {
+          if(documents) {
             // Loop through each document and create a file URL
-            for (const file of documents) {
+            for(const file of documents) {
               // Create the file path for the document
               // const filePath = path.join(
               //   __dirname,
@@ -305,15 +311,15 @@ export default class Property {
           }
 
           // Check if the property images are provided
-          if (propertyImages) {
+          if(propertyImages) {
             const convertDir = path.join(
               __dirname,
               `../../public/propertyUploads/${propertyID}/images/`
             );
 
-            fs.mkdirSync(convertDir, { recursive: true });
+            fs.mkdirSync(convertDir, {recursive: true});
             // Loop through each image and create a file URL
-            for (const file of propertyImages) {
+            for(const file of propertyImages) {
               // Create the file path for the image
               const ext = path.extname(file.filename);
               const baseName = path.basename(file.filename, ext);
@@ -342,7 +348,7 @@ export default class Property {
 
               // Push the conversion promise into the array and Reshape the image to a specific size
               const conversionPromise = sharp(originalImagePath)
-                .webp({ quality: 100 })
+                .webp({quality: 100})
                 .resize(800, 600, {
                   fit: "inside",
                   withoutEnlargement: true,
@@ -504,7 +510,22 @@ export default class Property {
           const insertToTheDB = new PropertyModel(DbData);
           const insertedProperty = await insertToTheDB.save();
 
-          if (insertedProperty) {
+
+
+          // Check if the property was inserted successfully
+
+          if(insertedProperty) {
+            // Notify all admins about the new property added
+            const admins = await UserModel.find({role: {$regex: /^admin$/i}}, {_id: 1}).lean() as unknown as Array<{_id: import("mongoose").Types.ObjectId}>;
+            const adminIds = admins.map(admin => admin._id);
+            await NotificationService.createAndSend(io, {
+              type: 'Property',
+              title: 'New Property Added',
+              body: `A new property titled "${DbData.title}" has been added.`,
+              meta: {propertyId: insertedProperty.id, addedBy: DbData.addedBy},
+              recipients: adminIds,
+              roles: ['admin']
+            });
             // Send susscess message
             res.status(200).json({
               status: "success",
@@ -524,9 +545,9 @@ export default class Property {
           } else {
             throw new Error("Property insertion failed.");
           }
-        } catch (error) {
+        } catch(error) {
           // Handle any errors that occur during the file upload or property insertion
-          if (error) {
+          if(error) {
             console.error("Error occurred: ", error);
             res.status(500).json({
               status: "error",
@@ -545,13 +566,13 @@ export default class Property {
     retries: number = 5,
     delayMs: number = 500
   ): Promise<void> {
-    for (let attempt = 1; attempt <= retries; attempt++) {
+    for(let attempt = 1; attempt <= retries; attempt++) {
       try {
-        await fs.promises.rm(folderPath, { recursive: true, force: true });
+        await fs.promises.rm(folderPath, {recursive: true, force: true});
         console.log(`Deleted folder on attempt ${attempt}: ${folderPath}`);
         return;
-      } catch (err: any) {
-        if (err.code === "EBUSY" || err.code === "EPERM") {
+      } catch(err: any) {
+        if(err.code === "EBUSY" || err.code === "EPERM") {
           console.warn(
             `Attempt ${attempt} failed to delete folder. Retrying in ${delayMs}ms...`
           );
@@ -581,10 +602,10 @@ export default class Property {
         res: Response
       ) => {
         try {
-          const { start, end } = req.params;
+          const {start, end} = req.params;
           const safeStart = Math.max(0, parseInt(start, 10));
           const safeEnd = Math.max(1, parseInt(end, 10));
-          const priorityOrder = { high: 1, medium: 2, low: 3 };
+          const priorityOrder = {high: 1, medium: 2, low: 3};
 
           const search = req.query.search as string | "";
           const filter = req.query.filter as string | "";
@@ -598,7 +619,7 @@ export default class Property {
               ? filter.trim()
               : "";
 
-          if (isNaN(safeStart) || isNaN(safeEnd)) {
+          if(isNaN(safeStart) || isNaN(safeEnd)) {
             throw new Error("Invalid start or end parameters.");
           }
 
@@ -617,20 +638,20 @@ export default class Property {
           const andFilters: any[] = [];
 
           // Keyword-based search across multiple fields
-          if (safeSearch) {
+          if(safeSearch) {
             const searchRegex = new RegExp(safeSearch, "i");
             andFilters.push({
               $or: [
-                { title: { $regex: searchRegex } },
-                { type: { $regex: searchRegex } },
-                { status: { $regex: searchRegex } },
-                { "address.country": { $regex: searchRegex } },
+                {title: {$regex: searchRegex}},
+                {type: {$regex: searchRegex}},
+                {status: {$regex: searchRegex}},
+                {"address.country": {$regex: searchRegex}},
               ],
             });
           }
 
           // Apply filters if available
-          if (filterDialogData) {
+          if(filterDialogData) {
             andFilters.push({
               price: {
                 $gte: filterDialogData.minPrice,
@@ -638,41 +659,41 @@ export default class Property {
               },
             });
 
-            if (filterDialogData.beds === "10+") {
-              andFilters.push({ bedrooms: { $gte: 10 } });
-            } else if (filterDialogData.beds) {
+            if(filterDialogData.beds === "10+") {
+              andFilters.push({bedrooms: {$gte: 10}});
+            } else if(filterDialogData.beds) {
               andFilters.push({
                 bedrooms: parseInt(filterDialogData.beds, 10),
               });
             }
 
-            if (filterDialogData.bathrooms === "10+") {
-              andFilters.push({ bathrooms: { $gte: 10 } });
-            } else if (filterDialogData.bathrooms) {
+            if(filterDialogData.bathrooms === "10+") {
+              andFilters.push({bathrooms: {$gte: 10}});
+            } else if(filterDialogData.bathrooms) {
               andFilters.push({
                 bathrooms: parseInt(filterDialogData.bathrooms, 10),
               });
             }
 
-            if (filterDialogData.type) {
-              andFilters.push({ type: filterDialogData.type });
+            if(filterDialogData.type) {
+              andFilters.push({type: filterDialogData.type});
             }
 
-            if (filterDialogData.status) {
-              andFilters.push({ status: filterDialogData.status });
+            if(filterDialogData.status) {
+              andFilters.push({status: filterDialogData.status});
             }
 
-            if (
+            if(
               filterDialogData.amenities &&
               filterDialogData.amenities.length > 0
             ) {
               andFilters.push({
-                featuresAndAmenities: { $all: filterDialogData.amenities },
+                featuresAndAmenities: {$all: filterDialogData.amenities},
               });
             }
           }
 
-          const filterQuery = andFilters.length > 0 ? { $and: andFilters } : {};
+          const filterQuery = andFilters.length > 0 ? {$and: andFilters} : {};
 
           // const properties = await PropertyModel.find(filterQuery)
           //   .skip(safeStart)
@@ -680,24 +701,24 @@ export default class Property {
           //   .sort({ createdAt: -1 });
 
           const properties = await PropertyModel.aggregate([
-            { $match: filterQuery },
+            {$match: filterQuery},
             {
               $addFields: {
                 priorityOrder: {
                   $switch: {
                     branches: [
-                      { case: { $eq: ["$priority", "high"] }, then: 1 },
-                      { case: { $eq: ["$priority", "medium"] }, then: 2 },
-                      { case: { $eq: ["$priority", "low"] }, then: 3 },
+                      {case: {$eq: ["$priority", "high"]}, then: 1},
+                      {case: {$eq: ["$priority", "medium"]}, then: 2},
+                      {case: {$eq: ["$priority", "low"]}, then: 3},
                     ],
                     default: 4,
                   },
                 },
               },
             },
-            { $sort: { priorityOrder: 1, updatedAt: -1 } },
-            { $skip: safeStart },
-            { $limit: safeEnd - safeStart },
+            {$sort: {priorityOrder: 1, updatedAt: -1}},
+            {$skip: safeStart},
+            {$limit: safeEnd - safeStart},
           ]);
 
           const totalCount = await PropertyModel.countDocuments(filterQuery);
@@ -712,7 +733,7 @@ export default class Property {
             message: "Properties fetched successfully.",
             data: resData,
           });
-        } catch (error) {
+        } catch(error) {
           console.error("Error occurred while fetching properties: ", error);
           res.status(500).json({
             status: "error",
@@ -728,17 +749,17 @@ export default class Property {
   private getSinglePropertyById(): void {
     this.router.get(
       "/get-single-property-by-id/:id",
-      async (req: Request<{ id: string }>, res: Response) => {
+      async (req: Request<{id: string}>, res: Response) => {
         try {
-          const { id } = req.params;
+          const {id} = req.params;
           const safeID = id.trim();
 
-          if (!safeID) {
+          if(!safeID) {
             throw new Error("Property ID is required.");
           }
 
-          const property = await PropertyModel.findOne({ id: safeID });
-          if (!property) {
+          const property = await PropertyModel.findOne({id: safeID});
+          if(!property) {
             throw new Error("Property not found.");
           }
           res.status(200).json({
@@ -746,7 +767,7 @@ export default class Property {
             message: "Property fetched successfully.",
             data: property,
           });
-        } catch (error) {
+        } catch(error) {
           console.error("Error occurred while fetching properties: ", error);
           res.status(500).json({
             status: "error",
@@ -762,16 +783,17 @@ export default class Property {
   private deleteProperty(): void {
     this.router.delete(
       "/delete-property/:id",
-      async (req: Request<{ id: string }>, res: Response) => {
+      async (req: Request<{id: string}>, res: Response) => {
         try {
-          const { id } = req.params;
+          const {id} = req.params;
           const safeID = id.trim();
+          const io = req.app.get('io');
 
-          if (!safeID) throw new Error("Property ID is required.");
+          if(!safeID) throw new Error("Property ID is required.");
 
-          const property = await PropertyModel.findOne({ id: safeID });
+          const property = await PropertyModel.findOne({id: safeID});
 
-          if (!property) throw new Error("Property not found.");
+          if(!property) throw new Error("Property not found.");
 
           const fileFolderPath = path.join(
             __dirname,
@@ -784,7 +806,7 @@ export default class Property {
           );
 
           // Create recycle bin folder
-          await fs.promises.mkdir(recyclebin, { recursive: true });
+          await fs.promises.mkdir(recyclebin, {recursive: true});
 
           // Move files to recycle bin
           await fs.promises.rename(fileFolderPath, recyclebin);
@@ -801,29 +823,44 @@ export default class Property {
           );
 
           // Just in case some files still remain (e.g. if rename didn't remove source fully)
-          if (fs.existsSync(fileFolderPath)) {
+          if(fs.existsSync(fileFolderPath)) {
             await fs.promises.rm(fileFolderPath, {
               recursive: true,
               force: true,
             });
           }
 
+          // Notify all admins about the new property added
+          const admins = await UserModel.find({role: {$regex: /^admin$/i}}, {_id: 1}).lean() as unknown as Array<{_id: import("mongoose").Types.ObjectId}>;
+          const adminIds = admins.map(admin => admin._id);
+          await NotificationService.createAndSend(io, {
+            type: 'Property',
+            title: 'Property Deleted',
+            body: `Deleted property titled"${property.title}".`,
+            meta: {propertyId: property.id, addedBy: property.addedBy},
+            recipients: adminIds,
+            roles: ['admin']
+          });
+
           // Delete property from DB
           const deleteProperty = await PropertyModel.findOneAndDelete({
             id: safeID,
           });
 
-          if (!deleteProperty)
+          if(!deleteProperty)
             throw new Error(
               "Error occurred while deleting property: " + deleteProperty
             );
+
+          // Send success response
+          // Also consider sending deleted property data if needed notifications etc.
 
           res.status(200).json({
             status: "success",
             message: "Property deleted successfully.",
           });
-        } catch (error) {
-          if (error) {
+        } catch(error) {
+          if(error) {
             res.status(500).json({
               status: "error",
               message: "Error occurred while deleting property: " + error,
@@ -892,7 +929,7 @@ export default class Property {
 
         // If property ID is not provided, return an error
         // This is important to ensure that files are saved in the correct location
-        if (!propertyID) {
+        if(!propertyID) {
           // If property ID is not provided, return an error
           // This is important to ensure that files are saved in the correct location
           return cb(new Error("Property ID is required in form data."), "");
@@ -903,7 +940,7 @@ export default class Property {
         let uploadPath = "";
         // Check the field name to determine the upload path
         // If the field name is "images", save to the images folder
-        if (file.fieldname === "images") {
+        if(file.fieldname === "images") {
           // Create the upload path for images
           // This will create a unique folder for each property
           uploadPath = path.join(
@@ -912,7 +949,7 @@ export default class Property {
           );
           // If the field name is "documents", save to the documents folder
           // This will create a unique folder for each property
-        } else if (file.fieldname === "documents") {
+        } else if(file.fieldname === "documents") {
           // Create the upload path for documents
           // This will create a unique folder for each property
           uploadPath = path.join(
@@ -928,7 +965,7 @@ export default class Property {
         }
         // Create the upload path if it doesn't exist
         // This is important to ensure that files are saved in the correct location
-        fs.mkdirSync(uploadPath, { recursive: true });
+        fs.mkdirSync(uploadPath, {recursive: true});
         // Return the upload path to multer
         // This is important to ensure that files are saved in the correct location
         cb(null, uploadPath);
@@ -953,7 +990,7 @@ export default class Property {
     const fileFilter = (req: Request, file: Express.Multer.File, cb: any) => {
       // Check if the image type is allowed
       // This is important to ensure that files are saved in the correct location
-      if (
+      if(
         file.fieldname === "images" &&
         allowedImageTypes.includes(file.mimetype)
       ) {
@@ -962,7 +999,7 @@ export default class Property {
         cb(null, true);
         // Check if the document type is allowed
         // This is important to ensure that files are saved in the correct location
-      } else if (
+      } else if(
         file.fieldname === "documents" &&
         allowedDocumentTypes.includes(file.mimetype)
       ) {
@@ -978,25 +1015,25 @@ export default class Property {
 
     // Create the multer instance with the defined storage and file filter
     // This will check the file type and size before uploading
-    const upload = multer({ storage, fileFilter });
+    const upload = multer({storage, fileFilter});
 
     // Define the route for inserting a property
     // This will handle the file upload and save the property to the database
 
     this.router.put(
       "/update-property/:id",
-      upload.fields([{ name: "images" }, { name: "documents" }]),
-      async (req: Request<{ id: string }>, res: Response) => {
+      upload.fields([{name: "images"}, {name: "documents"}]),
+      async (req: Request<{id: string}>, res: Response) => {
         try {
           // make the property id more reliable without and empty string
           const propertyID = (req.params?.id || req.body?.id || "").trim();
           // Check the property id
-          if (!propertyID)
+          if(!propertyID)
             throw new Error("Property ID is required in URL or request body.");
 
           // define the property files to check whether the files are uploaded
           const propertyFiles = req.files as
-            | { [fieldname: string]: Express.Multer.File[] }
+            | {[fieldname: string]: Express.Multer.File[]}
             | undefined;
 
           const uploadedImages = propertyFiles?.["images"];
@@ -1010,13 +1047,13 @@ export default class Property {
           const existingImages: UploadedImage[] =
             JSON.parse(req.body.existingImages.trim()) || [];
 
-          if (!Array.isArray(existingImages))
+          if(!Array.isArray(existingImages))
             throw new Error("Invalid existingImages");
 
           const existingDocuments: UploadedDocument[] =
             JSON.parse(req.body.existingDocuments.trim()) || [];
 
-          if (!Array.isArray(existingDocuments))
+          if(!Array.isArray(existingDocuments))
             throw new Error("Invalid existingDocuments");
 
           // Push existing images and documents to the Images and Docs array
@@ -1030,8 +1067,8 @@ export default class Property {
           );
 
           // Check if the removeImages is an array
-          if (removeImages && removeImages.length > 0) {
-            for (let i = 0; i < removeImages.length; i++) {
+          if(removeImages && removeImages.length > 0) {
+            for(let i = 0; i < removeImages.length; i++) {
               // Define the image
               const image = removeImages[i];
 
@@ -1061,9 +1098,9 @@ export default class Property {
           );
 
           // Check if the removeDocuments is an array
-          if (removeDocuments && removeDocuments.length > 0) {
+          if(removeDocuments && removeDocuments.length > 0) {
             // Loop through the removeDocuments array
-            for (let i = 0; i < removeDocuments.length; i++) {
+            for(let i = 0; i < removeDocuments.length; i++) {
               //Define the document
               const document = removeDocuments[i];
 
@@ -1090,17 +1127,17 @@ export default class Property {
           const conversionPromises: Promise<void>[] = [];
 
           // Check if the property new images are provided
-          if (uploadedImages && uploadedImages.length > 0) {
+          if(uploadedImages && uploadedImages.length > 0) {
             const convertDir = path.join(
               __dirname,
               `../../public/propertyUploads/${propertyID}/images/`
             );
 
             // Make the directory for image uploads
-            fs.mkdirSync(convertDir, { recursive: true });
+            fs.mkdirSync(convertDir, {recursive: true});
 
             // Loop through each image and create a file URL
-            for (const file of uploadedImages) {
+            for(const file of uploadedImages) {
               // Create the file path for the image
               const ext = path.extname(file.filename);
               const baseName = path.basename(file.filename, ext);
@@ -1129,7 +1166,7 @@ export default class Property {
 
               // Push the conversion promise into the array and Reshape the image to a specific size
               const conversionPromise = sharp(originalImagePath)
-                .webp({ quality: 100 })
+                .webp({quality: 100})
                 .resize(800, 600, {
                   fit: "inside",
                   withoutEnlargement: true,
@@ -1156,8 +1193,8 @@ export default class Property {
           }
 
           // Check if the property new documents are provided
-          if (uploadedDocuments && uploadedDocuments.length > 0) {
-            for (const file of uploadedDocuments) {
+          if(uploadedDocuments && uploadedDocuments.length > 0) {
+            for(const file of uploadedDocuments) {
               // Create the file URL for the document
               const fileURL = `${req.protocol}://${req.get(
                 "host"
@@ -1300,12 +1337,12 @@ export default class Property {
           };
 
           const updateThePropertyByID = await PropertyModel.findOneAndUpdate(
-            { id: propertyID },
-            { $set: DbData },
-            { new: true }
+            {id: propertyID},
+            {$set: DbData},
+            {new: true}
           );
 
-          if (!updateThePropertyByID) {
+          if(!updateThePropertyByID) {
             throw new Error(
               "Error occurred while updating property: " + updateThePropertyByID
             );
@@ -1326,8 +1363,8 @@ export default class Property {
               )
             );
           }
-        } catch (error) {
-          if (error) {
+        } catch(error) {
+          if(error) {
             console.log(
               "Error while updating property:",
               error instanceof Error ? error.stack : error
@@ -1350,8 +1387,8 @@ export default class Property {
   ): Promise<void> {
     try {
       // Create the recyclebin folder if it doesn't exist
-      if (!fs.existsSync(recycleBinPath)) {
-        await fs.promises.mkdir(recycleBinPath, { recursive: true });
+      if(!fs.existsSync(recycleBinPath)) {
+        await fs.promises.mkdir(recycleBinPath, {recursive: true});
       }
 
       //Rename the file and create the new file in the recyclebin folder
@@ -1364,7 +1401,7 @@ export default class Property {
       await fs.promises.rename(filePath, targetPath);
 
       console.log(`Moved file to recycle bin: ${targetPath}`);
-    } catch (error) {
+    } catch(error) {
       console.log(
         "Error while moving file to recycle bin:",
         error instanceof Error ? error.stack : error
@@ -1392,14 +1429,14 @@ export default class Property {
           const properties = await PropertyModel.find().sort({
             createdAt: -1,
           });
-          if (!properties) throw new Error("No properties found.");
+          if(!properties) throw new Error("No properties found.");
           res.status(200).json({
             status: "success",
             message: "Properties fetched successfully.",
             data: properties,
           });
-        } catch (error) {
-          if (error instanceof Error) {
+        } catch(error) {
+          if(error instanceof Error) {
             res.status(500).json({
               status: "error",
               message: "Error: " + error.message,

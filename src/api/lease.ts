@@ -48,6 +48,8 @@ import QRCode from 'qrcode';
 import axios, {HttpStatusCode} from 'axios';
 import * as os from 'os';
 import {UserModel} from "../models/user.model";
+import {NotificationService} from '../services/notification.service';
+
 
 
 dotenv.config();
@@ -224,6 +226,7 @@ export default class Lease {
             | {[fieldname: string]: Express.Multer.File[]}
             | undefined;
 
+          const io = req.app.get('io');
           // Lease ID
           if(
             !this.checkIsString(
@@ -811,6 +814,18 @@ export default class Lease {
           // Insert data
           const INSERT = new LeaseModel(INSERT_DATA);
           await INSERT.save();
+
+          // Notify all admins about the new property added
+          const admins = await UserModel.find({role: {$regex: /^admin$/i}}, {_id: 1}).lean() as unknown as Array<{_id: import("mongoose").Types.ObjectId}>;
+          const adminIds = admins.map(admin => admin._id);
+          await NotificationService.createAndSend(io, {
+            type: 'LeaseAgreementCreated',
+            title: 'New Lease Agreement Created',
+            body: `A new lease id "${leaseID}" has been added.`,
+            meta: {leaseID: leaseID},
+            recipients: adminIds,
+            roles: ['admin']
+          });
 
           if(INSERT) {
             res.status(200).json({

@@ -11,16 +11,17 @@ import fs from "fs";
 import path from "path";
 import multer from "multer";
 import sharp from "sharp";
-import { ITenant, TenantModel } from "../models/tenant.model";
-import { LeaseModel, LeaseType } from "../models/lease.model";
+import {ITenant, TenantModel} from "../models/tenant.model";
+import {LeaseModel, LeaseType} from "../models/lease.model";
 import Lease from "./lease";
+import {NotificationService} from '../services/notification.service'; 
 
 dotenv.config();
 
 export default class Tenant {
   private router: express.Router;
 
-  constructor() {
+  constructor () {
     this.router = express.Router();
     this.insertTenant();
     this.getAllTenants();
@@ -40,25 +41,25 @@ export default class Tenant {
         try {
           const username = req.body.username;
 
-          if (!username) {
+          if(!username) {
             throw new Error("Username required!");
           }
-          if (!req.body.name) {
+          if(!req.body.name) {
             throw new Error("Name required!");
           }
-          if (!req.body.image) {
+          if(!req.body.image) {
             throw new Error("Image required!");
           }
-          if (!req.body.phoneNumber) {
+          if(!req.body.phoneNumber) {
             throw new Error("Phone number required!");
           }
-          if (!req.body.email) {
+          if(!req.body.email) {
             throw new Error("Email required!");
           }
-          if (!req.body.gender) {
+          if(!req.body.gender) {
             throw new Error("Gender required!");
           }
-          if (!req.body.addedBy) {
+          if(!req.body.addedBy) {
             throw new Error("Added by required!");
           }
 
@@ -67,8 +68,8 @@ export default class Tenant {
             `../../public/recyclebin/tenants/${username}/`
           );
 
-          if (fs.existsSync(recyclebi)) {
-            fs.promises.rm(recyclebi, { recursive: true });
+          if(fs.existsSync(recyclebi)) {
+            fs.promises.rm(recyclebi, {recursive: true});
           }
 
           const data = {
@@ -84,7 +85,7 @@ export default class Tenant {
           const tenant: ITenant = new TenantModel(data);
           await tenant.save();
 
-          if (tenant) {
+          if(tenant) {
             res.status(200).json({
               status: "success",
               message: "Tenant added successfully",
@@ -93,12 +94,12 @@ export default class Tenant {
           } else {
             throw new Error("Failed to add tenant!");
           }
-        } catch (error) {
-          if (error) {
+        } catch(error) {
+          if(error) {
             console.log(error);
             res
               .status(500)
-              .json({ status: "error", message: "Error: " + error });
+              .json({status: "error", message: "Error: " + error});
           }
         }
       }
@@ -109,7 +110,7 @@ export default class Tenant {
     this.router.get("/get-all-tenants", async (req: Request, res: Response) => {
       try {
         const tenants = await TenantModel.find();
-        if (tenants) {
+        if(tenants) {
           res.status(200).json({
             status: "success",
             message: "Tenants fetched successfully",
@@ -118,10 +119,10 @@ export default class Tenant {
         } else {
           throw new Error("No tenants found");
         }
-      } catch (error) {
-        if (error) {
+      } catch(error) {
+        if(error) {
           console.log(error);
-          res.status(500).json({ status: "error", message: "Error: " + error });
+          res.status(500).json({status: "error", message: "Error: " + error});
         }
       }
     });
@@ -130,27 +131,27 @@ export default class Tenant {
   private deleteTenant() {
     this.router.delete(
       "/delete-tenant/:username",
-      async (req: Request<{ username: string }>, res: Response) => {
+      async (req: Request<{username: string}>, res: Response) => {
         try {
-          const { username } = req.params;
-          if (!username) throw new Error("Username required!");
+          const {username} = req.params;
+          if(!username) throw new Error("Username required!");
 
-          const userData = await TenantModel.findOne({ username });
-          if (!userData) throw new Error("Tenant not found!");
+          const userData = await TenantModel.findOne({username});
+          if(!userData) throw new Error("Tenant not found!");
 
           const leases = await LeaseModel.find({
             "tenantInformation.tenantUsername": username,
           });
 
           const today = new Date().toISOString().split("T")[0];
-          const insertUserData = { today, data: userData };
+          const insertUserData = {today, data: userData};
 
           const recyclebin = path.join(__dirname, `../../public/recyclebin/tenants/${username}`);
           const userDataPath = path.join(recyclebin, "userData.json");
-          await fs.promises.mkdir(recyclebin, { recursive: true });
+          await fs.promises.mkdir(recyclebin, {recursive: true});
 
           // Save userData
-          if (fs.existsSync(userDataPath)) {
+          if(fs.existsSync(userDataPath)) {
             const existingData = JSON.parse(await fs.promises.readFile(userDataPath, "utf-8"));
             existingData.push(insertUserData);
             await fs.promises.writeFile(userDataPath, JSON.stringify(existingData, null, 2));
@@ -158,14 +159,14 @@ export default class Tenant {
             await fs.promises.writeFile(userDataPath, JSON.stringify([insertUserData], null, 2));
           }
 
-          if (leases.length > 0) {
+          if(leases.length > 0) {
             const leaseRecyclebin = path.join(recyclebin, "leases");
-            await fs.promises.mkdir(leaseRecyclebin, { recursive: true });
+            await fs.promises.mkdir(leaseRecyclebin, {recursive: true});
 
             const leaseSavePath = path.join(leaseRecyclebin, "leasesDB.json");
 
             // Save lease data
-            if (fs.existsSync(leaseSavePath)) {
+            if(fs.existsSync(leaseSavePath)) {
               const existingLeases = JSON.parse(await fs.promises.readFile(leaseSavePath, "utf-8"));
               const merged = Array.isArray(existingLeases) ? [...existingLeases, ...leases] : leases;
               await fs.promises.writeFile(leaseSavePath, JSON.stringify(merged, null, 2));
@@ -173,7 +174,7 @@ export default class Tenant {
               await fs.promises.writeFile(leaseSavePath, JSON.stringify(leases, null, 2));
             }
 
-            for (const lease of leases) {
+            for(const lease of leases) {
               const leaseID = lease.leaseID;
 
               const currentRoot = path.join(__dirname, `../../public/lease/${leaseID}`);
@@ -198,12 +199,12 @@ export default class Tenant {
                 }
               ];
 
-              for (const { from, to } of pathsToMove) {
-                if (fs.existsSync(from)) {
-                  await fs.promises.mkdir(path.dirname(to), { recursive: true });
+              for(const {from, to} of pathsToMove) {
+                if(fs.existsSync(from)) {
+                  await fs.promises.mkdir(path.dirname(to), {recursive: true});
                   try {
                     await fs.promises.rename(from, to);
-                  } catch (e) {
+                  } catch(e) {
                     console.warn(`Failed to move from ${from} to ${to}:`, e);
                   }
                 } else {
@@ -216,22 +217,22 @@ export default class Tenant {
               "tenantInformation.tenantUsername": username,
             });
 
-            if (deleteResult.deletedCount === 0) {
+            if(deleteResult.deletedCount === 0) {
               throw new Error("Failed to delete leases from database!");
             }
           }
 
-          await TenantModel.findOneAndDelete({ username });
+          await TenantModel.findOneAndDelete({username});
 
           res.status(200).json({
             status: "success",
             message: "Tenant and all related lease records have been successfully removed.",
           });
-        } catch (error) {
+        } catch(error) {
           console.error("Error deleting tenant:", error);
           let message = "Unexpected error occurred during tenant deletion.";
-          if (error instanceof Error) message = error.message;
-          else if (typeof error === "string") message = error;
+          if(error instanceof Error) message = error.message;
+          else if(typeof error === "string") message = error;
 
           res.status(500).json({
             status: "error",
