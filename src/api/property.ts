@@ -23,7 +23,7 @@ import fs from "fs";
 import path from "path";
 import multer from "multer";
 import sharp from "sharp";
-import {NotificationService} from '../services/notification.service';
+import NotificationService from '../services/notification.service';
 import fsp from 'fs/promises';
 import {Types} from "mongoose";
 
@@ -256,8 +256,7 @@ export default class Property {
           // Get the property ID from the form data
           const propertyID = req.body.id;
 
-          // Get the io instance from the app
-          const io = req.app.get('io');
+
 
           // Define the property files
           const propertyFiles = req.files as
@@ -518,16 +517,32 @@ export default class Property {
 
           if(insertedProperty) {
             // Notify all admins about the new property added
-            const admins = await UserModel.find({role: {$regex: /^admin$/i}}, {_id: 1}).lean() as unknown as Array<{_id: import("mongoose").Types.ObjectId}>;
-            const adminIds = admins.map(admin => admin._id);
-            await NotificationService.createAndSend(io, {
-              type: 'Property',
-              title: 'New Property Added',
-              body: `A new property titled "${DbData.title}" has been added.`,
-              meta: {propertyId: insertedProperty.id, addedBy: DbData.addedBy},
-              recipients: adminIds,
-              roles: ['admin']
-            });
+            const notificationService = new NotificationService();
+            // Get the io instance from the app
+            const io = req.app.get('io');
+            await notificationService.createNotification(
+              {
+                title: 'New Property Added',
+                body: `A new property titled "${insertedProperty.title}" has been added. Please review and verify the listing.`,
+                type: 'property',          // OK (your entity allows custom strings)
+                severity: 'info',
+                audience: {mode: 'role', roles: ['admin']}, // target all admins  
+                channels: ['inapp', 'email'], // keep if you'll email later; harmless otherwise
+                metadata: {propertyID: insertedProperty.id, addedBy: (insertedProperty.addedBy as AddedBy).username || 'system'},
+                // DO NOT send createdAt here; NotificationService sets it  
+              },
+              // Real-time emit callback: send to each audience room
+
+
+              (rooms, payload) => {
+                rooms.forEach((room) => {
+                  io.to(room).emit('notification.new', payload);
+                });
+              }
+            );
+
+
+
             // Send susscess message
             res.status(200).json({
               status: "success",
@@ -875,31 +890,33 @@ export default class Property {
             // Prefer the authenticated user inserted by your auth middleware (req.user).
             // Fall back to a body value if you intentionally send it (DELETE rarely has a body).
 
-            const actorId =
-              (req as any).user?._id?.toString?.() ??
-              (req as any).user?.id?.toString?.() ??
-              (typeof req.body?.deletedBy === 'string' ? req.body.deletedBy : null);
-
-            // Look up all admins (only _id needed for per-user deliveries).
-            // Look up all admins (only _id needed for per-user deliveries).
-            const admins = await UserModel
-              .find({role: {$regex: /^admin$/i}}, {_id: 1})
-              .lean();
-
-            const adminIds = admins.map((a: any) => a._id.toString()); // string[]
 
             // Pull the Socket.IO instance (set once at app bootstrap: app.set('io', io)).
             const io = req.app.get('io');
 
             if(io) {
-              await NotificationService.createAndSend(io, {
-                type: 'Property',
-                title: 'Property Deleted',
-                body: `A property titled "${property.title ?? safeID}" has been deleted.`,
-                meta: {propertyId: property.id, deletedBy: safeUsername || actorId || 'unknown'},
-                recipients: adminIds,  // ✅ now matches the expected type
-                roles: ['admin']
-              });
+              // Send a notification to each admin.
+              // Each admin is responsible for filtering out their own notifications client-side.
+              const notificationService = new NotificationService();
+              await notificationService.createNotification(
+                {
+                  title: 'Property Deleted',
+                  body: `Property with ID ${property.id} has been deleted.`,
+                  type: 'user',          // OK (your entity allows custom strings)
+                  severity: 'warning',
+                  audience: {mode: 'user', usernames: [property.addedBy.username], roles: ['admin']}, // target the user
+                  channels: ['inapp', 'email'], // keep if you'll email later; harmless otherwise
+                  metadata: {propertyID: property.id, propertyTitle: property.title, deletedBy: safeUsername || 'system'},
+                  // DO NOT send createdAt here; NotificationService sets it
+                },
+                // Real-time emit callback: send to each audience room
+                (rooms, payload) => {
+                  rooms.forEach((room) => {
+                    io.to(room).emit('notification.new', payload);
+                  });
+                }
+              );
+
             } else {
               console.warn('[delete-property] io is undefined; skipping notifications');
             }
@@ -1409,6 +1426,36 @@ export default class Property {
               "Error occurred while updating property: " + updateThePropertyByID
             );
           } else {
+            //Send notification of successful update
+            const notificationService = new NotificationService();
+            const io = req.app.get("io");
+            if(io) {
+              await notificationService.createNotification(
+                {
+                  title: "Property Updated",
+                  body: `Property with ID ${propertyID} has been updated.`,
+                  type: "user",
+                  severity: "info",
+                  audience: {
+                    mode: "user",
+                    usernames: [updateThePropertyByID.addedBy.username],
+                    roles: ["admin"],
+                  },
+                  channels: ["inapp", "email"],
+                  metadata: {
+                    propertyID: propertyID,
+                    propertyTitle: updateThePropertyByID.title,
+                    updatedBy: DbData.addedBy.username,
+                  },
+                },
+                (rooms, payload) => {
+                  rooms.forEach((room) => {
+                    io.to(room).emit("notification.new", payload);
+                  });
+                }
+              );
+            }
+            // Respond with success
             res.status(200).json({
               status: "success",
               message: "Property updated successfully.",

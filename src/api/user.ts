@@ -28,7 +28,7 @@ import {
   GoogleMapLocation,
 } from "../models/property.model";
 import {MSG} from "../controller/commonTypeSetting";
-import {NotificationService} from '../services/notification.service';
+import NotificationService from '../services/notification.service';
 
 dotenv.config();
 
@@ -438,16 +438,29 @@ export default class UserRoute {
               const save = await newUser.save();
               if(save) {
                 // Notify all admins about the new property added
-                const admins = await UserModel.find({role: {$regex: /^admin$/i}}, {_id: 1}).lean() as unknown as Array<{_id: import("mongoose").Types.ObjectId}>;
-                const adminIds = admins.map(admin => admin._id);
-                await NotificationService.createAndSend(io, {
-                  type: 'USER_CREATED',
-                  title: 'New User Created',
-                  body: `New User Created: "${req.body.name}".`,
-                  meta: {username: req.body.username, email: req.body.email, role: req.body.role},
-                  recipients: adminIds,
-                  roles: ['admin']
-                });
+                const notificationService = new NotificationService();
+                // get the Socket.IO instance you attached in app.ts (this.app.set('io', this.io))
+                const io = req.app.get('io') as import('socket.io').Server;
+
+                await notificationService.createNotification(
+                  {
+                    title: 'New User Registered',
+                    body: `User ${newUser.name} has registered.`,
+                    type: 'user',          // OK (your entity allows custom strings)
+                    severity: 'info',
+                    audience: {mode: 'role', roles: ['admin']},
+                    channels: ['inapp', 'email'], // keep if you'll email later; harmless otherwise
+                    metadata: {username: newUser.username, createdBy: newUser.creator},
+                    // DO NOT send createdAt here; NotificationService sets it
+                  },
+                  // Real-time emit callback: send to each audience room
+                  (rooms, payload) => {
+                    rooms.forEach((room) => {
+                      io.to(room).emit('notification.new', payload);
+                    });
+                  }
+                );
+
                 res.status(201).json({
                   status: "success",
                   message: "User created successfully",
@@ -615,6 +628,31 @@ export default class UserRoute {
           if(!updatedUser) {
             throw new Error("User not found or update failed");
           }
+
+          // Notify all admins about the user update
+          const notificationService = new NotificationService();
+          // get the Socket.IO instance you attached in app.ts (this.app.set('io', this.io))
+          const io = req.app.get('io') as import('socket.io').Server;
+          // Create notification
+          await notificationService.createNotification(
+            {
+              title: 'User Updated',
+              body: `User ${updatedUser.name} has been updated.`,
+              type: 'user',          // OK (your entity allows custom strings)
+              severity: 'info',
+              audience: {mode: 'role', roles: ['admin']}, // target admins
+              channels: ['inapp', 'email'], // keep if you'll email later; harmless otherwise
+              metadata: {username: updatedUser.username, updatedBy: updatedUser.updator},
+              // DO NOT send createdAt here; NotificationService sets it    
+            },
+            // Real-time emit callback: send to each audience room
+            (rooms, payload) => {
+              rooms.forEach((room) => {
+                io.to(room).emit('notification.new', payload);
+              });
+            }
+          );
+
 
           res.status(200).json({
             status: "success",
@@ -1046,12 +1084,15 @@ export default class UserRoute {
   private deleteUserByUsername() {
     this.router.delete(
       "/user-delete/:username",
-      async (req: Request<{username: string}>, res: Response) => {
+      async (req: Request<{username: string, deletedBy: string}>, res: Response) => {
         try {
           const username = req.params.username?.trim();
+          const deletedBy = req.body.deletedBy?.trim() || 'system';
+
           if(!username) {
             throw new Error("Username is required");
           }
+
           const user = await UserModel.findOne({username});
 
           const recycalBinPath = path.join(
@@ -1104,8 +1145,37 @@ export default class UserRoute {
             {$unset: {addedBy: {}}}
           );
 
+          //Send notification to the user about the deletion of their account
+          const notificationService = new NotificationService();
+          // get the Socket.IO instance you attached in app.ts (this.app.set('io', this.io))
+          const io = req.app.get('io') as import('socket.io').Server;
+          // Create notification
+          if(user) {
+            await notificationService.createNotification(
+              {
+                title: 'User Deleted',
+                body: `User ${user.name} has been deleted.`,
+                type: 'user',          // OK (your entity allows custom strings)
+                severity: 'warning',
+                audience: {mode: 'user', usernames: [username], roles: ['admin']}, // target the user
+                channels: ['inapp', 'email'], // keep if you'll email later; harmless otherwise
+                metadata: {username: username, deletedBy: deletedBy || 'system'},
+                // DO NOT send createdAt here; NotificationService sets it
+              },
+              // Real-time emit callback: send to each audience room
+              (rooms, payload) => {
+                rooms.forEach((room) => {
+                  io.to(room).emit('notification.new', payload);
+                });
+              }
+            );
+          }
+
+
           // Delete user
           const deleteUser = await UserModel.findOneAndDelete({username});
+
+
 
           if(deleteUser) {
             res.status(200).json({

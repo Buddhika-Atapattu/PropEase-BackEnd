@@ -48,7 +48,7 @@ import QRCode from 'qrcode';
 import axios, {HttpStatusCode} from 'axios';
 import * as os from 'os';
 import {UserModel} from "../models/user.model";
-import {NotificationService} from '../services/notification.service';
+import NotificationService from '../services/notification.service';
 
 
 
@@ -226,7 +226,6 @@ export default class Lease {
             | {[fieldname: string]: Express.Multer.File[]}
             | undefined;
 
-          const io = req.app.get('io');
           // Lease ID
           if(
             !this.checkIsString(
@@ -815,19 +814,35 @@ export default class Lease {
           const INSERT = new LeaseModel(INSERT_DATA);
           await INSERT.save();
 
-          // Notify all admins about the new property added
-          const admins = await UserModel.find({role: {$regex: /^admin$/i}}, {_id: 1}).lean() as unknown as Array<{_id: import("mongoose").Types.ObjectId}>;
-          const adminIds = admins.map(admin => admin._id);
-          await NotificationService.createAndSend(io, {
-            type: 'LeaseAgreementCreated',
-            title: 'New Lease Agreement Created',
-            body: `A new lease id "${leaseID}" has been added.`,
-            meta: {leaseID: leaseID},
-            recipients: adminIds,
-            roles: ['admin']
-          });
 
           if(INSERT) {
+            // Send notification to the tenant
+            // Notify all admins about the new property added
+            const notificationService = new NotificationService();
+
+            // get the Socket.IO instance you attached in app.ts (this.app.set('io', this.io))
+            const io = req.app.get('io') as import('socket.io').Server;
+
+
+            await notificationService.createNotification(
+              {
+                title: 'Created New Lease Agreement',
+                body: `New lease agreement has been created with ID: ${leaseID}. Please review and validate the agreement.`,
+                type: 'lease',          // OK (your entity allows custom strings)
+                severity: 'info',
+                audience: {mode: 'user', usernames: [tenantUsername], roles: ['admin']}, // target the user
+                channels: ['inapp', 'email'], // keep if you'll email later; harmless otherwise
+                metadata: {leaseID: leaseID, tenant: tenantUsername, property: selectedProperty.id, agent: userAgent.username},
+                // DO NOT send createdAt here; NotificationService sets it
+              },
+              // Real-time emit callback: send to each audience room
+              (rooms, payload) => {
+                rooms.forEach((room) => {
+                  io.to(room).emit('notification.new', payload);
+                });
+              }
+            );
+
             res.status(200).json({
               status: "success",
               message: "Agreement has been created successfully!",
@@ -1628,6 +1643,33 @@ export default class Lease {
 
 
           if(leaseAgreement) {
+
+            // Notify all admins about the new property added
+            const notificationService = new NotificationService();
+
+            // get the Socket.IO instance you attached in app.ts (this.app.set('io', this.io))
+            const io = req.app.get('io') as import('socket.io').Server;
+
+
+            await notificationService.createNotification(
+              {
+                title: 'Updated Lease Agreement',
+                body: `Lease agreement has been updated successfully with ID: ${leaseID}. Please review and validate the agreement.`,
+                type: 'lease',          // OK (your entity allows custom strings)
+                severity: 'info',
+                audience: {mode: 'user', usernames: [tenantUsername], roles: ['admin']}, // target the user
+                channels: ['inapp', 'email'], // keep if you'll email later; harmless otherwise
+                metadata: {leaseID: leaseID, tenant: tenantUsername, property: selectedProperty.id, agent: userAgent.username},
+                // DO NOT send createdAt here; NotificationService sets it
+              },
+              // Real-time emit callback: send to each audience room
+              (rooms, payload) => {
+                rooms.forEach((room) => {
+                  io.to(room).emit('notification.new', payload);
+                });
+              }
+            );
+
             res.status(200).json({
               status: "success",
               message: "Agreement has been created successfully!",

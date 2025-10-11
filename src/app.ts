@@ -14,7 +14,8 @@ import Tenant from './api/tenant';
 import FileTransfer from './api/fileTransfer';
 import Lease from './api/lease';
 import Validator from './api/validator';
-import Notification from './api/notification';
+import NotificationController from './controller/notification.controller';
+import NotificationService from './services/notification.service';
 
 // Services
 import {AutoDeleteUserService} from './services/auto-delete.service';
@@ -22,19 +23,23 @@ import {AutoDeleteUserService} from './services/auto-delete.service';
 // Socket.IO (your class-based server)
 import SocketServer from './socket/socket';
 
+// Middleware
+import {authMiddleware} from './middleware/authMiddleware';
+
 export default class App {
   private app: Express = express();
   private httpServer = http.createServer(this.app);
 
   // Create and attach Socket.IO (returns io)
-  private io = new SocketServer({
+  private socketServer = new SocketServer({
     origins: [
       'http://localhost:4200',
       (process.env.FRONTEND_ORIGIN || '').trim() || undefined,
     ].filter(Boolean) as string[],
     jwtSecret: process.env.JWT_SECRET || 'defaultsecret',
     allowCookieAuth: true,
-  }).attach(this.httpServer);
+  });
+  private io = this.socketServer.attach(this.httpServer);
 
   // Route modules
   private user: UserRoute = new UserRoute();
@@ -45,7 +50,8 @@ export default class App {
   private fileTransfer: FileTransfer = new FileTransfer();
   private lease: Lease = new Lease();
   private validator: Validator = new Validator();
-  private notification: Notification = new Notification(process.env.JWT_SECRET || 'defaultsecret');
+  private notificationService: NotificationService = new NotificationService();
+  private notification: NotificationController = new NotificationController(this.notificationService, this.socketServer);
 
   // Services
   private autoDeleteUserService = new AutoDeleteUserService(this.io);
@@ -93,7 +99,7 @@ export default class App {
     this.app.use('/api-file-transfer', this.fileTransfer.route);
     this.app.use('/api-lease', this.lease.route);
     this.app.use('/api-validator', this.validator.route);
-    this.app.use('/api-notification', this.notification.route);
+    this.app.use('/api-notification', authMiddleware, this.notification.router);
 
     // Health check
     this.app.get('/api/health', (_req: Request, res: Response) => {
