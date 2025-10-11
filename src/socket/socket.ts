@@ -28,7 +28,7 @@ type JwtPayload = {
 
 export default class SocketServer {
   private io!: IOServer;
-  private readonly opts: Required<SetupOptions>;
+  private readonly opts: Required<SetupOptions>; // <-- fixed generic
 
   constructor (options: SetupOptions) {
     this.opts = {
@@ -73,7 +73,7 @@ export default class SocketServer {
     });
 
     // 2) Connection handler → join rooms
-    this.io.on('connection', (socket: Socket) => {
+    this.io.on('connection', (socket) => {
       const auth = (socket as any).authUser as {username: string; role: string} | undefined;
       if(!auth?.username || !auth?.role) {
         socket.disconnect(true);
@@ -87,7 +87,7 @@ export default class SocketServer {
 
       console.log(`✅ Socket connected: ${auth.username} (role=${auth.role})`);
 
-      // Example ping handler (optional)
+      // Optional: ping handler
       // socket.on('ping', () => socket.emit('pong'));
     });
 
@@ -119,24 +119,30 @@ export default class SocketServer {
 
   /** Emit the same payload to multiple rooms at once */
   emitToRooms(rooms: string[], event: string, payload: any) {
-    rooms.forEach(r => this.instance.to(r).emit(event, payload));
+    rooms.forEach((r) => this.instance.to(r).emit(event, payload));
   }
 
   /* -------------------- Internals -------------------- */
 
-  /** Helper: extract token from handshake auth or cookie */
+  /** Helper: extract token from handshake auth, Authorization header, or cookie */
   private extractToken(socket: Socket): string | null {
     // Preferred: client sends { auth: { token } } when connecting
     const fromAuth = (socket.handshake as any).auth?.token as string | undefined;
     if(fromAuth) return fromAuth;
+
+    // Also support Authorization: Bearer <token>
+    const authz = socket.handshake.headers.authorization;
+    if(authz?.toLowerCase().startsWith('bearer ')) {
+      return authz.slice(7).trim();
+    }
 
     if(this.opts.allowCookieAuth) {
       // Secondary: try cookie header (e.g., "token=<jwt>; other=..."). Basic parse.
       const cookie = socket.handshake.headers.cookie ?? '';
       const match = cookie
         .split(';')
-        .map(s => s.trim())
-        .find(s => s.startsWith('token='));
+        .map((s) => s.trim())
+        .find((s) => s.startsWith('token='));
       if(match) return match.split('=')[1] || null;
     }
 

@@ -1,16 +1,40 @@
-import {Mongoose, Types, Document, Schema} from "mongoose";
-import {Role} from "../../types/roles";
-import {NotificationAudience} from "../../types/roles";
+// src/modules/notifications/notification.entity.ts
+import {NotificationAudience} from '../../types/roles';
+
+export type NotificationSeverity = 'info' | 'success' | 'warning' | 'error';
+
+export type NotificationType =
+    | 'system'
+    | 'lease'
+    | 'payment'
+    | 'complaint'
+    | 'general'
+    | 'reminder'
+    | 'alert'
+    | 'promotion'
+    | 'event'
+    | 'update'
+    | 'survey'
+    | 'announcement'
+    | 'maintenance'
+    | 'emergency'
+    | 'welcome'
+    | 'farewell'
+    | 'policy'
+    | 'security'
+    | 'custom'
+    | 'other'
+    | string; // allow custom strings while keeping common literals
 
 export interface NotificationEntity {
-    _id?: string;
+    _id?: string; // stored as string in your codebase; if you switch to ObjectId, update accordingly
     title: string;
     body: string;
-    type?: 'system' | 'lease' | 'payment' | 'complaint' | 'general' | 'reminder' | 'alert' | 'promotion' | 'event' | 'update' | 'survey' | 'announcement' | 'maintenance' | 'emergency' | 'welcome' | 'farewell' | 'policy' | 'security' | 'custom' | 'other' | string;
-    severity?: 'info' | 'success' | 'warning' | 'error';
+    type?: NotificationType;
+    severity?: NotificationSeverity;
     audience: NotificationAudience;
     createdAt: Date;
     expiresAt?: Date; // optional TTL
     metadata?: Record<string, any>;
-    channels?: Array<'inapp' | 'email' | 'sms'>; // we’ll use 'inapp' now
+    channels?: Array<'inapp' | 'email' | 'sms'>; // using 'inapp' now
 }
