@@ -1,0 +1,117 @@
+{
+  "_id": "68737f3902a266731eb50de1",
+  "id": "469fbe1c-0555-446f-8188-9e50a5272d58",
+  "title": "Intuitive human-resource encryption",
+  "type": "studio",
+  "listing": "rent",
+  "description": "Surface phone every thus soon.",
+  "countryDetails": {
+    "name": {
+      "common": "Sri Lanka",
+      "official": "Democratic Socialist Republic of Sri Lanka"
+    },
+    "cca2": "LK",
+    "region": "Asia",
+    "latlng": [
+      7.8731,
+      80.7718
+    ],
+    "flags": {
+      "png": "https://flagcdn.com/w320/lk.png",
+      "svg": "https://flagcdn.com/lk.svg"
+    },
+    "timezones": [
+      "UTC+05:30"
+    ],
+    "continents": [
+      "Asia"
+    ]
+  },
+  "address": {
+    "houseNumber": "8633",
+    "street": "Fisher Ways",
+    "city": "Johnsonside",
+    "stateOrProvince": "Western Province",
+    "postcode": "18351",
+    "country": "Sri Lanka"
+  },
+  "location": {
+    "lat": 7.438464,
+    "lng": 81.444898,
+    "embeddedUrl": "https://www.google.com/maps?q=8.920235,81.588448&output=embed"
+  },
+  "totalArea": 696,
+  "builtInArea": 619,
+  "livingRooms": 3,
+  "balconies": 2,
+  "kitchen": 1,
+  "bedrooms": 2,
+  "bathrooms": 3,
+  "maidrooms": 0,
+  "driverRooms": 0,
+  "furnishingStatus": "unfurnished",
+  "totalFloors": 1,
+  "numberOfParking": 3,
+  "builtYear": 2012,
+  "propertyCondition": "needs renovation",
+  "developerName": "Joseph-Williams",
+  "projectName": "Help Residency",
+  "ownerShipType": "leasehold",
+  "price": 7103822,
+  "currency": "LKR",
+  "pricePerSqurFeet": 10206.64,
+  "expectedRentYearly": 355191.10000000003,
+  "expectedRentQuartely": 88797.77500000001,
+  "expectedRentMonthly": 28415.288,
+  "expectedRentDaily": 923.49686,
+  "maintenanceFees": 1943,
+  "serviceCharges": 1812,
+  "transferFees": 97591,
+  "availabilityStatus": "ready to move",
+  "featuresAndAmenities": [
+    "Gym",
+    "Elevator",
+    "Playground",
+    "Balcony",
+    "Pool"
+  ],
+  "images": [
+    {
+      "originalname": "image.jpg",
+      "filename": "property_5_image.jpg",
+      "mimetype": "image/jpeg",
+      "size": 280132,
+      "imageURL": "https://picsum.photos/id/47/800/600"
+    }
+  ],
+  "documents": [
+    {
+      "originalname": "deed.pdf",
+      "filename": "property_5_deed.pdf",
+      "mimetype": "application/pdf",
+      "size": 323058,
+      "documentURL": "https://example.com/documents/property_5_deed.pdf"
+    }
+  ],
+  "videoTour": "",
+  "virtualTour": "",
+  "listingDate": "2025-07-13T09:35:03.693989Z",
+  "availabilityDate": "2025-07-13T09:35:03.693994Z",
+  "listingExpiryDate": null,
+  "rentedDate": null,
+  "soldDate": null,
+  "addedBy": {
+    "username": "briannaramirez5",
+    "name": "Kyle Carney",
+    "email": "user6@example.com",
+    "role": "admin",
+    "contactNumber": "+94778085957",
+    "addedAt": "2025-07-13T09:35:03.693996Z"
+  },
+  "owner": "briannaramirez5",
+  "referenceCode": "PROP-0006",
+  "verificationStatus": "pending",
+  "priority": "medium",
+  "status": "draft",
+  "internalNote": "Trip threat store subject apply amount imagine."
+}

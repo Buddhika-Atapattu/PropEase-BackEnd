@@ -1,0 +1,115 @@
+{
+  "_id": "68737f3902a266731eb50ddd",
+  "id": "ec8987b5-2ace-48b3-aeb1-ce8f25e547ea",
+  "title": "Innovative impactful budgetary management",
+  "type": "villa",
+  "listing": "sold",
+  "description": "Standard writer certainly friend this account entire anyone. Six place kid quite wish account. Song white dinner billion behavior gun environment.",
+  "countryDetails": {
+    "name": {
+      "common": "Sri Lanka",
+      "official": "Democratic Socialist Republic of Sri Lanka"
+    },
+    "cca2": "LK",
+    "region": "Asia",
+    "latlng": [
+      7.8731,
+      80.7718
+    ],
+    "flags": {
+      "png": "https://flagcdn.com/w320/lk.png",
+      "svg": "https://flagcdn.com/lk.svg"
+    },
+    "timezones": [
+      "UTC+05:30"
+    ],
+    "continents": [
+      "Asia"
+    ]
+  },
+  "address": {
+    "houseNumber": "32075",
+    "street": "Matthew Square",
+    "city": "Lake Joelview",
+    "stateOrProvince": "Western Province",
+    "postcode": "37593",
+    "country": "Sri Lanka"
+  },
+  "location": {
+    "lat": 9.492141,
+    "lng": 81.469077,
+    "embeddedUrl": "https://www.google.com/maps?q=6.118223,80.521755&output=embed"
+  },
+  "totalArea": 3956,
+  "builtInArea": 3751,
+  "livingRooms": 2,
+  "balconies": 3,
+  "kitchen": 1,
+  "bedrooms": 2,
+  "bathrooms": 2,
+  "maidrooms": 0,
+  "driverRooms": 1,
+  "furnishingStatus": "unfurnished",
+  "totalFloors": 2,
+  "numberOfParking": 1,
+  "builtYear": 1997,
+  "propertyCondition": "good",
+  "developerName": "Jenkins LLC",
+  "projectName": "Myself Residency",
+  "ownerShipType": "company",
+  "price": 83519640,
+  "currency": "LKR",
+  "pricePerSqurFeet": 21112.14,
+  "expectedRentYearly": 4175982,
+  "expectedRentQuartely": 1043995.5,
+  "expectedRentMonthly": 334078.56,
+  "expectedRentDaily": 10857.553199999998,
+  "maintenanceFees": 8076,
+  "serviceCharges": 7252,
+  "transferFees": 17002,
+  "availabilityStatus": "pending",
+  "featuresAndAmenities": [
+    "Elevator",
+    "Garden",
+    "Gym"
+  ],
+  "images": [
+    {
+      "originalname": "image.jpg",
+      "filename": "property_1_image.jpg",
+      "mimetype": "image/jpeg",
+      "size": 186688,
+      "imageURL": "https://picsum.photos/id/92/800/600"
+    }
+  ],
+  "documents": [
+    {
+      "originalname": "deed.pdf",
+      "filename": "property_1_deed.pdf",
+      "mimetype": "application/pdf",
+      "size": 144890,
+      "documentURL": "https://example.com/documents/property_1_deed.pdf"
+    }
+  ],
+  "videoTour": "",
+  "virtualTour": "",
+  "listingDate": "2025-07-13T09:35:03.690656Z",
+  "availabilityDate": "2025-07-13T09:35:03.690661Z",
+  "listingExpiryDate": null,
+  "rentedDate": null,
+  "soldDate": null,
+  "addedBy": {
+    "username": "michaelhughes1",
+    "name": "Angela Alexander",
+    "email": "user2@example.com",
+    "role": "admin",
+    "contactNumber": "+94776465981",
+    "addedAt": "2025-07-13T09:35:03.690664Z"
+  },
+  "owner": "michaelhughes1",
+  "referenceCode": "PROP-0002",
+  "verificationStatus": "approved",
+  "priority": "medium",
+  "status": "published",
+  "internalNote": "Market finish her here nothing."
+}

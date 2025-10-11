@@ -1,0 +1,118 @@
+{
+  "_id": "68737f3902a266731eb50de6",
+  "id": "492476c8-ce89-4f64-a63c-f2367977e4b7",
+  "title": "Robust cohesive implementation",
+  "type": "studio",
+  "listing": "sale",
+  "description": "Watch year both avoid interest PM interesting consider. Perform western network.",
+  "countryDetails": {
+    "name": {
+      "common": "Sri Lanka",
+      "official": "Democratic Socialist Republic of Sri Lanka"
+    },
+    "cca2": "LK",
+    "region": "Asia",
+    "latlng": [
+      7.8731,
+      80.7718
+    ],
+    "flags": {
+      "png": "https://flagcdn.com/w320/lk.png",
+      "svg": "https://flagcdn.com/lk.svg"
+    },
+    "timezones": [
+      "UTC+05:30"
+    ],
+    "continents": [
+      "Asia"
+    ]
+  },
+  "address": {
+    "houseNumber": "0042",
+    "street": "Williams Brooks",
+    "city": "Port Gregoryborough",
+    "stateOrProvince": "Western Province",
+    "postcode": "09623",
+    "country": "Sri Lanka"
+  },
+  "location": {
+    "lat": 6.296153,
+    "lng": 81.248768,
+    "embeddedUrl": "https://www.google.com/maps?q=9.561765,80.484282&output=embed"
+  },
+  "totalArea": 606,
+  "builtInArea": 427,
+  "livingRooms": 3,
+  "balconies": 0,
+  "kitchen": 1,
+  "bedrooms": 3,
+  "bathrooms": 1,
+  "maidrooms": 1,
+  "driverRooms": 0,
+  "furnishingStatus": "semi-furnished",
+  "totalFloors": 8,
+  "numberOfParking": 1,
+  "builtYear": 2010,
+  "propertyCondition": "needs renovation",
+  "developerName": "Holmes Group",
+  "projectName": "Allow Residency",
+  "ownerShipType": "company",
+  "price": 45983140,
+  "currency": "LKR",
+  "pricePerSqurFeet": 75879.77,
+  "expectedRentYearly": 2299157,
+  "expectedRentQuartely": 574789.25,
+  "expectedRentMonthly": 183932.56,
+  "expectedRentDaily": 5977.8081999999995,
+  "maintenanceFees": 2829,
+  "serviceCharges": 6988,
+  "transferFees": 91681,
+  "availabilityStatus": "ready to move",
+  "featuresAndAmenities": [
+    "Parking",
+    "Playground",
+    "Garden",
+    "Security",
+    "Gym",
+    "Balcony"
+  ],
+  "images": [
+    {
+      "originalname": "image.jpg",
+      "filename": "property_10_image.jpg",
+      "mimetype": "image/jpeg",
+      "size": 173617,
+      "imageURL": "https://picsum.photos/id/13/800/600"
+    }
+  ],
+  "documents": [
+    {
+      "originalname": "deed.pdf",
+      "filename": "property_10_deed.pdf",
+      "mimetype": "application/pdf",
+      "size": 178761,
+      "documentURL": "https://example.com/documents/property_10_deed.pdf"
+    }
+  ],
+  "videoTour": "",
+  "virtualTour": "",
+  "listingDate": "2025-07-13T09:35:03.697911Z",
+  "availabilityDate": "2025-07-13T09:35:03.697915Z",
+  "listingExpiryDate": null,
+  "rentedDate": null,
+  "soldDate": null,
+  "addedBy": {
+    "username": "larry6010",
+    "name": "Patrick Spencer",
+    "email": "user11@example.com",
+    "role": "admin",
+    "contactNumber": "+94773917761",
+    "addedAt": "2025-07-13T09:35:03.697917Z"
+  },
+  "owner": "larry6010",
+  "referenceCode": "PROP-0011",
+  "verificationStatus": "approved",
+  "priority": "medium",
+  "status": "draft",
+  "internalNote": "Through throughout within."
+}

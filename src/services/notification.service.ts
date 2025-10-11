@@ -1,77 +1,66 @@
-import {Types} from 'mongoose';
-import {NotificationModel} from '../models/notification.model';
-import {NotificationDeliveryModel} from '../models/notificationDelivery.model';
-import {UserModel} from '../models/user.model';
+import NotificationRepo from '../modules/notifications/notification.repo';
+import UserNotificationRepo from '../modules/notifications/user-notification.repo';
+import {NotificationEntity} from '../modules/notifications/notification.entity';
+import {Role} from '../types/roles';
 
-export class NotificationService {
-    /**
-     * Create a notification and send to multiple users (admins, agents, tenants)
-     */
-    static async createAndSend(
-        io: any,
-        params: {
-            type: string;
-            title: string;
-            body: string;
-            meta?: Record<string, any>;
-            recipients?: Types.ObjectId[]; // user IDs
-            roles?: string[];              // optional role-based targeting
-        }
+export interface ListOptions {limit?: number; skip?: number; onlyUnread?: boolean;}
+
+export default class NotificationService {
+    constructor (
+        private readonly notifications = new NotificationRepo(),
+        private readonly userNotifs = new UserNotificationRepo(),
+    ) {}
+
+    async createNotification(
+        doc: Omit<NotificationEntity, 'createdAt'>,
+        emit?: (rooms: string[], payload: any) => void
     ) {
-        // 1️⃣ Create the main notification
-        const notification = await NotificationModel.create({
-            type: params.type,
-            title: params.title,
-            body: params.body,
-            meta: params.meta ?? {},
-        });
-
-        // 2️⃣ Determine recipients
-        let userIds: Types.ObjectId[] = [];
-
-        // If specific user IDs are passed
-        if(params.recipients?.length) {
-            userIds = params.recipients;
-        }
-
-        // If role-based targeting is requested
-        if(params.roles?.length) {
-            const usersByRole = (await UserModel.find(
-                {role: {$in: params.roles}},
-                {_id: 1}
-            )
-                .lean()) as unknown as Array<{_id: Types.ObjectId}>;   // ✅ strong cast + lean()
-
-            const roleUserIds = usersByRole.map((u) => u._id);
-            userIds = [...new Set([...userIds, ...roleUserIds])];
-        }
-
-        // No recipients → skip delivery
-        if(!userIds.length) return notification;
-
-        // 3️⃣ Create delivery records for each recipient
-        const deliveries = userIds.map((userId) => ({
-            notificationId: notification._id,
-            userId,
-            role: 'General',
-            isRead: false,
-            isArchived: false,
-        }));
-
-        await NotificationDeliveryModel.insertMany(deliveries);
-
-        // 4️⃣ Emit real-time socket event to each user
-        userIds.forEach((userId) => {
-            io.to(`user:${userId}`).emit('notification:new', {
-                id: notification._id,
-                type: notification.type,
-                title: notification.title,
-                body: notification.body,
-                meta: notification.meta,
-                createdAt: notification.createdAt,
-            });
-        });
-
-        return notification;
+        const saved = await this.notifications.create({...doc, createdAt: new Date()});
+        const rooms: string[] = [];
+        if(doc.audience.mode === 'broadcast') rooms.push('broadcast');
+        if(doc.audience.mode === 'user') (doc.audience.usernames ?? []).forEach(u => rooms.push(`user:${u}`));
+        if(doc.audience.mode === 'role') (doc.audience.roles ?? []).forEach(r => rooms.push(`role:${r}`));
+        emit?.(rooms, {event: 'notification.new', data: saved});
+        return saved;
     }
+
+    private buildAudienceFilter(username: string, role: Role) {
+        return {
+            $or: [
+                {'audience.mode': 'broadcast'},
+                {'audience.mode': 'user', 'audience.usernames': username},
+                {'audience.mode': 'role', 'audience.roles': role},
+            ]
+        };
+    }
+
+    async listForUser(username: string, role: Role, opts: ListOptions = {}) {
+        const {limit = 50, skip = 0, onlyUnread} = opts;
+        const now = new Date();
+
+        const raw = await this.notifications.find({
+            ...this.buildAudienceFilter(username, role),
+            $or: [{expiresAt: {$exists: false}}, {expiresAt: {$gt: now}}],
+        }, limit, skip);
+
+        await Promise.all(raw.map(n => this.userNotifs.upsert(username, String(n._id))));
+        const states = await this.userNotifs.findForUser(username, limit, skip, onlyUnread);
+        const byId = new Map(states.map(s => [String(s.notificationId), s]));
+
+        return raw.map(n => {
+            const s = byId.get(String(n._id));
+            if(onlyUnread && s?.isRead) return null;
+            return {
+                ...n.toObject(),
+                userState: s ? {
+                    isRead: s.isRead, isArchived: s.isArchived, deliveredAt: s.deliveredAt, readAt: s.readAt
+                } : {isRead: false, isArchived: false}
+            };
+        }).filter(Boolean);
+    }
+
+    markRead(username: string, notificationId: string) {
+        return this.userNotifs.markRead(username, notificationId);
+    }
+    markAllRead(username: string) {return this.userNotifs.markAllRead(username);}
 }

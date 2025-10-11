@@ -1,0 +1,116 @@
+{
+  "_id": "68737f3902a266731eb50de0",
+  "id": "3bcd03af-70a9-478a-9216-8997338fd043",
+  "title": "Visionary empowering Local Area Network",
+  "type": "apartment",
+  "listing": "rent",
+  "description": "Join four scientist however issue manage. May themselves each future. Value necessary science type half group.",
+  "countryDetails": {
+    "name": {
+      "common": "Sri Lanka",
+      "official": "Democratic Socialist Republic of Sri Lanka"
+    },
+    "cca2": "LK",
+    "region": "Asia",
+    "latlng": [
+      7.8731,
+      80.7718
+    ],
+    "flags": {
+      "png": "https://flagcdn.com/w320/lk.png",
+      "svg": "https://flagcdn.com/lk.svg"
+    },
+    "timezones": [
+      "UTC+05:30"
+    ],
+    "continents": [
+      "Asia"
+    ]
+  },
+  "address": {
+    "houseNumber": "56755",
+    "street": "Shelia Bypass",
+    "city": "Andersonmouth",
+    "stateOrProvince": "Western Province",
+    "postcode": "98560",
+    "country": "Sri Lanka"
+  },
+  "location": {
+    "lat": 6.528652,
+    "lng": 80.180192,
+    "embeddedUrl": "https://www.google.com/maps?q=6.545262,80.328602&output=embed"
+  },
+  "totalArea": 5747,
+  "builtInArea": 5629,
+  "livingRooms": 2,
+  "balconies": 1,
+  "kitchen": 1,
+  "bedrooms": 5,
+  "bathrooms": 3,
+  "maidrooms": 1,
+  "driverRooms": 0,
+  "furnishingStatus": "semi-furnished",
+  "totalFloors": 7,
+  "numberOfParking": 1,
+  "builtYear": 2013,
+  "propertyCondition": "new",
+  "developerName": "Lyons Inc",
+  "projectName": "Possible Residency",
+  "ownerShipType": "company",
+  "price": 83448844,
+  "currency": "LKR",
+  "pricePerSqurFeet": 14520.42,
+  "expectedRentYearly": 4172442.2,
+  "expectedRentQuartely": 1043110.55,
+  "expectedRentMonthly": 333795.376,
+  "expectedRentDaily": 10848.349719999998,
+  "maintenanceFees": 7692,
+  "serviceCharges": 1766,
+  "transferFees": 98558,
+  "availabilityStatus": "ready to move",
+  "featuresAndAmenities": [
+    "Balcony",
+    "Gym",
+    "Elevator",
+    "Garden"
+  ],
+  "images": [
+    {
+      "originalname": "image.jpg",
+      "filename": "property_4_image.jpg",
+      "mimetype": "image/jpeg",
+      "size": 176464,
+      "imageURL": "https://picsum.photos/id/60/800/600"
+    }
+  ],
+  "documents": [
+    {
+      "originalname": "deed.pdf",
+      "filename": "property_4_deed.pdf",
+      "mimetype": "application/pdf",
+      "size": 415753,
+      "documentURL": "https://example.com/documents/property_4_deed.pdf"
+    }
+  ],
+  "videoTour": "",
+  "virtualTour": "",
+  "listingDate": "2025-07-13T09:35:03.693152Z",
+  "availabilityDate": "2025-07-13T09:35:03.693159Z",
+  "listingExpiryDate": null,
+  "rentedDate": null,
+  "soldDate": null,
+  "addedBy": {
+    "username": "garzajoshua4",
+    "name": "Cassandra Neal",
+    "email": "user5@example.com",
+    "role": "admin",
+    "contactNumber": "+94777999786",
+    "addedAt": "2025-07-13T09:35:03.693161Z"
+  },
+  "owner": "garzajoshua4",
+  "referenceCode": "PROP-0005",
+  "verificationStatus": "rejected",
+  "priority": "high",
+  "status": "draft",
+  "internalNote": "Reveal where mention add this wind science."
+}

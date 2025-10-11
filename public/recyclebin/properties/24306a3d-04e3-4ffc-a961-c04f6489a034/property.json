@@ -1,0 +1,118 @@
+{
+  "_id": "68737f3902a266731eb50de3",
+  "id": "24306a3d-04e3-4ffc-a961-c04f6489a034",
+  "title": "Configurable bi-directional firmware",
+  "type": "land",
+  "listing": "rent",
+  "description": "Particularly pay safe operation method finish. Type camera reach crime these check wife.",
+  "countryDetails": {
+    "name": {
+      "common": "Sri Lanka",
+      "official": "Democratic Socialist Republic of Sri Lanka"
+    },
+    "cca2": "LK",
+    "region": "Asia",
+    "latlng": [
+      7.8731,
+      80.7718
+    ],
+    "flags": {
+      "png": "https://flagcdn.com/w320/lk.png",
+      "svg": "https://flagcdn.com/lk.svg"
+    },
+    "timezones": [
+      "UTC+05:30"
+    ],
+    "continents": [
+      "Asia"
+    ]
+  },
+  "address": {
+    "houseNumber": "585",
+    "street": "Benson Port",
+    "city": "West Jacob",
+    "stateOrProvince": "Western Province",
+    "postcode": "08483",
+    "country": "Sri Lanka"
+  },
+  "location": {
+    "lat": 8.565383,
+    "lng": 81.761653,
+    "embeddedUrl": "https://www.google.com/maps?q=8.228308,80.6848&output=embed"
+  },
+  "totalArea": 5505,
+  "builtInArea": 5211,
+  "livingRooms": 2,
+  "balconies": 0,
+  "kitchen": 1,
+  "bedrooms": 3,
+  "bathrooms": 3,
+  "maidrooms": 0,
+  "driverRooms": 0,
+  "furnishingStatus": "furnished",
+  "totalFloors": 4,
+  "numberOfParking": 1,
+  "builtYear": 2011,
+  "propertyCondition": "needs renovation",
+  "developerName": "Flores-Nash",
+  "projectName": "Choice Residency",
+  "ownerShipType": "trust",
+  "price": 94541484,
+  "currency": "LKR",
+  "pricePerSqurFeet": 17173.75,
+  "expectedRentYearly": 4727074.2,
+  "expectedRentQuartely": 1181768.55,
+  "expectedRentMonthly": 378165.936,
+  "expectedRentDaily": 12290.392919999998,
+  "maintenanceFees": 7726,
+  "serviceCharges": 1268,
+  "transferFees": 99559,
+  "availabilityStatus": "available",
+  "featuresAndAmenities": [
+    "Playground",
+    "Balcony",
+    "Gym",
+    "Elevator",
+    "Parking",
+    "Security"
+  ],
+  "images": [
+    {
+      "originalname": "image.jpg",
+      "filename": "property_7_image.jpg",
+      "mimetype": "image/jpeg",
+      "size": 67787,
+      "imageURL": "https://picsum.photos/id/45/800/600"
+    }
+  ],
+  "documents": [
+    {
+      "originalname": "deed.pdf",
+      "filename": "property_7_deed.pdf",
+      "mimetype": "application/pdf",
+      "size": 239731,
+      "documentURL": "https://example.com/documents/property_7_deed.pdf"
+    }
+  ],
+  "videoTour": "",
+  "virtualTour": "",
+  "listingDate": "2025-07-13T09:35:03.695746Z",
+  "availabilityDate": "2025-07-13T09:35:03.695751Z",
+  "listingExpiryDate": null,
+  "rentedDate": null,
+  "soldDate": null,
+  "addedBy": {
+    "username": "maxpittman7",
+    "name": "Kevin Silva",
+    "email": "user8@example.com",
+    "role": "admin",
+    "contactNumber": "+94778447533",
+    "addedAt": "2025-07-13T09:35:03.695754Z"
+  },
+  "owner": "maxpittman7",
+  "referenceCode": "PROP-0008",
+  "verificationStatus": "rejected",
+  "priority": "high",
+  "status": "archived",
+  "internalNote": "Former impact none thought."
+}

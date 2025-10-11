@@ -1,0 +1,115 @@
+{
+  "_id": "68737f3902a266731eb50deb",
+  "id": "2918d6ff-728a-4924-9f6c-67a142e08217",
+  "title": "Enhanced motivating core",
+  "type": "land",
+  "listing": "sold",
+  "description": "Director still administration. Another fine yourself challenge new. Probably miss under investment serious cold only.",
+  "countryDetails": {
+    "name": {
+      "common": "Sri Lanka",
+      "official": "Democratic Socialist Republic of Sri Lanka"
+    },
+    "cca2": "LK",
+    "region": "Asia",
+    "latlng": [
+      7.8731,
+      80.7718
+    ],
+    "flags": {
+      "png": "https://flagcdn.com/w320/lk.png",
+      "svg": "https://flagcdn.com/lk.svg"
+    },
+    "timezones": [
+      "UTC+05:30"
+    ],
+    "continents": [
+      "Asia"
+    ]
+  },
+  "address": {
+    "houseNumber": "939",
+    "street": "York Shoal",
+    "city": "Clarkport",
+    "stateOrProvince": "Western Province",
+    "postcode": "99382",
+    "country": "Sri Lanka"
+  },
+  "location": {
+    "lat": 8.983353,
+    "lng": 80.190856,
+    "embeddedUrl": "https://www.google.com/maps?q=6.873945,80.956179&output=embed"
+  },
+  "totalArea": 7755,
+  "builtInArea": 7686,
+  "livingRooms": 3,
+  "balconies": 1,
+  "kitchen": 1,
+  "bedrooms": 3,
+  "bathrooms": 3,
+  "maidrooms": 0,
+  "driverRooms": 0,
+  "furnishingStatus": "semi-furnished",
+  "totalFloors": 6,
+  "numberOfParking": 1,
+  "builtYear": 2005,
+  "propertyCondition": "good",
+  "developerName": "Martin, Mendez and Sanchez",
+  "projectName": "Often Residency",
+  "ownerShipType": "company",
+  "price": 83641000,
+  "currency": "LKR",
+  "pricePerSqurFeet": 10785.43,
+  "expectedRentYearly": 4182050,
+  "expectedRentQuartely": 1045512.5,
+  "expectedRentMonthly": 334564,
+  "expectedRentDaily": 10873.33,
+  "maintenanceFees": 9100,
+  "serviceCharges": 2810,
+  "transferFees": 68387,
+  "availabilityStatus": "pending",
+  "featuresAndAmenities": [
+    "Elevator",
+    "Garden",
+    "Security"
+  ],
+  "images": [
+    {
+      "originalname": "image.jpg",
+      "filename": "property_15_image.jpg",
+      "mimetype": "image/jpeg",
+      "size": 203722,
+      "imageURL": "https://picsum.photos/id/52/800/600"
+    }
+  ],
+  "documents": [
+    {
+      "originalname": "deed.pdf",
+      "filename": "property_15_deed.pdf",
+      "mimetype": "application/pdf",
+      "size": 362363,
+      "documentURL": "https://example.com/documents/property_15_deed.pdf"
+    }
+  ],
+  "videoTour": "",
+  "virtualTour": "",
+  "listingDate": "2025-07-13T09:35:03.701762Z",
+  "availabilityDate": "2025-07-13T09:35:03.701770Z",
+  "listingExpiryDate": null,
+  "rentedDate": null,
+  "soldDate": null,
+  "addedBy": {
+    "username": "jennifermayo15",
+    "name": "Ryan Nielsen",
+    "email": "user16@example.com",
+    "role": "admin",
+    "contactNumber": "+94778767269",
+    "addedAt": "2025-07-13T09:35:03.701775Z"
+  },
+  "owner": "jennifermayo15",
+  "referenceCode": "PROP-0016",
+  "verificationStatus": "verified",
+  "priority": "medium",
+  "status": "draft",
+  "internalNote": "Example buy level nice attention."
+}

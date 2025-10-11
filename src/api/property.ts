@@ -24,6 +24,8 @@ import path from "path";
 import multer from "multer";
 import sharp from "sharp";
 import {NotificationService} from '../services/notification.service';
+import fsp from 'fs/promises';
+import {Types} from "mongoose";
 
 
 
@@ -780,96 +782,156 @@ export default class Property {
   //<==================== END GET SINGLE PROPERTY BY ID ====================>
 
   //<==================== DELETE THE PROPERTY BY PROPERTY ID ====================>
+  /**
+   * DELETE /delete-property/:id
+   *
+   * - Validates the UUID in the path.
+   * - Loads the record by persisted string `id` (UUID) — your sample shows this field exists.
+   * - Moves files from /public/propertyUploads/:id to /public/recyclebin/properties/:id (or :id_TIMESTAMP if taken).
+   * - Writes a JSON snapshot of the deleted doc into the recycle bin folder.
+   * - Deletes the record from Mongo.
+   * - Optionally notifies admins via Socket.IO; notification failures do NOT break the delete.
+   */
   private deleteProperty(): void {
     this.router.delete(
-      "/delete-property/:id",
-      async (req: Request<{id: string}>, res: Response) => {
+      '/delete-property/:id',
+      //      ┌── path params type              ┌── response body type  ┌── request body type
+      async (req: Request<{id: string, username: string}, any, any>, res: Response): Promise<any> => {
         try {
-          const {id} = req.params;
-          const safeID = id.trim();
-          const io = req.app.get('io');
+          // 1) Read & validate :id from the URL
+          const safeID = (req.params.id ?? '').trim(); // allow whitespace in URL to be harmless
+          const safeUsername = (req.params.username ?? '').trim(); // allow whitespace in URL to be harmless
 
-          if(!safeID) throw new Error("Property ID is required.");
+          if(!safeID) {
+            // Return 400 (bad input) instead of throwing → client gets a helpful message
+            return res.status(400).json({status: 'error', message: 'Property ID is required.'});
+          }
 
-          const property = await PropertyModel.findOne({id: safeID});
+          // 2) Load the property. Your collection DOES persist a string `id` (UUID),
+          //    so we query { id: safeID } and use .lean() for a plain JS object.
+          const property = await PropertyModel.findOne({id: safeID}).lean();
+          if(!property) {
+            // Not found is a normal condition → 404, *not* 500
+            return res.status(404).json({status: 'error', message: 'Property not found.'});
+          }
 
-          if(!property) throw new Error("Property not found.");
+          // 3) Build deployment-safe filesystem paths.
+          //    process.cwd() works after TS build; __dirname often points at dist/ and can be misleading.
+          const root = process.cwd();
+          const uploadsRoot = path.join(root, 'public', 'propertyUploads');
+          const recycleRoot = path.join(root, 'public', 'recyclebin', 'properties');
 
-          const fileFolderPath = path.join(
-            __dirname,
-            `../../public/propertyUploads/${safeID}`
+          const srcDir = path.join(uploadsRoot, safeID);     // e.g. public/propertyUploads/<id>
+          let dstDir = path.join(recycleRoot, safeID);     // e.g. public/recyclebin/properties/<id>  (must NOT exist pre-rename)
+
+          // 4) Ensure the parent recycle bin directory exists.
+          //    We deliberately do NOT create dstDir, because fs.rename fails if the destination exists.
+          await fsp.mkdir(recycleRoot, {recursive: true});
+
+          // 5) Check existence of source/destination to avoid rename collisions and ENOENT errors.
+          const srcExists = await fsp.stat(srcDir).then(() => true).catch(() => false);
+          const dstExists = await fsp.stat(dstDir).then(() => true).catch(() => false);
+
+          // If a folder with this id already exists in the recycle bin, suffix with timestamp for uniqueness.
+          if(dstExists) {
+            dstDir = path.join(recycleRoot, `${safeID}_${Date.now()}`);
+          }
+
+          // 6) Move uploads to recycle bin (or create dstDir if no source exists).
+          if(srcExists) {
+            try {
+              // Fast, atomic move (same device). Will throw if across devices (EXDEV).
+              await fsp.rename(srcDir, dstDir);
+            } catch(e: any) {
+              if(e?.code === 'EXDEV') {
+                // Cross-device move fallback: copy then remove source.
+                await fsp.mkdir(dstDir, {recursive: true});
+                // Node 18+: fs.cp is available; otherwise use a directory copy utility.
+                // @ts-ignore
+                await fsp.cp(srcDir, dstDir, {recursive: true});
+                await fsp.rm(srcDir, {recursive: true, force: true});
+              } else {
+                // Bubble up unexpected FS errors → handled by catch block as 500.
+                throw e;
+              }
+            }
+          } else {
+            // No uploads folder for this record (already removed or never created).
+            // Still create dstDir so we can store the JSON snapshot below.
+            await fsp.mkdir(dstDir, {recursive: true});
+          }
+
+          // 7) Save a JSON snapshot of the deleted doc into the recycle bin folder
+          //    for audit/recovery purposes.
+          await fsp.writeFile(
+            path.join(dstDir, 'property.json'),
+            JSON.stringify(property, null, 2),
+            'utf-8'
           );
 
-          const recyclebin = path.join(
-            __dirname,
-            `../../public/recyclebin/properties/${safeID}/`
-          );
+          // 8) OPTIONAL: Notify admins (non-blocking). If this fails, the deletion still succeeds.
+          try {
+            // Figure out who performed the delete:
+            // Prefer the authenticated user inserted by your auth middleware (req.user).
+            // Fall back to a body value if you intentionally send it (DELETE rarely has a body).
 
-          // Create recycle bin folder
-          await fs.promises.mkdir(recyclebin, {recursive: true});
+            const actorId =
+              (req as any).user?._id?.toString?.() ??
+              (req as any).user?.id?.toString?.() ??
+              (typeof req.body?.deletedBy === 'string' ? req.body.deletedBy : null);
 
-          // Move files to recycle bin
-          await fs.promises.rename(fileFolderPath, recyclebin);
+            // Look up all admins (only _id needed for per-user deliveries).
+            // Look up all admins (only _id needed for per-user deliveries).
+            const admins = await UserModel
+              .find({role: {$regex: /^admin$/i}}, {_id: 1})
+              .lean();
 
-          // Save property data
-          fs.writeFileSync(
-            path.join(recyclebin, "property.json"),
-            JSON.stringify(
-              property.toObject ? property.toObject() : property,
-              null,
-              2
-            ),
-            "utf-8"
-          );
+            const adminIds = admins.map((a: any) => a._id.toString()); // string[]
 
-          // Just in case some files still remain (e.g. if rename didn't remove source fully)
-          if(fs.existsSync(fileFolderPath)) {
-            await fs.promises.rm(fileFolderPath, {
-              recursive: true,
-              force: true,
+            // Pull the Socket.IO instance (set once at app bootstrap: app.set('io', io)).
+            const io = req.app.get('io');
+
+            if(io) {
+              await NotificationService.createAndSend(io, {
+                type: 'Property',
+                title: 'Property Deleted',
+                body: `A property titled "${property.title ?? safeID}" has been deleted.`,
+                meta: {propertyId: property.id, deletedBy: safeUsername || actorId || 'unknown'},
+                recipients: adminIds,  // ✅ now matches the expected type
+                roles: ['admin']
+              });
+            } else {
+              console.warn('[delete-property] io is undefined; skipping notifications');
+            }
+          } catch(notifyErr) {
+            // Notifications should never block the core deletion flow.
+            console.warn('[delete-property] notification failed:', notifyErr);
+          }
+
+          // 9) Delete the record from Mongo by the same UUID `id`.
+          const del = await PropertyModel.deleteOne({id: safeID});
+          if(del.deletedCount !== 1) {
+            // Record somehow not removed (concurrent change?) → 409 Conflict is appropriate.
+            return res.status(409).json({
+              status: 'error',
+              message: 'Delete conflict: document not removed.'
             });
           }
 
-          // Notify all admins about the new property added
-          const admins = await UserModel.find({role: {$regex: /^admin$/i}}, {_id: 1}).lean() as unknown as Array<{_id: import("mongoose").Types.ObjectId}>;
-          const adminIds = admins.map(admin => admin._id);
-          await NotificationService.createAndSend(io, {
-            type: 'Property',
-            title: 'Property Deleted',
-            body: `Deleted property titled"${property.title}".`,
-            meta: {propertyId: property.id, addedBy: property.addedBy},
-            recipients: adminIds,
-            roles: ['admin']
+          // 10) Success — no body needed for a DELETE.
+          return res.status(204).send();
+        } catch(error: any) {
+          // Map common errors if you want (e.g., CastError → 400). Otherwise, generic 500:
+          console.error('[delete-property] error:', error);
+          return res.status(500).json({
+            status: 'error',
+            message: 'Error occurred while deleting property.'
           });
-
-          // Delete property from DB
-          const deleteProperty = await PropertyModel.findOneAndDelete({
-            id: safeID,
-          });
-
-          if(!deleteProperty)
-            throw new Error(
-              "Error occurred while deleting property: " + deleteProperty
-            );
-
-          // Send success response
-          // Also consider sending deleted property data if needed notifications etc.
-
-          res.status(200).json({
-            status: "success",
-            message: "Property deleted successfully.",
-          });
-        } catch(error) {
-          if(error) {
-            res.status(500).json({
-              status: "error",
-              message: "Error occurred while deleting property: " + error,
-            });
-          }
         }
       }
     );
   }
+
   //<==================== END DELETE THE PROPERTY BY PROPERTY ID ====================>
 
   //<==================== UPDATE THE PROPERTY BY PROPERTY ID =====================>
@@ -1155,11 +1217,11 @@ export default class Property {
 
               /*
               All image conversions using sharp finish properly before deleting the temp folder,
-
+  
               Avoid the EBUSY error caused by open file handles,
-
+  
               Ensure correct .webp file naming and referencing,
-
+  
               Should move all conversion tasks into an array of Promises and await them using Promise.all(...) before proceeding to deletion.
                           
               */
