@@ -1,10 +1,4 @@
-import express, {
-  Express,
-  Request,
-  Response,
-  NextFunction,
-  Router,
-} from "express";
+import express, {Express, Request, Response, NextFunction, Router} from "express";
 import {
   TrackingLoggedUserModel,
   LoggedUserTracking,
@@ -13,16 +7,50 @@ import {
 } from "../models/tracking.model";
 import crypto from "crypto";
 import dotenv from "dotenv";
-import { UserDocument } from "../models/file-upload.model";
-import { UserModel } from "../models/user.model";
+import {UserDocument} from "../models/file-upload.model";
+import {UserModel} from "../models/user.model";
 import fs from "fs";
 import path from "path";
 
 dotenv.config();
 
+/* -----------------------------------------------------------------------------
+ * Helpers (strict-safe parsing & date utilities)
+ * -------------------------------------------------------------------------- */
+
+/** Parse a possibly-undefined string into an integer with default & clamping. */
+function toInt(v: string | undefined, def = 0, min = Number.MIN_SAFE_INTEGER, max = Number.MAX_SAFE_INTEGER): number {
+  const n = Number.parseInt(v ?? "", 10);
+  if(Number.isNaN(n)) return def;
+  return Math.min(max, Math.max(min, n));
+}
+
+/** Parse a date string into a Date; returns null if invalid or undefined. */
+function toDate(v: unknown): Date | null {
+  if(typeof v !== "string") return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** Get end-of-day (23:59:59.999) for a Date; returns null if input null. */
+function endOfDay(d: Date | null): Date | null {
+  if(!d) return null;
+  const e = new Date(d);
+  e.setHours(23, 59, 59, 999);
+  return e;
+}
+
+/** Normalize IPv6 localhost & loopback to 'localhost'. */
+function normalizeIp(ip: string | undefined | null): string {
+  if(!ip) return "unknown";
+  const trimmed = ip.trim();
+  return trimmed === "::1" || trimmed === "127.0.0.1" ? "localhost" : trimmed;
+}
+
 export default class Tracking {
   private router: express.Router;
-  constructor() {
+
+  constructor () {
     this.router = express.Router();
     this.trackLoggedUserLogin();
     this.getLoggedUserTracking();
@@ -35,120 +63,116 @@ export default class Tracking {
     return this.router;
   }
 
+  /* -----------------------------------------------------------------------------
+   * POST /track-logged-user-login
+   * Writes per-user login entries into public/logs/<username>/user-login.log
+   * -------------------------------------------------------------------------- */
   private trackLoggedUserLogin() {
     this.router.post(
       "/track-logged-user-login",
-      async (req: Request, res: Response, next: NextFunction): Promise<any> => {
+      async (req: Request, res: Response, _next: NextFunction): Promise<void> => {
         try {
-          const ip =
-            req.headers["x-forwarded-for"]?.toString().split(",")[0] ||
-            req.socket.remoteAddress;
-          const normalizedIp =
-            ip === "::1" || ip === "127.0.0.1" ? "localhost" : ip;
+          const ipHeader = req.headers["x-forwarded-for"]?.toString().split(",")[0];
+          const ip = normalizeIp(ipHeader ?? req.socket.remoteAddress ?? undefined);
 
-          const { username, date } = req.body;
+          const {username, date} = req.body as {username?: unknown; date?: unknown};
 
-          if (!username || typeof username !== "string") {
-            return res.status(400).json({
-              status: "fail",
-              message: "Invalid or missing username",
-            });
+          if(!username || typeof username !== "string" || !username.trim()) {
+            res.status(400).json({status: "fail", message: "Invalid or missing username"});
+            return;
           }
 
-          const parsedDate = date ? new Date(date) : new Date();
-          if (isNaN(parsedDate.getTime())) {
-            return res.status(400).json({
-              status: "error",
-              message: "Invalid date format",
-            });
+          const parsedDate = typeof date === "string" ? toDate(date) : new Date();
+          if(parsedDate === null) {
+            res.status(400).json({status: "error", message: "Invalid date format"});
+            return;
           }
 
-          const userLogDir = path.join(
-            __dirname,
-            `../../public/logs/${username}`
-          );
+          const userLogDir = path.join(__dirname, `../../public/logs/${username}`);
           const logPath = path.join(userLogDir, `user-login.log`);
-          const logEntry = `[User: ${username} | IP: ${normalizedIp} | Date: ${parsedDate.toISOString()}]\n`;
+          const logEntry = `[User: ${username} | IP: ${ip} | Date: ${parsedDate.toISOString()}]\n`;
 
-          // Ensure the directory exists
-          fs.mkdir(userLogDir, { recursive: true }, (dirErr) => {
-            if (dirErr) {
-              return res.status(500).json({
-                status: "error",
-                message: "Failed to create log directory",
-              });
+          // Ensure the directory exists then append
+          fs.mkdir(userLogDir, {recursive: true}, (dirErr) => {
+            if(dirErr) {
+              res.status(500).json({status: "error", message: "Failed to create log directory"});
+              return;
             }
 
-            // Append to log file
             fs.appendFile(logPath, logEntry, (writeErr) => {
-              if (writeErr) {
-                return res.status(500).json({
-                  status: "error",
-                  message: writeErr.message,
-                });
+              if(writeErr) {
+                res.status(500).json({status: "error", message: writeErr.message});
+                return;
               }
 
-              return res.status(200).json({
+              res.status(200).json({
                 status: "success",
                 message: "User login tracked successfully",
               });
             });
           });
-        } catch (error) {
+        } catch(error) {
           console.error("Error:", error);
-          return res.status(500).json({
-            status: "error",
-            message: "Internal Server Error: " + error,
-          });
+          res.status(500).json({status: "error", message: "Internal Server Error: " + error});
         }
       }
     );
   }
 
+  /* -----------------------------------------------------------------------------
+   * GET /get-logged-user-tracking/:username/:start/:limit
+   * Returns paged login entries for a user + per-user counts for all users.
+   * Query: ?startDate=ISO&endDate=ISO
+   * -------------------------------------------------------------------------- */
   private getLoggedUserTracking() {
     this.router.get(
       "/get-logged-user-tracking/:username/:start/:limit",
-      async (req: Request, res: Response) => {
+      async (req: Request, res: Response): Promise<void> => {
         try {
-          const { username, start, limit } = req.params;
-          const { startDate, endDate } = req.query;
+          const {username, start, limit} = req.params;
+          const {startDate, endDate} = req.query as {startDate?: string; endDate?: string};
 
-          if (!username || !start || !limit) {
-            throw new Error("Parameter data is missing!");
+          if(!username || !start || !limit) {
+            res.status(400).json({status: "error", message: "Parameter data is missing!"});
+            return;
           }
 
-          const safeStart = Math.max(0, parseInt(start));
-          const safeLimit = Math.max(1, parseInt(limit));
-          const startDt = startDate ? new Date(startDate as string) : null;
-          const endDt = endDate ? new Date(endDate as string) : null;
-          if (endDt) endDt.setHours(23, 59, 59, 999);
+          const safeStart = Math.max(0, toInt(start, 0, 0));
+          const safeLimit = Math.max(1, toInt(limit, 20, 1, 1000));
+
+          const startDt = toDate(startDate);
+          const endDt = endOfDay(toDate(endDate));
 
           const logsRoot = path.join(__dirname, "../../public/logs");
 
-          // Function to parse a user's log file
-          const parseUserLogs = (username: string) => {
-            const filePath = path.join(logsRoot, username, "user-login.log");
-            if (!fs.existsSync(filePath)) return [];
+          // Parse a user's log file into entries while applying date filters
+          const parseUserLogs = (name: string): {username: string; ip: string; date: Date}[] => {
+            const filePath = path.join(logsRoot, name, "user-login.log");
+            if(!fs.existsSync(filePath)) return [];
 
             const lines = fs.readFileSync(filePath, "utf-8").trim().split("\n");
-            return lines
-              .map((line) => {
-                const parts = line.match(
-                  /\[User: (.*?) \| IP: (.*?) \| Date: (.*?)\]/
-                );
-                if (!parts || parts.length < 4) return null;
-                const date = new Date(parts[3]);
-                return { username: parts[1], ip: parts[2], date };
-              })
-              .filter((entry) => {
-                if (!entry) return false;
-                if (startDt && entry.date < startDt) return false;
-                if (endDt && entry.date > endDt) return false;
-                return true;
-              }) as { username: string; ip: string; date: Date }[];
+            const out: {username: string; ip: string; date: Date}[] = [];
+
+            for(const line of lines) {
+              const parts = line.match(/\[User: (.*?) \| IP: (.*?) \| Date: (.*?)\]/);
+              if(!parts || parts.length < 4) continue;
+
+              const uname = parts[1] ?? "";
+              const ip = parts[2] ?? "";
+              const dateStr = parts[3] ?? "";
+              const date = toDate(dateStr);
+              if(!date) continue;
+
+              if(startDt && date < startDt) continue;
+              if(endDt && date > endDt) continue;
+
+              out.push({username: uname, ip, date});
+            }
+
+            return out;
           };
 
-          // 1. User-specific tracking
+          // 1) Specific user tracking
           const userLogs = parseUserLogs(username);
           const userTotalCount = userLogs.length;
           const userPagedData = userLogs
@@ -161,26 +185,25 @@ export default class Tracking {
             data: userPagedData,
           };
 
-          // 2. All users' login counts
-          const userDirs = fs
-            .readdirSync(logsRoot, { withFileTypes: true })
-            .filter((dirent) => dirent.isDirectory())
-            .map((dirent) => dirent.name);
+          // 2) All users' login counts
+          const logsRootExists = fs.existsSync(logsRoot);
+          const userDirs = logsRootExists
+            ? fs
+              .readdirSync(logsRoot, {withFileTypes: true})
+              .filter((dirent) => dirent.isDirectory())
+              .map((dirent) => dirent.name)
+            : [];
 
           const allUsersLoginCounts = userDirs
             .map((user) => {
               const entries = parseUserLogs(user);
-              return { username: user, loginCount: entries.length };
+              return {username: user, loginCount: entries.length};
             })
             .sort((a, b) => b.loginCount - a.loginCount);
 
-          // 3. Total login count
-          const totalLoginCount = allUsersLoginCounts.reduce(
-            (sum, u) => sum + u.loginCount,
-            0
-          );
+          // 3) Total login count
+          const totalLoginCount = allUsersLoginCounts.reduce((sum, u) => sum + u.loginCount, 0);
 
-          // Send response
           res.status(200).json({
             status: "success",
             message: "Tracking and summary retrieved successfully",
@@ -190,63 +213,69 @@ export default class Tracking {
               totalLoginCount,
             },
           });
-        } catch (error) {
+        } catch(error) {
           console.error("Error:", error);
-          res.status(500).json({
-            status: "error",
-            message: "Internal Server Error: " + error,
-          });
+          res.status(500).json({status: "error", message: "Internal Server Error: " + error});
         }
       }
     );
   }
 
-  //<============= GET ALL USER COUNT WITH LOGIN DATA COUNT ===============>
+  /* -----------------------------------------------------------------------------
+   * GET /get-all-users-login-counts
+   * Summarize login counts for all users in logs directory
+   * Query: ?startDate=ISO&endDate=ISO
+   * -------------------------------------------------------------------------- */
   private getAllUserLoginCounts() {
     this.router.get(
       "/get-all-users-login-counts",
-      async (req: Request, res: Response) => {
+      async (req: Request, res: Response): Promise<void> => {
         try {
-          const { startDate, endDate } = req.query;
-          const start = startDate ? new Date(startDate as string) : null;
-          const end = endDate ? new Date(endDate as string) : null;
-          if (end) end.setHours(23, 59, 59, 999);
+          const {startDate, endDate} = req.query as {startDate?: string; endDate?: string};
+          const start = toDate(startDate);
+          const end = endOfDay(toDate(endDate));
 
           const logsRoot = path.join(__dirname, "../../public/logs");
+          const logsRootExists = fs.existsSync(logsRoot);
 
-          // Helper: read and filter a user's login log
-          const readUserLog = (username: string) => {
-            const filePath = path.join(logsRoot, username, "user-login.log");
-            if (!fs.existsSync(filePath)) return [];
+          const readUserLog = (name: string): {username: string; date: Date}[] => {
+            const filePath = path.join(logsRoot, name, "user-login.log");
+            if(!fs.existsSync(filePath)) return [];
 
             const lines = fs.readFileSync(filePath, "utf-8").trim().split("\n");
-            return lines
-              .map((line) => {
-                const match = line.match(
-                  /\[User: (.*?) \| IP: (.*?) \| Date: (.*?)\]/
-                );
-                if (!match) return null;
-                const date = new Date(match[3]);
-                if (start && date < start) return null;
-                if (end && date > end) return null;
-                return { username: match[1], date };
-              })
-              .filter(Boolean) as { username: string; date: Date }[];
+            const out: {username: string; date: Date}[] = [];
+
+            for(const line of lines) {
+              const match = line.match(/\[User: (.*?) \| IP: (.*?) \| Date: (.*?)\]/);
+              if(!match || match.length < 4) continue;
+
+              const dateStr = match[3] ?? "";
+              const date = toDate(dateStr);
+              if(!date) continue;
+
+              if(start && date < start) continue;
+              if(end && date > end) continue;
+
+              out.push({username: match[1] ?? "", date});
+            }
+
+            return out;
           };
 
-          // Loop through all user directories
-          const userDirs = fs
-            .readdirSync(logsRoot, { withFileTypes: true })
-            .filter((dirent) => dirent.isDirectory())
-            .map((dirent) => dirent.name);
+          const userDirs = logsRootExists
+            ? fs
+              .readdirSync(logsRoot, {withFileTypes: true})
+              .filter((d) => d.isDirectory())
+              .map((d) => d.name)
+            : [];
 
-          const users: { username: string; loginCount: number }[] = [];
+          const users: {username: string; loginCount: number}[] = [];
           let totalLoginCount = 0;
 
-          for (const user of userDirs) {
+          for(const user of userDirs) {
             const entries = readUserLog(user);
-            if (entries.length > 0) {
-              users.push({ username: user, loginCount: entries.length });
+            if(entries.length > 0) {
+              users.push({username: user, loginCount: entries.length});
               totalLoginCount += entries.length;
             }
           }
@@ -254,54 +283,57 @@ export default class Tracking {
           res.status(200).json({
             status: "success",
             message: "All user login counts retrieved successfully",
-            data: {
-              users,
-              totalLoginCount,
-            },
+            data: {users, totalLoginCount},
           });
-        } catch (error) {
+        } catch(error) {
           console.error("Error:", error);
-          res.status(500).json({
-            status: "error",
-            message: "Internal Server Error: " + error,
-          });
+          res.status(500).json({status: "error", message: "Internal Server Error: " + error});
         }
       }
     );
   }
 
+  /* -----------------------------------------------------------------------------
+   * GET /user-file-management-activity/:username/:start/:limit
+   * Paged aggregation against UserDocument.files (uploader, time window)
+   * Query: ?startDate=ISO&endDate=ISO
+   * -------------------------------------------------------------------------- */
   private getUserFileActivity() {
     this.router.get(
       "/user-file-management-activity/:username/:start/:limit",
-      async (req: Request, res: Response, next: NextFunction) => {
+      async (req: Request, res: Response, _next: NextFunction): Promise<void> => {
         try {
-          const { username, start, limit } = req.params;
-          const { startDate, endDate } = req.query;
+          const {username, start, limit} = req.params;
+          const {startDate, endDate} = req.query as {startDate?: string; endDate?: string};
 
-          const safeStart = Math.max(0, parseInt(start));
-          const safeLimit = Math.min(100, parseInt(limit));
+          // Pagination (strict-safe)
+          const safeStart = Math.max(0, toInt(start, 0, 0));
+          const safeLimit = Math.min(100, Math.max(1, toInt(limit, 20, 1, 100)));
 
-          const dateFilter: any = {};
-          if (startDate) dateFilter.$gte = new Date(startDate as string);
-          if (endDate) dateFilter.$lte = new Date(endDate as string);
+          // Date filter (strict-safe)
+          const startDt = toDate(startDate);
+          const endDt = endOfDay(toDate(endDate));
+          const dateFilter: Record<string, Date> = {};
+          if(startDt) dateFilter.$gte = startDt;
+          if(endDt) dateFilter.$lte = endDt;
 
-          // Shared match criteria
-          const matchStage: any = { "files.uploader": username };
-          if (startDate || endDate) {
+          // Match criteria
+          const matchStage: Record<string, any> = {"files.uploader": username};
+          if(startDt || endDt) {
             matchStage["files.uploadDate"] = dateFilter;
           }
 
-          // Aggregation using $facet
+          // Aggregation using $facet for count + page
           const results = await UserDocument.aggregate([
-            { $unwind: "$files" },
-            { $match: matchStage },
+            {$unwind: "$files"},
+            {$match: matchStage},
             {
               $facet: {
-                totalCount: [{ $count: "count" }],
+                totalCount: [{$count: "count"}],
                 paginatedData: [
-                  { $sort: { "files.uploadDate": -1 } },
-                  { $skip: safeStart },
-                  { $limit: safeLimit },
+                  {$sort: {"files.uploadDate": -1}},
+                  {$skip: safeStart},
+                  {$limit: safeLimit},
                   {
                     $project: {
                       _id: 0,
@@ -323,71 +355,66 @@ export default class Tracking {
             },
           ]);
 
-          const total = results[0]?.totalCount[0]?.count || 0;
-          const data = results[0]?.paginatedData || [];
+          const total = results[0]?.totalCount?.[0]?.count ?? 0;
+          const data = results[0]?.paginatedData ?? [];
 
           res.status(200).json({
             status: "success",
-            message: data.length
-              ? "User file activity retrieved successfully"
-              : "No matching records found",
-            data: {
-              totalCount: total,
-              data: data,
-            },
+            message: data.length ? "User file activity retrieved successfully" : "No matching records found",
+            data: {totalCount: total, data},
           });
-        } catch (error) {
+        } catch(error) {
           console.error("Error:", error);
-          res.status(500).json({
-            status: "error",
-            message: "Internal Server Error: " + error,
-          });
+          res.status(500).json({status: "error", message: "Internal Server Error: " + error});
         }
       }
     );
   }
 
+  /* -----------------------------------------------------------------------------
+   * GET /get-created-users-based-on-creator/:username/:start/:limit
+   * Returns users created by :username, filtered by optional date window.
+   * Query: ?startDate=ISO&endDate=ISO
+   * -------------------------------------------------------------------------- */
   private getCreatedUsersBasedOnCreator() {
     this.router.get(
       "/get-created-users-based-on-creator/:username/:start/:limit",
-      async (req: Request, res: Response) => {
+      async (req: Request, res: Response): Promise<void> => {
         try {
-          const { username, start, limit } = req.params;
-          const { startDate, endDate } = req.query;
+          const {username, start, limit} = req.params;
+          const {startDate, endDate} = req.query as {startDate?: string; endDate?: string};
 
-          // Validate and sanitize input
-          if (!username) {
-            throw new Error("Username cannot be empty");
+          if(!username || !username.trim()) {
+            res.status(400).json({status: "error", message: "Username cannot be empty"});
+            return;
           }
 
-          const safeStart = Math.max(0, parseInt(start));
-          const safeLimit = Math.min(100, parseInt(limit));
+          // Pagination (strict-safe)
+          const safeStart = Math.max(0, toInt(start, 0, 0));
+          const safeLimit = Math.min(100, Math.max(1, toInt(limit, 20, 1, 100)));
 
-          // Build date filter
-          const dateFilter: any = {};
-          if (startDate) dateFilter.$gte = new Date(startDate as string);
-          if (endDate) {
-            const end = new Date(endDate as string);
-            end.setHours(23, 59, 59, 999);
-            dateFilter.$lte = end;
-          }
+          // Date window
+          const startDt = toDate(startDate);
+          const endDt = endOfDay(toDate(endDate));
+          const dateFilter: Record<string, Date> = {};
+          if(startDt) dateFilter.$gte = startDt;
+          if(endDt) dateFilter.$lte = endDt;
 
-          // Build match stage
-          const matchStage: any = { creator: username };
-          if (startDate || endDate) {
+          // Match stage
+          const matchStage: Record<string, any> = {creator: username};
+          if(startDt || endDt) {
             matchStage.createdAt = dateFilter;
           }
 
-          // Aggregate with pagination and count
           const results = await UserModel.aggregate([
-            { $match: matchStage },
+            {$match: matchStage},
             {
               $facet: {
-                totalCount: [{ $count: "count" }],
+                totalCount: [{$count: "count"}],
                 paginatedData: [
-                  { $sort: { createdAt: -1 } },
-                  { $skip: safeStart },
-                  { $limit: safeLimit },
+                  {$sort: {createdAt: -1}},
+                  {$skip: safeStart},
+                  {$limit: safeLimit},
                   {
                     $project: {
                       _id: 0,
@@ -411,20 +438,15 @@ export default class Tracking {
             },
           ]);
 
-          const total = results[0]?.totalCount[0]?.count || 0;
-          const data = results[0]?.paginatedData || [];
+          const total = results[0]?.totalCount?.[0]?.count ?? 0;
+          const data = results[0]?.paginatedData ?? [];
 
           res.status(200).json({
             status: "success",
-            message: data.length
-              ? "Users retrieved successfully"
-              : "No matching records found",
-            data: {
-              totalCount: total,
-              data: data,
-            },
+            message: data.length ? "Users retrieved successfully" : "No matching records found",
+            data: {totalCount: total, data},
           });
-        } catch (error) {
+        } catch(error) {
           console.error("Error:", error);
           res.status(500).json({
             status: "error",

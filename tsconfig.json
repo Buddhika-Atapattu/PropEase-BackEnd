@@ -1,26 +1,31 @@
 {
   "compilerOptions": {
-    /* Target modern JS output */
     "target": "ES2021",
     "lib": ["ES2021"],
-
-    /* ✅ Use modern Node ESM-aware module system */
-    "module": "Node16",
-    "moduleResolution": "Node16",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
 
     "rootDir": "./src",
     "outDir": "./dist",
 
-    /* Interop & quality */
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
     "types": ["node"],
+
     "strict": true,
     "forceConsistentCasingInFileNames": true,
-    "skipLibCheck": true
-  },
+    "skipLibCheck": true,
 
+    "sourceMap": true,
+    "inlineSources": true,
+
+    /* Nice-to-haves for safety */
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "exactOptionalPropertyTypes": true,
+    "useDefineForClassFields": true
+  },
   "include": ["src"],
   "exclude": [
     "node_modules",

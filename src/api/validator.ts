@@ -1,28 +1,24 @@
-import express, {
-  Express,
-  Request,
-  Response,
-  NextFunction,
-  Router,
-} from "express";
-import dns from "dns";
-import axios from "axios";
+import express, {Request, Response, Router} from "express";
+import {promises as dns} from "dns";
 import dotenv from "dotenv";
-import { CryptoService } from "../services/crypto.service";
+// If you actually use CryptoService elsewhere in this file, keep it;
+// otherwise you can safely remove the import + instance to avoid dead code.
+import {CryptoService} from "../services/crypto.service";
 
 dotenv.config();
 
-type ValidationResponse = {
-  status: "success" | "error" | "warning";
+type ApiStatus = "success" | "error" | "warning";
+type ValidationResponse<T = unknown> = {
+  status: ApiStatus;
   message: string;
-  data: any;
-}
+  data?: T;
+};
 
 export default class Validator {
   private router: Router;
-  private cryptoService: CryptoService = new CryptoService();
+  private cryptoService: CryptoService = new CryptoService(); // currently unused here
 
-  constructor() {
+  constructor () {
     this.router = express.Router();
     this.emailValidator();
   }
@@ -31,75 +27,106 @@ export default class Validator {
     return this.router;
   }
 
+  /**
+   * GET /api-validator/email-validator/:email
+   * Validates:
+   *  1) Basic email format
+   *  2) Domain has MX records (deliverable-ish check)
+   *
+   * Notes:
+   *  - We normalize params safely (no .trim() on undefined)
+   *  - We guard against missing domain (e.g. "foo@", "foo")
+   *  - DNS checks are done via promises API (try/catch)
+   */
   private emailValidator() {
     this.router.get(
       "/email-validator/:email",
-      async (req: Request<{ email: string }>, res: Response): Promise<any> => {
+      async (req: Request<{email: string}>, res: Response<ValidationResponse>): Promise<any> => {
         try {
-          const { email } = req.params;
-          const safeEmail = email.trim().toLowerCase();
-          const validFormat = this.isEmailFormatValid(safeEmail);
-          const hasMXRecord = await this.hasValidMXRecord(safeEmail);
+          // Params can be URL-encoded; decode and normalize carefully
+          const raw = req.params?.email ?? "";
+          const safeEmail = decodeURIComponent(raw).toLowerCase().trim();
 
-          if (!validFormat) {
+          // Early validations
+          if(!safeEmail) {
             return res.status(400).json({
               status: "error",
-              error: "Invalid email format!",
-              data: {
-                email: safeEmail,
-                validation: validFormat,
-              },
+              message: "Email is required in the path parameter.",
+              data: {email: raw},
             });
           }
 
-          if (!hasMXRecord) {
+          if(!this.isEmailFormatValid(safeEmail)) {
             return res.status(400).json({
               status: "error",
-              message: "Email domain is invalid (no MX record)!",
-              data: {
-                email: safeEmail,
-                validation: hasMXRecord,
-              },
+              message: "Invalid email format.",
+              data: {email: safeEmail, validation: {format: false, mx: false}},
+            });
+          }
+
+          // Extract domain safely
+          const domain = this.extractDomain(safeEmail);
+          if(!domain) {
+            return res.status(400).json({
+              status: "error",
+              message: "Email domain is missing or malformed.",
+              data: {email: safeEmail, validation: {format: true, mx: false}},
+            });
+          }
+
+          // MX lookup (deliverability hint)
+          const hasMXRecord = await this.hasValidMXRecord(domain);
+
+          if(!hasMXRecord) {
+            return res.status(400).json({
+              status: "error",
+              message: "Email domain has no MX records.",
+              data: {email: safeEmail, validation: {format: true, mx: false}, domain},
             });
           }
 
           return res.status(200).json({
             status: "success",
-            message: "Email is valid!",
-            data: {
-              email: safeEmail,
-              validation: hasMXRecord,
-            },
+            message: "Email appears valid.",
+            data: {email: safeEmail, validation: {format: true, mx: true}, domain},
           });
-        } catch (error) {
-          if (error instanceof Error) {
-            res.status(500).json({ status: "error", error: error.message });
-          } else {
-            res.status(500).json({
-              status: "error",
-              error: "An unknown error occurred." + error,
-            });
-          }
+        } catch(error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          return res.status(500).json({
+            status: "error",
+            message: "Internal Server Error",
+            data: {error: msg},
+          });
         }
       }
     );
   }
 
+  /** Lightweight RFC-ish format check; avoids `.trim()` on undefined. */
   private isEmailFormatValid(email: string): boolean {
+    // Keep it pragmatic; you already normalize to lowercase & trim earlier.
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    return emailRegex.test(email.trim());
+    return typeof email === "string" && emailRegex.test(email);
   }
 
-  private async hasValidMXRecord(email: string): Promise<boolean> {
-    const domain = email.split("@")[1];
-    return new Promise((resolve) => {
-      dns.resolveMx(domain, (err, addresses) => {
-        if (err || !addresses || addresses.length === 0) {
-          resolve(false);
-        } else {
-          resolve(true);
-        }
-      });
-    });
+  /** Safely extract the domain part ("a@b.c" -> "b.c"). Returns undefined if malformed. */
+  private extractDomain(email: string): string | undefined {
+    const at = email.lastIndexOf("@");
+    if(at <= 0 || at === email.length - 1) return undefined;
+    const domain = email.slice(at + 1).trim();
+    return domain || undefined;
+  }
+
+  /**
+   * MX lookup via dns.promises. Guarded so TypeScript never sees string|undefined.
+   * Returns false on any error (NXDOMAIN, ENOTFOUND, timeout, etc.).
+   */
+  private async hasValidMXRecord(domain: string): Promise<boolean> {
+    try {
+      const records = await dns.resolveMx(domain);
+      return Array.isArray(records) && records.length > 0;
+    } catch {
+      return false;
+    }
   }
 }

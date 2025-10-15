@@ -1,0 +1,252 @@
+{
+  "_id": "68737d3002a266731eb50dcf",
+  "name": "Mr. Andrew Moreno IV",
+  "username": "stacy928",
+  "email": "user9@example.com",
+  "password": "$argon2id$example$hash",
+  "dateOfBirth": "1979-03-15T00:00:00.000Z",
+  "age": 46,
+  "gender": "male",
+  "image": "https://randomuser.me/api/portraits/men/97.jpg",
+  "bio": "<p>Agent user created for testing purposes.</p>",
+  "phoneNumber": "+94779510153",
+  "role": "admin",
+  "address": {
+    "street": "Edward Stravenue",
+    "houseNumber": "503",
+    "city": "Holtbury",
+    "postcode": "10260",
+    "country": "Sri Lanka",
+    "stateOrProvince": "Western Province",
+    "_id": "68e6bbb8a6fb37488022925c"
+  },
+  "isActive": true,
+  "access": {
+    "role": "admin",
+    "permissions": [
+      {
+        "_id": "68e6bbb8a6fb37488022925d",
+        "module": "User Management",
+        "actions": [
+          "view",
+          "create",
+          "update",
+          "delete",
+          "activate",
+          "deactivate",
+          "reset password",
+          "change username",
+          "assign roles"
+        ]
+      },
+      {
+        "_id": "68e6bbb8a6fb37488022925e",
+        "module": "Property Management",
+        "actions": [
+          "view",
+          "create",
+          "update",
+          "delete",
+          "assign agent",
+          "upload documents",
+          "manage amenities",
+          "change status"
+        ]
+      },
+      {
+        "_id": "68e6bbb8a6fb37488022925f",
+        "module": "Tenant Management",
+        "actions": [
+          "add new tenant",
+          "edit tenant details",
+          "upload/view lease documents",
+          "terminate lease",
+          "send notification/email/SMS",
+          "record manual payment",
+          "extend lease",
+          "assign to a unit/property",
+          "view lease history"
+        ]
+      },
+      {
+        "_id": "68e6bbb8a6fb374880229260",
+        "module": "Owner Management",
+        "actions": [
+          "view",
+          "create",
+          "update",
+          "delete",
+          "view documents",
+          "assign to property"
+        ]
+      },
+      {
+        "_id": "68e6bbb8a6fb374880229261",
+        "module": "Agent Management",
+        "actions": [
+          "view",
+          "create",
+          "update",
+          "delete",
+          "assign properties",
+          "track performance"
+        ]
+      },
+      {
+        "_id": "68e6bbb8a6fb374880229262",
+        "module": "Lease Management",
+        "actions": [
+          "view",
+          "create",
+          "update",
+          "terminate",
+          "renew",
+          "upload document",
+          "track expiry"
+        ]
+      },
+      {
+        "_id": "68e6bbb8a6fb374880229263",
+        "module": "Payment & Billing",
+        "actions": [
+          "view",
+          "record manual",
+          "generate invoice",
+          "update invoice",
+          "delete invoice",
+          "view balance",
+          "export reports",
+          "configure rates"
+        ]
+      },
+      {
+        "_id": "68e6bbb8a6fb374880229264",
+        "module": "Maintenance Requests",
+        "actions": [
+          "view",
+          "create",
+          "assign technician",
+          "update status",
+          "close",
+          "track progress",
+          "upload documents",
+          "add cost",
+          "generate report"
+        ]
+      },
+      {
+        "_id": "68e6bbb8a6fb374880229265",
+        "module": "Compliance Management",
+        "actions": [
+          "upload certificates",
+          "view status",
+          "set reminders",
+          "update record",
+          "delete record",
+          "notify parties"
+        ]
+      },
+      {
+        "_id": "68e6bbb8a6fb374880229266",
+        "module": "Document Management",
+        "actions": [
+          "upload",
+          "download",
+          "delete",
+          "share",
+          "categorize"
+        ]
+      },
+      {
+        "_id": "68e6bbb8a6fb374880229267",
+        "module": "Communication & Notification",
+        "actions": [
+          "send",
+          "view logs",
+          "customize templates",
+          "schedule",
+          "notify"
+        ]
+      },
+      {
+        "_id": "68e6bbb8a6fb374880229268",
+        "module": "Report Management",
+        "actions": [
+          "generate financial",
+          "generate occupancy",
+          "export lease",
+          "customize templates",
+          "view audit logs",
+          "download"
+        ]
+      },
+      {
+        "_id": "68e6bbb8a6fb374880229269",
+        "module": "Audit Logs",
+        "actions": [
+          "view logs",
+          "filter logs",
+          "export",
+          "monitor login",
+          "track role changes"
+        ]
+      },
+      {
+        "_id": "68e6bbb8a6fb37488022926a",
+        "module": "Dashboard & Analytics",
+        "actions": [
+          "view analytics",
+          "customize widgets",
+          "download",
+          "view real time"
+        ]
+      },
+      {
+        "_id": "68e6bbb8a6fb37488022926b",
+        "module": "System Settings",
+        "actions": [
+          "manage roles",
+          "configure preferences",
+          "configure payments",
+          "manage integrations",
+          "backup restore"
+        ]
+      },
+      {
+        "_id": "68e6bbb8a6fb37488022926c",
+        "module": "Support & Helpdesk",
+        "actions": [
+          "view tickets",
+          "respond",
+          "assign staff",
+          "close ticket",
+          "track history",
+          "send feedback"
+        ]
+      },
+      {
+        "_id": "68e6bbb8a6fb37488022926d",
+        "module": "Access Control",
+        "actions": [
+          "grant access",
+          "revoke access",
+          "set restrictions",
+          "control sessions"
+        ]
+      }
+    ],
+    "_id": "68e6bbb8a6fb37488022926e"
+  },
+  "otpVerifycation": false,
+  "otpToken": "492785",
+  "emailVerified": true,
+  "autoDelete": true,
+  "creator": "Atapattu",
+  "createdAt": "2025-07-13T09:23:58.431Z",
+  "updatedAt": "2025-07-13T09:23:58.431Z",
+  "__v": 0,
+  "otpTokenExpires": "2025-07-13T09:38:36.634Z",
+  "emailVerificationToken": "5e70845b09fa49be927f87cc89541df5",
+  "emailVerificationTokenExpires": "2025-07-14T09:28:36.634Z",
+  "updator": ""
+}

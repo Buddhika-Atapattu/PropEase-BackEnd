@@ -7,7 +7,6 @@ import express, {
 } from "express";
 import * as path from "path";
 import * as fs from "fs-extra";
-
 import {UserModel, IUser} from "../models/user.model";
 import * as Argon2 from "argon2";
 import multer from "multer";
@@ -15,7 +14,7 @@ import sharp from "sharp";
 import os from "os";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
-import twilio from "twilio";
+import twilio, {Twilio} from 'twilio';
 import {TokenMap} from "../models/token.model";
 import crypto from "crypto";
 import {UserDocument} from "../models/file-upload.model";
@@ -29,11 +28,15 @@ import {
 } from "../models/property.model";
 import {MSG} from "../controller/commonTypeSetting";
 import NotificationService from '../services/notification.service';
+import jwt from 'jsonwebtoken';
+import {Role} from '../types/roles';
+import {Config} from '../configs/config';
 
 dotenv.config();
 
 export default class UserRoute {
   private router: express.Router;
+  private readonly twilioClient: Twilio = twilio(Config.twilio.sid, Config.twilio.token);
   constructor () {
     this.router = express.Router();
     this.createUser();
@@ -68,36 +71,47 @@ export default class UserRoute {
   private getUserData() {
     this.router.post(
       "/verify-user",
-      async (req: Request, res: Response, next: NextFunction) => {
+      async (req: Request, res: Response, next: NextFunction): Promise<any> => {
         try {
-          const user: IUser | null = await UserModel.findOne({
-            username: req.body.username,
-          });
+          const {username, password} = req.body as {username: string; password: string};
 
-          if(user !== null) {
-            const isPasswordValid = await Argon2.verify(
-              user.password,
-              req.body.password
-            );
-            if(isPasswordValid) {
-              const plainUser = user.toObject ? user.toObject() : user; // fallback if toObject() doesn't exist
-              const {password, ...userWithoutPassword} = plainUser;
-              const respondData: MSG = {
-                status: 'success',
-                message: 'User verified successfully!',
-                data: userWithoutPassword
-              }
-              res.status(200).json(respondData);
-            } else {
-              res.status(401).json({error: "Invalid password"});
-            }
-          } else {
-            res.status(401).json({error: "Invalid username"});
+          const user: IUser | null = await UserModel.findOne({username});
+          if(!user) {
+            return res.status(401).json({status: 'error', message: "Invalid username"});
           }
+
+          const isPasswordValid = await Argon2.verify(user.password, password);
+          if(!isPasswordValid) {
+            return res.status(401).json({status: 'error', message: "Invalid password"});
+          }
+
+          // Build JWT claims your socket/auth middleware need
+          const payload = {
+            sub: String(user._id),
+            username: user.username,
+            role: user.role as Role,
+          };
+
+          const token = jwt.sign(
+            payload,
+            process.env.JWT_SECRET || 'defaultsecret',
+            {expiresIn: '30d'}
+          );
+
+          // sanitize password out of the response
+          const plainUser = user.toObject ? user.toObject() : (user as any);
+          const {password: _omit, ...userWithoutPassword} = plainUser;
+
+          // unified response shape
+          return res.status(200).json({
+            status: 'success',
+            message: 'User verified successfully!',
+            token,                 // <--- JWT here
+            user: userWithoutPassword,
+          });
         } catch(error) {
-          res
-            .status(500)
-            .json({error: "Error getting user data", details: error});
+          console.error('[verify-user] error:', error);
+          res.status(500).json({status: 'error', message: "Error getting user data"});
           next(error);
         }
       }
@@ -200,8 +214,8 @@ export default class UserRoute {
 
         if(user) {
           user.emailVerified = true;
-          user.emailVerificationToken = undefined;
-          user.emailVerificationTokenExpires = undefined;
+          delete (user as any).emailVerificationToken;
+          delete (user as any).emailVerificationTokenExpires;
           user.autoDelete = false;
 
           await user.save();
@@ -284,17 +298,55 @@ export default class UserRoute {
 
   //<========== PHONE NUMBER VERIFICATION *USE THIS FOR ONLY IN THE PRODUCTION* ==========>
 
-  private async verifyPhoneNumber(to: string, otp: string) {
-    const accountSid = process.env.TWILIO_ACCOUNT_SID;
-    const authToken = process.env.TWILIO_ACCOUNT_AUTH_TOKEN;
-    const twilioPhone = process.env.TWILIO_ACCOUNT_PHONE_NUMBER;
+  private ensureE164(phone: string): string {
+    const trimmed = phone.trim();
+    // E.164: up to 15 digits, no leading zero after +
+    const e164 = /^\+[1-9]\d{7,14}$/;
+    if(!e164.test(trimmed)) {
+      // If you want to support local numbers, convert here (e.g., SL: +94) before throwing.
+      // For now, be strict to avoid sending to a wrong destination.
+      throw new Error(
+        `Invalid phone format. Provide E.164 like +9477xxxxxxx (got "${phone}").`
+      );
+    }
+    return trimmed;
+  }
 
-    const client = twilio(accountSid, authToken);
-    return client.messages.create({
-      body: `Your verification code is: ${otp}`,
-      from: twilioPhone,
-      to,
-    });
+  private async verifyPhoneNumber(to: string, otp: string): Promise<{sid: string; to: string}> {
+    const reqId = (typeof (this as any)?.reqId === 'string' ? (this as any).reqId : undefined) || '-';
+
+    // Basic validation to avoid empty sends
+    const code = String(otp ?? '').trim();
+    if(code.length < 4 || code.length > 10) {
+      throw new Error(`OTP length invalid (reqId=${reqId}).`);
+    }
+
+    const toE164 = this.ensureE164(to);
+
+    try {
+      const result = await this.twilioClient.messages.create({
+        body: `Your verification code is: ${code}`,
+        from: Config.twilio.from, // guaranteed string by Config.must()
+        to: toE164,
+      });
+
+      // Twilio types: result.to can be string | null; normalize for callers
+      const normalizedTo = result.to ?? toE164;
+
+      // Optional: log a concise audit line
+      console.log(
+        `[${reqId}] SMS sent via Twilio → to=${normalizedTo} sid=${result.sid} status=${result.status}`
+      );
+
+      return {sid: result.sid, to: normalizedTo};
+    } catch(err: unknown) {
+      // Surface a clean, actionable error while keeping details in logs
+      const e = err as {code?: string | number; message?: string};
+      console.error(
+        `[${reqId}] Twilio SMS failed: code=${e.code ?? '-'} msg=${e.message ?? String(err)}`
+      );
+      throw new Error(`Failed to send verification SMS. Please try again.`);
+    }
   }
 
   private generateOTP(): string {
@@ -444,13 +496,43 @@ export default class UserRoute {
 
                 await notificationService.createNotification(
                   {
-                    title: 'New User Registered',
+                    title: 'New User',
                     body: `User ${newUser.name} has registered.`,
-                    type: 'user',          // OK (your entity allows custom strings)
+                    type: 'create',          // OK (your entity allows custom strings)
                     severity: 'info',
-                    audience: {mode: 'role', roles: ['admin']},
+                    audience: {mode: 'role', roles: ['admin', 'manager', 'operator']}, // target all admins
                     channels: ['inapp', 'email'], // keep if you'll email later; harmless otherwise
-                    metadata: {username: newUser.username, createdBy: newUser.creator},
+                    metadata: {
+                      newUserData: {
+                        name: req.body.name,
+                        username: req.body.username,
+                        email: req.body.email,
+                        dateOfBirth: req.body.dateOfBirth,
+                        age: req.body.age,
+                        gender: req.body.gender,
+                        bio: req.body.bio,
+                        phoneNumber: phone,
+                        image: publicPath,
+                        role: req.body.role,
+                        isActive: req.body.isActive,
+                        address: {
+                          street: req.body.street,
+                          houseNumber: req.body.houseNumber,
+                          city: req.body.city,
+                          postcode: req.body.postcode,
+                          country: req.body.country,
+                          stateOrProvince: req.body.stateOrProvince,
+                        },
+                        access: access,
+                        emailVerificationTokenExpires: verifyDate,
+                        creator: req.body.creator,
+                        createdAt: new Date(),
+                        updatedAt: new Date(),
+                      },
+                      createdBy: req.body.creator,
+                      createdAt: new Date(),
+                      updatedAt: new Date(),
+                    },
                     // DO NOT send createdAt here; NotificationService sets it
                   },
                   // Real-time emit callback: send to each audience room
@@ -636,13 +718,17 @@ export default class UserRoute {
           // Create notification
           await notificationService.createNotification(
             {
-              title: 'User Updated',
+              title: 'Update User',
               body: `User ${updatedUser.name} has been updated.`,
-              type: 'user',          // OK (your entity allows custom strings)
+              type: 'update',          // OK (your entity allows custom strings)
               severity: 'info',
-              audience: {mode: 'role', roles: ['admin']}, // target admins
+              audience: {mode: 'role', roles: ['admin', 'manager', 'operator']}, // target admins
               channels: ['inapp', 'email'], // keep if you'll email later; harmless otherwise
-              metadata: {username: updatedUser.username, updatedBy: updatedUser.updator},
+              metadata: {
+                UpdatedUserData: data,
+                updatedBy: req.body.updator.trim(),
+                updatedAt: new Date(),
+              },
               // DO NOT send createdAt here; NotificationService sets it    
             },
             // Real-time emit callback: send to each audience room
@@ -1083,38 +1169,27 @@ export default class UserRoute {
   //<============= DELETE USER BY USERNAME =============>
   private deleteUserByUsername() {
     this.router.delete(
-      "/user-delete/:username",
-      async (req: Request<{username: string, deletedBy: string}>, res: Response) => {
+      "/user-delete/:username/:deletedBy",
+      async (req: Request<{username: string; deletedBy: string}>, res: Response): Promise<any> => {
         try {
-          const username = req.params.username?.trim();
-          const deletedBy = req.body.deletedBy?.trim() || 'system';
+          const username = req.params.username?.trim() || req.body?.username?.trim() || req.query?.username?.toString().trim();
+          const deletedBy = req.params.deletedBy?.trim() || req.body?.deletedBy?.trim() || req.query?.deletedBy?.toString().trim();
 
-          if(!username) {
-            throw new Error("Username is required");
-          }
+          if(!username) throw new Error("Username is required");
+          if(!deletedBy) throw new Error("Deletor is required");
+
 
           const user = await UserModel.findOne({username});
 
-          const recycalBinPath = path.join(
-            __dirname,
-            `../../public/recyclebin/users/${username}/`
-          );
+          const recycleBinPath = path.join(__dirname, `../../public/recyclebin/users/${username}/`);
+          const userImagePath = path.join(__dirname, `../../public/users/${username}/`);
+          const userFilesPath = path.join(__dirname, `../../public/uploads/${username}/`);
 
-          const userImage = path.join(
-            __dirname,
-            `../../public/users/${username}/`
-          );
+          await fs.mkdir(recycleBinPath, {recursive: true});
 
-          const userFiles = path.join(
-            __dirname,
-            `../../public/uploads/${username}/`
-          );
-
-          await fs.mkdir(recycalBinPath, {recursive: true});
-
-          // Save user data as JSON in recycle bin if user exists
+          // backup user doc
           if(user) {
-            const userJsonPath = path.join(recycalBinPath, "user.json");
+            const userJsonPath = path.join(recycleBinPath, "user.json");
             fs.writeFileSync(
               userJsonPath,
               JSON.stringify(user.toObject ? user.toObject() : user, null, 2),
@@ -1122,74 +1197,52 @@ export default class UserRoute {
             );
           }
 
-          if(fs.existsSync(userImage)) {
-            await fs.copy(userImage, path.join(recycalBinPath, "user-image"));
-            fs.rmSync(userImage, {recursive: true});
+          // move assets to recycle bin
+          if(fs.existsSync(userImagePath)) {
+            await fs.copy(userImagePath, path.join(recycleBinPath, "user-image"));
+            fs.rmSync(userImagePath, {recursive: true, force: true});
+          }
+          if(fs.existsSync(userFilesPath)) {
+            await fs.copy(userFilesPath, path.join(recycleBinPath, "user-documents"));
+            fs.rmSync(userFilesPath, {recursive: true, force: true});
           }
 
-          if(fs.existsSync(userFiles)) {
-            await fs.copy(
-              userFiles,
-              path.join(recycalBinPath, "user-documents")
-            );
-            fs.rmSync(userFiles, {recursive: true});
-          }
+          // clear relationships
+          await PropertyModel.updateMany({owner: username}, {$unset: {owner: 1}});
+          await PropertyModel.updateMany({"addedBy.username": username}, {$unset: {addedBy: {}}});
 
-          // Update owner and addedBy references
-          await PropertyModel.updateMany(
-            {owner: username},
-            {$unset: {owner: 1}}
-          );
-          await PropertyModel.updateMany(
-            {"addedBy.username": username},
-            {$unset: {addedBy: {}}}
-          );
-
-          //Send notification to the user about the deletion of their account
-          const notificationService = new NotificationService();
-          // get the Socket.IO instance you attached in app.ts (this.app.set('io', this.io))
-          const io = req.app.get('io') as import('socket.io').Server;
-          // Create notification
+          // notify
           if(user) {
+            const notificationService = new NotificationService();
+            const io = req.app.get('io') as import('socket.io').Server;
+
             await notificationService.createNotification(
               {
-                title: 'User Deleted',
+                title: 'Delete User',
                 body: `User ${user.name} has been deleted.`,
-                type: 'user',          // OK (your entity allows custom strings)
+                type: 'delete',
                 severity: 'warning',
-                audience: {mode: 'user', usernames: [username], roles: ['admin']}, // target the user
-                channels: ['inapp', 'email'], // keep if you'll email later; harmless otherwise
-                metadata: {username: username, deletedBy: deletedBy || 'system'},
-                // DO NOT send createdAt here; NotificationService sets it
+                audience: {mode: 'role', usernames: [username], roles: ['admin', 'manager', 'operator']},
+                channels: ['inapp', 'email'],
+                metadata: {
+                  deletedUserData: user,
+                  deletedBy,
+                  deletedAt: new Date().toISOString(),
+                  recyclebinPath: recycleBinPath
+                },
               },
-              // Real-time emit callback: send to each audience room
-              (rooms, payload) => {
-                rooms.forEach((room) => {
-                  io.to(room).emit('notification.new', payload);
-                });
-              }
+              (rooms, payload) => {rooms.forEach(r => io.to(r).emit('notification.new', payload));}
             );
           }
 
+          // delete user
+          const deleted = await UserModel.findOneAndDelete({username});
+          if(!deleted) throw new Error("User not found");
 
-          // Delete user
-          const deleteUser = await UserModel.findOneAndDelete({username});
-
-
-
-          if(deleteUser) {
-            res.status(200).json({
-              status: "success",
-              message: "User deleted successfully",
-            });
-          } else {
-            throw new Error("User not found");
-          }
-        } catch(error) {
-          if(error instanceof Error) {
-            console.error(error.message);
-            res.status(500).json({status: "error", message: error.message});
-          }
+          return res.status(200).json({status: "success", message: "User deleted successfully"});
+        } catch(err: any) {
+          console.error(err?.message || err);
+          return res.status(500).json({status: "error", message: err?.message || "Internal error"});
         }
       }
     );

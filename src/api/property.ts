@@ -26,6 +26,8 @@ import sharp from "sharp";
 import NotificationService from '../services/notification.service';
 import fsp from 'fs/promises';
 import {Types} from "mongoose";
+import {Http2ServerResponse} from "http2";
+import {HttpMethod} from "twilio/lib/interfaces";
 
 
 
@@ -522,13 +524,13 @@ export default class Property {
             const io = req.app.get('io');
             await notificationService.createNotification(
               {
-                title: 'New Property Added',
+                title: 'New Property',
                 body: `A new property titled "${insertedProperty.title}" has been added. Please review and verify the listing.`,
-                type: 'property',          // OK (your entity allows custom strings)
+                type: 'create',          // OK (your entity allows custom strings)
                 severity: 'info',
-                audience: {mode: 'role', roles: ['admin']}, // target all admins  
+                audience: {mode: 'role', roles: ['admin', 'agent', 'manager', 'operator']}, // target all admins  
                 channels: ['inapp', 'email'], // keep if you'll email later; harmless otherwise
-                metadata: {propertyID: insertedProperty.id, addedBy: (insertedProperty.addedBy as AddedBy).username || 'system'},
+                metadata: {newPropertyData: DbData},
                 // DO NOT send createdAt here; NotificationService sets it  
               },
               // Real-time emit callback: send to each audience room
@@ -809,145 +811,141 @@ export default class Property {
    */
   private deleteProperty(): void {
     this.router.delete(
-      '/delete-property/:id',
-      //      ┌── path params type              ┌── response body type  ┌── request body type
-      async (req: Request<{id: string, username: string}, any, any>, res: Response): Promise<any> => {
+      '/delete-property/:id/:username',
+      async (req: Request<{id: string; username: string}>, res: Response): Promise<any> => {
         try {
-          // 1) Read & validate :id from the URL
-          const safeID = (req.params.id ?? '').trim(); // allow whitespace in URL to be harmless
-          const safeUsername = (req.params.username ?? '').trim(); // allow whitespace in URL to be harmless
+          // 1) Safe params
+          const safeID = (req.params.id ?? '').trim();
+          const urlUsername = (req.params.username ?? '').trim();
 
           if(!safeID) {
-            // Return 400 (bad input) instead of throwing → client gets a helpful message
             return res.status(400).json({status: 'error', message: 'Property ID is required.'});
           }
 
-          // 2) Load the property. Your collection DOES persist a string `id` (UUID),
-          //    so we query { id: safeID } and use .lean() for a plain JS object.
+          // Prefer authenticated user if available; fall back to URL param
+          const actorUsername =
+            // @ts-ignore - if you've augmented Express.Request with user
+            (req.user?.username as string | undefined)?.trim() || urlUsername;
+
+          if(!actorUsername) {
+            return res.status(400).json({status: 'error', message: 'Username is required.'});
+          }
+
+          // 2) Lookup property
           const property = await PropertyModel.findOne({id: safeID}).lean();
           if(!property) {
-            // Not found is a normal condition → 404, *not* 500
             return res.status(404).json({status: 'error', message: 'Property not found.'});
           }
 
-          // 3) Build deployment-safe filesystem paths.
-          //    process.cwd() works after TS build; __dirname often points at dist/ and can be misleading.
+          // 3) Paths
           const root = process.cwd();
           const uploadsRoot = path.join(root, 'public', 'propertyUploads');
           const recycleRoot = path.join(root, 'public', 'recyclebin', 'properties');
 
-          const srcDir = path.join(uploadsRoot, safeID);     // e.g. public/propertyUploads/<id>
-          let dstDir = path.join(recycleRoot, safeID);     // e.g. public/recyclebin/properties/<id>  (must NOT exist pre-rename)
+          const srcDir = path.join(uploadsRoot, safeID);
+          let dstDir = path.join(recycleRoot, safeID);
 
-          // 4) Ensure the parent recycle bin directory exists.
-          //    We deliberately do NOT create dstDir, because fs.rename fails if the destination exists.
           await fsp.mkdir(recycleRoot, {recursive: true});
 
-          // 5) Check existence of source/destination to avoid rename collisions and ENOENT errors.
+          // 4) Existence checks
           const srcExists = await fsp.stat(srcDir).then(() => true).catch(() => false);
           const dstExists = await fsp.stat(dstDir).then(() => true).catch(() => false);
+          if(dstExists) dstDir = path.join(recycleRoot, `${safeID}_${Date.now()}`);
 
-          // If a folder with this id already exists in the recycle bin, suffix with timestamp for uniqueness.
-          if(dstExists) {
-            dstDir = path.join(recycleRoot, `${safeID}_${Date.now()}`);
-          }
-
-          // 6) Move uploads to recycle bin (or create dstDir if no source exists).
+          // 5) Move (rename or cp+rm fallback)
           if(srcExists) {
             try {
-              // Fast, atomic move (same device). Will throw if across devices (EXDEV).
               await fsp.rename(srcDir, dstDir);
             } catch(e: any) {
               if(e?.code === 'EXDEV') {
-                // Cross-device move fallback: copy then remove source.
                 await fsp.mkdir(dstDir, {recursive: true});
-                // Node 18+: fs.cp is available; otherwise use a directory copy utility.
+                // Node 16.7+; if older, replace with a manual directory copy
                 // @ts-ignore
                 await fsp.cp(srcDir, dstDir, {recursive: true});
                 await fsp.rm(srcDir, {recursive: true, force: true});
               } else {
-                // Bubble up unexpected FS errors → handled by catch block as 500.
                 throw e;
               }
             }
           } else {
-            // No uploads folder for this record (already removed or never created).
-            // Still create dstDir so we can store the JSON snapshot below.
             await fsp.mkdir(dstDir, {recursive: true});
           }
 
-          // 7) Save a JSON snapshot of the deleted doc into the recycle bin folder
-          //    for audit/recovery purposes.
+          // 6) Snapshot the document in recycle bin
           await fsp.writeFile(
             path.join(dstDir, 'property.json'),
             JSON.stringify(property, null, 2),
             'utf-8'
           );
 
-          // 8) OPTIONAL: Notify admins (non-blocking). If this fails, the deletion still succeeds.
+          // 7) Notify (best-effort, non-blocking)
           try {
-            // Figure out who performed the delete:
-            // Prefer the authenticated user inserted by your auth middleware (req.user).
-            // Fall back to a body value if you intentionally send it (DELETE rarely has a body).
-
-
-            // Pull the Socket.IO instance (set once at app bootstrap: app.set('io', io)).
             const io = req.app.get('io');
-
             if(io) {
-              // Send a notification to each admin.
-              // Each admin is responsible for filtering out their own notifications client-side.
               const notificationService = new NotificationService();
+
+              // Safely pick the target user from the document if present
+              const targetUser =
+                (property as any)?.addedBy?.username ||
+                (property as any)?.addedBy ||
+                actorUsername;
+
               await notificationService.createNotification(
                 {
-                  title: 'Property Deleted',
-                  body: `Property with ID ${property.id} has been deleted.`,
-                  type: 'user',          // OK (your entity allows custom strings)
+                  title: 'Delete Property',
+                  body: `Property with ID ${safeID} has been deleted.`,
+                  type: 'delete',
                   severity: 'warning',
-                  audience: {mode: 'user', usernames: [property.addedBy.username], roles: ['admin']}, // target the user
-                  channels: ['inapp', 'email'], // keep if you'll email later; harmless otherwise
-                  metadata: {propertyID: property.id, propertyTitle: property.title, deletedBy: safeUsername || 'system'},
-                  // DO NOT send createdAt here; NotificationService sets it
+                  // Include BOTH: the owner (addedBy) and admin roles
+                  audience: {
+                    mode: 'user', // will still work if you implement "include all provided rooms" logic
+                    usernames: [String(targetUser)],
+                    roles: ['admin', 'agent', 'manager', 'operator'],
+                  },
+                  channels: ['inapp', 'email'],
+                  metadata: {
+                    deletedBy: actorUsername,
+                    deletedAt: new Date().toISOString(),
+                    propertyId: safeID,
+                    propertyTitle: (property as any)?.title,
+                    recyclePath: dstDir,
+                  },
                 },
-                // Real-time emit callback: send to each audience room
                 (rooms, payload) => {
-                  rooms.forEach((room) => {
-                    io.to(room).emit('notification.new', payload);
-                  });
+                  rooms.forEach((room) => io.to(room).emit('notification.new', payload));
                 }
               );
-
             } else {
               console.warn('[delete-property] io is undefined; skipping notifications');
             }
           } catch(notifyErr) {
-            // Notifications should never block the core deletion flow.
             console.warn('[delete-property] notification failed:', notifyErr);
           }
 
-          // 9) Delete the record from Mongo by the same UUID `id`.
+          // 8) Delete DB record
           const del = await PropertyModel.deleteOne({id: safeID});
           if(del.deletedCount !== 1) {
-            // Record somehow not removed (concurrent change?) → 409 Conflict is appropriate.
-            return res.status(409).json({
-              status: 'error',
-              message: 'Delete conflict: document not removed.'
-            });
+            return res
+              .status(409)
+              .json({status: 'error', message: 'Delete conflict: document not removed.'});
           }
 
-          // 10) Success — no body needed for a DELETE.
-          return res.status(204).send();
-        } catch(error: any) {
-          // Map common errors if you want (e.g., CastError → 400). Otherwise, generic 500:
-          console.error('[delete-property] error:', error);
-          return res.status(500).json({
-            status: 'error',
-            message: 'Error occurred while deleting property.'
+          // 9) Done — return OK with a message (200 is better than 204 if you want a body)
+          return res.status(200).json({
+            status: 'success',
+            message: 'Property deleted.',
+            data: null,
           });
+        } catch(error: any) {
+          console.error('[delete-property] error:', error);
+          return res
+            .status(500)
+            .json({status: 'error', message: 'Error occurred while deleting property.'});
         }
       }
     );
   }
+
 
   //<==================== END DELETE THE PROPERTY BY PROPERTY ID ====================>
 
@@ -1102,13 +1100,17 @@ export default class Property {
     this.router.put(
       "/update-property/:id",
       upload.fields([{name: "images"}, {name: "documents"}]),
-      async (req: Request<{id: string}>, res: Response) => {
+      async (req: Request<{id: string}>, res: Response): Promise<any> => {
         try {
           // make the property id more reliable without and empty string
           const propertyID = (req.params?.id || req.body?.id || "").trim();
           // Check the property id
           if(!propertyID)
             throw new Error("Property ID is required in URL or request body.");
+
+          const updator = req.body?.updator.trim()
+
+          if(!updator) throw new Error("The updator must login to the system before update the prroperty!")
 
           // define the property files to check whether the files are uploaded
           const propertyFiles = req.files as
@@ -1148,25 +1150,37 @@ export default class Property {
           // Check if the removeImages is an array
           if(removeImages && removeImages.length > 0) {
             for(let i = 0; i < removeImages.length; i++) {
-              // Define the image
-              const image = removeImages[i];
 
-              // Define the image path
-              const removeImagePath = path.join(
-                __dirname,
-                `../../public/propertyUploads/${propertyID}/images/${image.filename}`
-              );
+              try {
+                // Define the image
+                const image = removeImages[i];
 
-              // Define the recycle bin path for the image
-              const recyclebinForImages = path.join(
-                __dirname,
-                `../../public/recyclebin/properties/${propertyID}/removeredImages/`
-              );
+                if(!image) throw new Error("Invalid image" + image);
 
-              await this.moveToTheRecycleBin(
-                recyclebinForImages,
-                removeImagePath
-              );
+                // Define the image path
+                const removeImagePath = path.join(
+                  __dirname,
+                  `../../public/propertyUploads/${propertyID}/images/${image.filename}`
+                );
+
+                // Define the recycle bin path for the image
+                const recyclebinForImages = path.join(
+                  __dirname,
+                  `../../public/recyclebin/properties/${propertyID}/removeredImages/`
+                );
+
+                await this.moveToTheRecycleBin(
+                  recyclebinForImages,
+                  removeImagePath
+                );
+              }
+              catch(error) {
+                console.log("Error: ", error)
+              }
+
+
+
+
             }
           }
 
@@ -1180,25 +1194,34 @@ export default class Property {
           if(removeDocuments && removeDocuments.length > 0) {
             // Loop through the removeDocuments array
             for(let i = 0; i < removeDocuments.length; i++) {
-              //Define the document
-              const document = removeDocuments[i];
+              try {
+                //Define the document
+                const document = removeDocuments[i];
 
-              // Define the document path
-              const removeDocumentPath = path.join(
-                __dirname,
-                `../../public/propertyUploads/${propertyID}/documents/${document.filename}`
-              );
+                if(!document) throw new Error("Invalid document" + document);
 
-              // Define the recyclebin for documents
-              const recyclebinForDocuments = path.join(
-                __dirname,
-                `../../public/recyclebin/properties/${propertyID}/removeredDocuments/`
-              );
+                // Define the document path
+                const removeDocumentPath = path.join(
+                  __dirname,
+                  `../../public/propertyUploads/${propertyID}/documents/${document.filename}`
+                );
 
-              await this.moveToTheRecycleBin(
-                recyclebinForDocuments,
-                removeDocumentPath
-              );
+                // Define the recyclebin for documents
+                const recyclebinForDocuments = path.join(
+                  __dirname,
+                  `../../public/recyclebin/properties/${propertyID}/removeredDocuments/`
+                );
+
+                await this.moveToTheRecycleBin(
+                  recyclebinForDocuments,
+                  removeDocumentPath
+                );
+              }
+              catch(error) {
+                console.log("Error: ", error)
+              }
+
+
             }
           }
 
@@ -1289,131 +1312,130 @@ export default class Property {
             }
           }
 
+
+          // --- safe helpers ---
+          const s = (v: any): string => (typeof v === 'string' ? v.trim() : '');
+
+          const num = (v: any): number => {
+            const n = Number(s(v));
+            return Number.isFinite(n) ? n : 0;
+          };
+
+          const parseJSON = <T>(v: any, fallback: T): T => {
+            try {
+              if(v == null) return fallback;
+              if(typeof v === 'string') {
+                const trimmed = v.trim();
+                if(!trimmed) return fallback;
+                return JSON.parse(trimmed);
+              }
+              return v as T; // already object/array
+            } catch {
+              return fallback;
+            }
+          };
+
+          const dateOrNull = (v: any): Date | null => {
+            const str = s(v);
+            if(!str) return null;
+            const d = new Date(str);
+            return isNaN(d.getTime()) ? null : d;
+          };
+
+          const dateOrNow = (v: any): Date => {
+            const d = dateOrNull(v);
+            return d ?? new Date();
+          };
+
+
+          const invalidDateFields: string[] = [];
+          for(const key of ['listingDate', 'availabilityDate', 'listingExpiryDate', 'rentedDate', 'soldDate']) {
+            const v = (req.body as any)[key];
+            if(v && dateOrNull(v) === null) invalidDateFields.push(key);
+          }
+          if(invalidDateFields.length) {
+            return res.status(400).json({
+              status: 'error',
+              message: `Invalid date(s): ${invalidDateFields.join(', ')}`
+            });
+          }
+
+
           // Organize the data to update the property
           const DbData = {
-            // Basic Property Details
-            id: propertyID.trim(),
-            title: req.body.title.trim(),
-            type: req.body.type.trim().toLowerCase(),
-            listing: req.body.listing.trim().toLowerCase(),
-            description: req.body.description.trim(),
-            // Basic Property Details
+            // Basic
+            id: s(propertyID),
+            title: s(req.body.title),
+            type: s(req.body.type).toLowerCase(),
+            listing: s(req.body.listing).toLowerCase(),
+            description: s(req.body.description),
 
-            // Location Details
-            countryDetails: JSON.parse(req.body.countryDetails.trim()),
-            address: JSON.parse(req.body.address.trim()),
-            location:
-              typeof req.body.location === "string"
-                ? JSON.parse(req.body.location.trim())
-                : {},
-            // End Location Details
+            // Location
+            countryDetails: parseJSON(req.body.countryDetails, {}),
+            address: parseJSON(req.body.address, {}),
+            location: parseJSON(req.body.location, {}),
 
-            // Property Specifications
-            totalArea: Number(req.body.totalArea.trim()),
-            builtInArea: Number(req.body.builtInArea.trim()),
-            livingRooms: Number(req.body.livingRooms.trim()),
-            balconies: Number(req.body.balconies.trim()),
-            kitchen: Number(req.body.kitchen.trim()),
-            bedrooms: Number(req.body.bedrooms.trim()),
-            bathrooms: Number(req.body.bathrooms.trim()),
-            maidrooms: Number(req.body.maidrooms.trim()),
-            driverRooms: Number(req.body.driverRooms.trim()),
-            furnishingStatus: req.body.furnishingStatus.trim(),
-            totalFloors: Number(req.body.totalFloors.trim()),
-            numberOfParking: Number(req.body.numberOfParking.trim()),
-            // End Property Specifications
+            // Specs
+            totalArea: num(req.body.totalArea),
+            builtInArea: num(req.body.builtInArea),
+            livingRooms: num(req.body.livingRooms),
+            balconies: num(req.body.balconies),
+            kitchen: num(req.body.kitchen),
+            bedrooms: num(req.body.bedrooms),
+            bathrooms: num(req.body.bathrooms),
+            maidrooms: num(req.body.maidrooms),
+            driverRooms: num(req.body.driverRooms),
+            furnishingStatus: s(req.body.furnishingStatus),
+            totalFloors: num(req.body.totalFloors),
+            numberOfParking: num(req.body.numberOfParking),
 
-            // Construction & Age
-            builtYear: Number(req.body.builtYear.trim()),
-            propertyCondition: req.body.propertyCondition.trim().toLowerCase(),
-            developerName: req.body.developerName.trim(),
-            projectName:
-              typeof req.body.projectName === "string"
-                ? req.body.projectName.trim()
-                : "",
-            ownerShipType: req.body.ownerShipType.trim().toLowerCase(),
-            // End Construction & Age
+            // Age
+            builtYear: num(req.body.builtYear),
+            propertyCondition: s(req.body.propertyCondition).toLowerCase(),
+            developerName: s(req.body.developerName),
+            projectName: s(req.body.projectName),
+            ownerShipType: s(req.body.ownerShipType).toLowerCase(),
 
-            // Financial Details
-            price: Number(req.body.price.trim()),
-            currency: req.body.currency.trim(),
-            pricePerSqurFeet: Number(req.body.pricePerSqurFeet.trim()),
-            expectedRentYearly:
-              typeof req.body.expectedRentYearly === "string"
-                ? Number(req.body.expectedRentYearly.trim())
-                : 0,
-            expectedRentQuartely:
-              typeof req.body.expectedRentQuartely === "string"
-                ? Number(req.body.expectedRentQuartely.trim())
-                : 0,
-            expectedRentMonthly:
-              typeof req.body.expectedRentMonthly === "string"
-                ? Number(req.body.expectedRentMonthly.trim())
-                : 0,
-            expectedRentDaily:
-              typeof req.body.expectedRentDaily === "string"
-                ? Number(req.body.expectedRentDaily.trim())
-                : 0,
-            maintenanceFees: Number(req.body.maintenanceFees.trim()),
-            serviceCharges: Number(req.body.serviceCharges.trim()),
-            transferFees:
-              typeof req.body.transferFees === "string"
-                ? Number(req.body.transferFees.trim())
-                : 0,
-            availabilityStatus: req.body.availabilityStatus
-              .trim()
-              .toLowerCase(),
-            // End Financial Details
+            // Financial
+            price: num(req.body.price),
+            currency: s(req.body.currency),
+            pricePerSqurFeet: num(req.body.pricePerSqurFeet),
+            expectedRentYearly: num(req.body.expectedRentYearly),
+            expectedRentQuartely: num(req.body.expectedRentQuartely),
+            expectedRentMonthly: num(req.body.expectedRentMonthly),
+            expectedRentDaily: num(req.body.expectedRentDaily),
+            maintenanceFees: num(req.body.maintenanceFees),
+            serviceCharges: num(req.body.serviceCharges),
+            transferFees: num(req.body.transferFees),
+            availabilityStatus: s(req.body.availabilityStatus).toLowerCase(),
 
             // Features & Amenities
-            featuresAndAmenities: JSON.parse(req.body.featuresAndAmenities),
-            // End Features & Amenities
+            featuresAndAmenities: parseJSON(req.body.featuresAndAmenities, []),
 
             // Media
             images: Images,
             documents: Docs,
-            videoTour:
-              typeof req.body.videoTour === "string"
-                ? req.body.videoTour.trim()
-                : "",
-            virtualTour:
-              typeof req.body.virtualTour === "string"
-                ? req.body.virtualTour.trim()
-                : "",
-            // End Media
+            videoTour: s(req.body.videoTour),
+            virtualTour: s(req.body.virtualTour),
 
-            // Listing Management
-            listingDate: new Date(req.body.listingDate.trim()).toISOString(),
-            availabilityDate:
-              typeof req.body.availabilityDate === "string"
-                ? new Date(req.body.availabilityDate.trim()).toISOString()
-                : null,
-            listingExpiryDate:
-              typeof req.body.listingExpiryDate === "string"
-                ? new Date(req.body.listingExpiryDate.trim()).toISOString()
-                : null,
-            rentedDate:
-              req.body.rentedDate && typeof req.body.rentedDate === "string"
-                ? new Date(req.body.rentedDate.trim()).toISOString()
-                : null,
-            soldDate:
-              req.body.soldDate && typeof req.body.soldDate === "string"
-                ? new Date(req.body.soldDate.trim()).toISOString()
-                : null,
-            addedBy: JSON.parse(req.body.addedBy.trim()),
-            owner: req.body.owner.trim(),
-            // End Listing Management
+            // Listing dates (store as Date objects; Mongoose will persist correctly)
+            listingDate: dateOrNow(req.body.listingDate),
+            availabilityDate: dateOrNull(req.body.availabilityDate),
+            listingExpiryDate: dateOrNull(req.body.listingExpiryDate),
+            rentedDate: dateOrNull(req.body.rentedDate),
+            soldDate: dateOrNull(req.body.soldDate),
 
-            // Administrative & Internal Use
-            referenceCode: req.body.referenceCode.trim(),
-            verificationStatus: req.body.verificationStatus
-              .trim()
-              .toLowerCase(),
-            priority: req.body.priority.trim().toLowerCase(),
-            status: req.body.status.trim().toLowerCase(),
-            internalNote: req.body.internalNote.trim(),
-            // End Administrative & Internal Use
+            addedBy: parseJSON(req.body.addedBy, {}),
+            owner: s(req.body.owner),
+
+            // Admin
+            referenceCode: s(req.body.referenceCode),
+            verificationStatus: s(req.body.verificationStatus).toLowerCase(),
+            priority: s(req.body.priority).toLowerCase(),
+            status: s(req.body.status).toLowerCase(),
+            internalNote: s(req.body.internalNote),
           };
+
 
           const updateThePropertyByID = await PropertyModel.findOneAndUpdate(
             {id: propertyID},
@@ -1427,34 +1449,32 @@ export default class Property {
             );
           } else {
             //Send notification of successful update
+            // inside your update handler (after successful update)
             const notificationService = new NotificationService();
-            const io = req.app.get("io");
-            if(io) {
-              await notificationService.createNotification(
-                {
-                  title: "Property Updated",
-                  body: `Property with ID ${propertyID} has been updated.`,
-                  type: "user",
-                  severity: "info",
-                  audience: {
-                    mode: "user",
-                    usernames: [updateThePropertyByID.addedBy.username],
-                    roles: ["admin"],
-                  },
-                  channels: ["inapp", "email"],
-                  metadata: {
-                    propertyID: propertyID,
-                    propertyTitle: updateThePropertyByID.title,
-                    updatedBy: DbData.addedBy.username,
-                  },
+            const io = req.app.get('io');
+            await notificationService.createNotification(
+              {
+                title: 'Update Property',
+                body: `Property with ID ${propertyID} has been updated.`,
+                type: 'update',
+                severity: 'info',
+                audience: {
+                  mode: 'role',
+                  roles: ['admin', 'operator'], // <- PK username
+                  usernames: [s(req.body.owner)]
                 },
-                (rooms, payload) => {
-                  rooms.forEach((room) => {
-                    io.to(room).emit("notification.new", payload);
-                  });
-                }
-              );
-            }
+                channels: ['inapp', 'email'],
+                metadata: {
+                  updatedProperty: DbData,
+                  updatedAt: new Date().toISOString(),
+                  updatedBy: updator || 'system',
+                  propertyID: propertyID,
+                },
+              },
+              // Socket.IO v4 can take Room | Room[] here:
+              (rooms, payload) => io?.to(rooms).emit('notification.new', payload)
+            );
+
             // Respond with success
             res.status(200).json({
               status: "success",

@@ -14,7 +14,8 @@ import sharp from "sharp";
 import {ITenant, TenantModel} from "../models/tenant.model";
 import {LeaseModel, LeaseType} from "../models/lease.model";
 import Lease from "./lease";
-import {NotificationService} from '../services/notification.service'; 
+import NotificationService from '../services/notification.service';
+import {UserModel} from "../models/user.model";
 
 dotenv.config();
 
@@ -86,6 +87,29 @@ export default class Tenant {
           await tenant.save();
 
           if(tenant) {
+            // Notification for new tenant added
+            const notificationService = new NotificationService();
+            const io = req.app.get('io'); // Get Socket.IO instance from app
+            await notificationService.createNotification(
+              {
+                title: 'New Tenant',
+                body: `A new tenant named ${tenant.name} has been added.`,
+                type: 'create',          // OK (your entity allows custom strings)
+                severity: 'info',
+                audience: {mode: 'role', roles: ['admin', 'agent', 'manager', 'operator'], usernames: [tenant.username]}, // notify all admins and agents
+                channels: ['inapp', 'email'], // keep if you'll email later; harmless otherwise
+                metadata: {tenantData: data, addedDate: new Date().toISOString(), addedBy: tenant.addedBy},
+                // DO NOT send createdAt here; NotificationService sets it
+              },
+              // Real-time emit callback: send to each audience room
+              (rooms, payload) => {
+                rooms.forEach((room) => {
+                  io.to(room).emit('notification.new', payload);
+                });
+              }
+            );
+
+            // Respond with success
             res.status(200).json({
               status: "success",
               message: "Tenant added successfully",
@@ -130,14 +154,19 @@ export default class Tenant {
 
   private deleteTenant() {
     this.router.delete(
-      "/delete-tenant/:username",
-      async (req: Request<{username: string}>, res: Response) => {
+      "/delete-tenant/:username/:deletor",
+      async (req: Request<{username: string, deletor: string}>, res: Response) => {
         try {
-          const {username} = req.params;
+          const {username, deletor} = req.params;
           if(!username) throw new Error("Username required!");
+          if(!deletor) throw new Error("Deletor required!");
+
 
           const userData = await TenantModel.findOne({username});
           if(!userData) throw new Error("Tenant not found!");
+
+          const deletorData = await UserModel.findOne({username: deletor});
+          if(!deletorData) throw new Error("Deletor not found!");
 
           const leases = await LeaseModel.find({
             "tenantInformation.tenantUsername": username,
@@ -222,7 +251,40 @@ export default class Tenant {
             }
           }
 
+          const organisedMedataData: any = {
+            deletor: deletorData,
+            deletedDataPath: recyclebin,
+            deletedDate: new Date().toISOString(),
+            deletedTenantData: userDataPath,
+            deletedLeasesData: leases.length > 0 ? path.join(recyclebin, "leases", "leasesDB.json") : null,
+          }
+
+          // Finally, delete the tenant 
+          // Notification for tenant deletion
+          const notificationService = new NotificationService();
+          const io = req.app.get('io'); // Get Socket.IO instance from app  
+          await notificationService.createNotification(
+            {
+              title: 'Delete Tenant',
+              body: `Tenant ${username} has been deleted.`,
+              type: 'delete',          // OK (your entity allows custom strings)
+              severity: 'warning',
+              audience: {mode: 'role', roles: ['admin', 'agent', 'manager', 'operator']}, // notify all admins
+              channels: ['inapp', 'email'], // keep if you'll email later; harmless otherwise
+              metadata: {data: organisedMedataData},
+              // DO NOT send createdAt here; NotificationService sets it  
+            },
+            // Real-time emit callback: send to each audience room
+            (rooms, payload) => {
+              rooms.forEach((room) => {
+                io.to(room).emit('notification.new', payload);
+              });
+            }
+          );
+
+
           await TenantModel.findOneAndDelete({username});
+
 
           res.status(200).json({
             status: "success",

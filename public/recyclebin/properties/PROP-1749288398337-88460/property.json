@@ -1,0 +1,515 @@
+{
+  "_id": "684407940e7bdc7beeb3a73c",
+  "id": "PROP-1749288398337-88460",
+  "title": "apartment for rent in laya heights, dubai studio city",
+  "type": "apartment",
+  "listing": "rent",
+  "description": "<h1 class=\"styles_title__1qj2x\">open view | study room | furnished</h1>\r\n<p class=\"styles_subtitle__thchy\">apartment for rent in laya heights, dubai studio city</p>\r\n<article data-testid=\"dynamic-sanitize-html\">eloquent properties welcomes you to located at dubai studio city, this unique masterpiece architecture laya heights by akshara global presents a set of studios, 1 &amp; 2-bedroom apartments that are designed with great attention. this high-rise luxurious development defines the state of luxury with its detailed architecture fa&ccedil;ade that looks attractive and stylish.<br><br>while boasted with abundant living spaces designed with high-end interiors and fittings, personifies contemporary comfort and style. build with state-of-the-art interiors as well as exteriors that showcase a luxury desire along with its posh facilities.<br><br>set in the prime location of dubai and close to nature, while provides access to various key destinations. residents can access all the facilities form hospital to schools and much more. it has well-reputed schools including gems metropole school and jebel ali school for your young ones.<br><br>the development will set a new standard in the real estate era with its modern design fa&ccedil;ade that looks amazing along with its centric location benefits. you will surely find a superior quality architecture distinguished with sophisticated design, gracious floor plan options along with its first-rated amenities.<br><br>key facilities:<br><br>retail outlets<br>swimming pool<br>kids play area<br>gymnasium<br>concierge<br>health club with sauna<br>gardens and parks<br>restaurants and cafes<br>cctv &amp; access controls</article>",
+  "countryDetails": {
+    "name": {
+      "common": "United Arab Emirates",
+      "official": "United Arab Emirates",
+      "nativeName": {
+        "ara": {
+          "official": "الإمارات العربية المتحدة",
+          "common": "دولة الإمارات العربية المتحدة"
+        }
+      }
+    },
+    "tld": [
+      ".ae",
+      "امارات."
+    ],
+    "cca2": "AE",
+    "cca3": "ARE",
+    "ccn3": "784",
+    "cioc": "UAE",
+    "independent": true,
+    "status": "officially-assigned",
+    "unMember": true,
+    "currencies": {
+      "AED": {
+        "symbol": "د.إ",
+        "name": "United Arab Emirates dirham"
+      }
+    },
+    "idd": {
+      "root": "+9",
+      "suffixes": [
+        "71"
+      ]
+    },
+    "capital": [
+      "Abu Dhabi"
+    ],
+    "altSpellings": [
+      "AE",
+      "UAE",
+      "Emirates"
+    ],
+    "region": "Asia",
+    "subregion": "Western Asia",
+    "languages": {
+      "ara": "Arabic"
+    },
+    "latlng": [
+      24,
+      54
+    ],
+    "landlocked": false,
+    "borders": [
+      "OMN",
+      "SAU"
+    ],
+    "area": 83600,
+    "demonyms": {
+      "eng": {
+        "f": "Emirati",
+        "m": "Emirati"
+      },
+      "fra": {
+        "f": "Emirienne",
+        "m": "Emirien"
+      }
+    },
+    "translations": {
+      "ara": {
+        "official": "الإمارات العربية المتحدة",
+        "common": "دولة الإمارات العربية المتحدة"
+      },
+      "bre": {
+        "official": "Emirelezhioù Arab Unanet",
+        "common": "Emirelezhioù Arab Unanet"
+      },
+      "ces": {
+        "official": "Spojené arabské emiráty",
+        "common": "Arabské emiráty"
+      },
+      "cym": {
+        "official": "United Arab Emirates",
+        "common": "United Arab Emirates"
+      },
+      "deu": {
+        "official": "Vereinigte Arabische Emirate",
+        "common": "Vereinigte Arabische Emirate"
+      },
+      "est": {
+        "official": "Araabia Ühendemiraadid",
+        "common": "Araabia Ühendemiraadid"
+      },
+      "fin": {
+        "official": "Yhdistyneet arabiemiirikunnat",
+        "common": "Arabiemiraatit"
+      },
+      "fra": {
+        "official": "Émirats arabes unis",
+        "common": "Émirats arabes unis"
+      },
+      "hrv": {
+        "official": "Ujedinjeni Arapski Emirati",
+        "common": "Arapski Emirati"
+      },
+      "hun": {
+        "official": "Egyesült Arab Emírségek",
+        "common": "Egyesült Arab Emírségek"
+      },
+      "ind": {
+        "official": "Uni Emirat Arab",
+        "common": "Uni Emirat Arab"
+      },
+      "ita": {
+        "official": "Emirati Arabi Uniti",
+        "common": "Emirati Arabi Uniti"
+      },
+      "jpn": {
+        "official": "アラブ首長国連邦",
+        "common": "アラブ首長国連邦"
+      },
+      "kor": {
+        "official": "아랍 토후국 연방",
+        "common": "아랍에미리트"
+      },
+      "nld": {
+        "official": "Verenigde Arabische Emiraten",
+        "common": "Verenigde Arabische Emiraten"
+      },
+      "per": {
+        "official": "امارات متحده عربی",
+        "common": "امارات"
+      },
+      "pol": {
+        "official": "Zjednoczone Emiraty Arabskie",
+        "common": "Emiraty Arabskie"
+      },
+      "por": {
+        "official": "Emirados Árabes Unidos",
+        "common": "Emirados Árabes Unidos"
+      },
+      "rus": {
+        "official": "Объединенные Арабские Эмираты",
+        "common": "Объединённые Арабские Эмираты"
+      },
+      "slk": {
+        "official": "Spojené arabské emiráty",
+        "common": "Arabské emiráty"
+      },
+      "spa": {
+        "official": "Emiratos Árabes Unidos",
+        "common": "Emiratos Árabes Unidos"
+      },
+      "srp": {
+        "official": "Уједињени Арапски Емирати",
+        "common": "Уједињени Арапски Емирати"
+      },
+      "swe": {
+        "official": "Förenade Arabemiraten",
+        "common": "Förenade Arabemiraten"
+      },
+      "tur": {
+        "official": "Birleşik Arap Emirlikleri",
+        "common": "Birleşik Arap Emirlikleri"
+      },
+      "urd": {
+        "official": "متحدہ عرب امارات",
+        "common": "متحدہ عرب امارات"
+      },
+      "zho": {
+        "official": "阿拉伯联合酋长国",
+        "common": "阿拉伯联合酋长国"
+      }
+    },
+    "flag": "🇦🇪",
+    "flags": {
+      "png": "https://flagcdn.com/w320/ae.png",
+      "svg": "https://flagcdn.com/ae.svg",
+      "alt": "The flag of United Arab Emirates features a red vertical band on its hoist side that takes up about one-fourth the width of the field and three equal horizontal bands of green, white and black adjoining the vertical band."
+    },
+    "coatOfArms": {
+      "png": "https://mainfacts.com/media/images/coats_of_arms/ae.png",
+      "svg": "https://mainfacts.com/media/images/coats_of_arms/ae.svg"
+    },
+    "maps": {
+      "googleMaps": "https://goo.gl/maps/AZZTDA6GzVAnKMVd8",
+      "openStreetMaps": "https://www.openstreetmap.org/relation/307763"
+    },
+    "population": 9890400,
+    "fifa": "UAE",
+    "car": {
+      "signs": [
+        "UAE"
+      ],
+      "side": "right"
+    },
+    "timezones": [
+      "UTC+04:00"
+    ],
+    "continents": [
+      "Asia"
+    ],
+    "startOfWeek": "sunday",
+    "capitalInfo": {
+      "latlng": [
+        24.47,
+        54.37
+      ]
+    },
+    "postalCode": {
+      "format": null,
+      "regex": null
+    },
+    "_id": "684407940e7bdc7beeb3a73d"
+  },
+  "address": {
+    "houseNumber": "100",
+    "street": "Laya Heights",
+    "city": "Dubai Studio City",
+    "stateOrProvince": "Dubai",
+    "postcode": "10000",
+    "country": "united arab emirates",
+    "_id": "685181671de800775aa5ca2e"
+  },
+  "location": {
+    "lat": 25.0413796,
+    "lng": 55.2462965,
+    "embeddedUrl": "https://www.google.com/maps?q=25.0413796,55.2462965&hl=en&z=14&output=embed",
+    "_id": "684407940e7bdc7beeb3a73f"
+  },
+  "totalArea": 735,
+  "builtInArea": 735,
+  "livingRooms": 0,
+  "balconies": 2,
+  "kitchen": 1,
+  "bedrooms": 1,
+  "bathrooms": 2,
+  "maidrooms": 0,
+  "driverRooms": 0,
+  "furnishingStatus": "Furnished",
+  "totalFloors": 1,
+  "numberOfParking": 2,
+  "builtYear": 2010,
+  "propertyCondition": "good",
+  "developerName": "emmar",
+  "projectName": "",
+  "ownerShipType": "freehold",
+  "price": 9000000,
+  "currency": "AED",
+  "pricePerSqurFeet": 125000,
+  "expectedRentYearly": 100000,
+  "expectedRentQuartely": 25000,
+  "expectedRentMonthly": 9000,
+  "expectedRentDaily": 500,
+  "maintenanceFees": 2500,
+  "serviceCharges": 2500,
+  "transferFees": 500,
+  "availabilityStatus": "ready to move",
+  "featuresAndAmenities": [
+    "central a/c",
+    "security system",
+    "built in wardrobes",
+    "kitchen appliances",
+    "pets allowed",
+    "children's play area",
+    "balcony",
+    "covered parking",
+    "walk-in closet",
+    "view of landmark",
+    "lobby in building"
+  ],
+  "images": [
+    {
+      "originalname": "1749201244063-797570996-image.png",
+      "filename": "1749288852093-997469064-1749201244063-797570996-image.png",
+      "mimetype": "image/png",
+      "size": 25330,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852093-997469064-1749201244063-797570996-image.webp",
+      "_id": "684407940e7bdc7beeb3a740"
+    },
+    {
+      "originalname": "1749201244073-333541250-image.png",
+      "filename": "1749288852094-791636768-1749201244073-333541250-image.png",
+      "mimetype": "image/png",
+      "size": 82874,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852094-791636768-1749201244073-333541250-image.webp",
+      "_id": "684407940e7bdc7beeb3a741"
+    },
+    {
+      "originalname": "1749201244095-888686476-image.png",
+      "filename": "1749288852096-647343941-1749201244095-888686476-image.png",
+      "mimetype": "image/png",
+      "size": 75258,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852096-647343941-1749201244095-888686476-image.webp",
+      "_id": "684407940e7bdc7beeb3a742"
+    },
+    {
+      "originalname": "1749201244113-357086650-image.png",
+      "filename": "1749288852098-222671906-1749201244113-357086650-image.png",
+      "mimetype": "image/png",
+      "size": 33236,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852098-222671906-1749201244113-357086650-image.webp",
+      "_id": "684407940e7bdc7beeb3a743"
+    },
+    {
+      "originalname": "1749201244148-734580042-image.png",
+      "filename": "1749288852098-804275551-1749201244148-734580042-image.png",
+      "mimetype": "image/png",
+      "size": 95028,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852098-804275551-1749201244148-734580042-image.webp",
+      "_id": "684407940e7bdc7beeb3a744"
+    },
+    {
+      "originalname": "1749201244166-318790163-image.png",
+      "filename": "1749288852099-48149344-1749201244166-318790163-image.png",
+      "mimetype": "image/png",
+      "size": 81440,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852099-48149344-1749201244166-318790163-image.webp",
+      "_id": "684407940e7bdc7beeb3a745"
+    },
+    {
+      "originalname": "1749201244182-674300463-image.png",
+      "filename": "1749288852102-172311059-1749201244182-674300463-image.png",
+      "mimetype": "image/png",
+      "size": 82270,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852102-172311059-1749201244182-674300463-image.webp",
+      "_id": "684407940e7bdc7beeb3a746"
+    },
+    {
+      "originalname": "1749201244196-662315885-image.png",
+      "filename": "1749288852103-242337956-1749201244196-662315885-image.png",
+      "mimetype": "image/png",
+      "size": 102258,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852103-242337956-1749201244196-662315885-image.webp",
+      "_id": "684407940e7bdc7beeb3a747"
+    },
+    {
+      "originalname": "1749201244212-732408374-image.png",
+      "filename": "1749288852112-792017561-1749201244212-732408374-image.png",
+      "mimetype": "image/png",
+      "size": 98200,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852112-792017561-1749201244212-732408374-image.webp",
+      "_id": "684407940e7bdc7beeb3a748"
+    },
+    {
+      "originalname": "1749201244227-760559417-image.png",
+      "filename": "1749288852113-268913232-1749201244227-760559417-image.png",
+      "mimetype": "image/png",
+      "size": 97452,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852113-268913232-1749201244227-760559417-image.webp",
+      "_id": "684407940e7bdc7beeb3a749"
+    },
+    {
+      "originalname": "1749201244244-379991304-image.png",
+      "filename": "1749288852115-81521226-1749201244244-379991304-image.png",
+      "mimetype": "image/png",
+      "size": 80658,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852115-81521226-1749201244244-379991304-image.webp",
+      "_id": "684407940e7bdc7beeb3a74a"
+    },
+    {
+      "originalname": "1749201244261-849873957-image.png",
+      "filename": "1749288852116-894221390-1749201244261-849873957-image.png",
+      "mimetype": "image/png",
+      "size": 92078,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852116-894221390-1749201244261-849873957-image.webp",
+      "_id": "684407940e7bdc7beeb3a74b"
+    },
+    {
+      "originalname": "1749201244277-827186396-image.png",
+      "filename": "1749288852117-753139757-1749201244277-827186396-image.png",
+      "mimetype": "image/png",
+      "size": 101268,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852117-753139757-1749201244277-827186396-image.webp",
+      "_id": "684407940e7bdc7beeb3a74c"
+    },
+    {
+      "originalname": "1749201244297-799176905-image.png",
+      "filename": "1749288852119-2982991-1749201244297-799176905-image.png",
+      "mimetype": "image/png",
+      "size": 67434,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852119-2982991-1749201244297-799176905-image.webp",
+      "_id": "684407940e7bdc7beeb3a74d"
+    },
+    {
+      "originalname": "1749201243972-126603767-image.png",
+      "filename": "1749288852120-381339625-1749201243972-126603767-image.png",
+      "mimetype": "image/png",
+      "size": 40094,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852120-381339625-1749201243972-126603767-image.webp",
+      "_id": "684407940e7bdc7beeb3a74e"
+    },
+    {
+      "originalname": "1749201243986-216208662-image.png",
+      "filename": "1749288852120-745472774-1749201243986-216208662-image.png",
+      "mimetype": "image/png",
+      "size": 16598,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852120-745472774-1749201243986-216208662-image.webp",
+      "_id": "684407940e7bdc7beeb3a74f"
+    },
+    {
+      "originalname": "1749201243992-352507985-image.png",
+      "filename": "1749288852120-989131348-1749201243992-352507985-image.png",
+      "mimetype": "image/png",
+      "size": 16488,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852120-989131348-1749201243992-352507985-image.webp",
+      "_id": "684407940e7bdc7beeb3a750"
+    },
+    {
+      "originalname": "1749201243998-624821180-image.png",
+      "filename": "1749288852120-236697614-1749201243998-624821180-image.png",
+      "mimetype": "image/png",
+      "size": 17322,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852120-236697614-1749201243998-624821180-image.webp",
+      "_id": "684407940e7bdc7beeb3a751"
+    },
+    {
+      "originalname": "1749201244009-914647363-image.png",
+      "filename": "1749288852121-221164700-1749201244009-914647363-image.png",
+      "mimetype": "image/png",
+      "size": 14748,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852121-221164700-1749201244009-914647363-image.webp",
+      "_id": "684407940e7bdc7beeb3a752"
+    },
+    {
+      "originalname": "1749201244020-5795176-image.png",
+      "filename": "1749288852121-877761828-1749201244020-5795176-image.png",
+      "mimetype": "image/png",
+      "size": 16530,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852121-877761828-1749201244020-5795176-image.webp",
+      "_id": "684407940e7bdc7beeb3a753"
+    },
+    {
+      "originalname": "1749201244030-987509738-image.png",
+      "filename": "1749288852122-297258208-1749201244030-987509738-image.png",
+      "mimetype": "image/png",
+      "size": 26044,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852122-297258208-1749201244030-987509738-image.webp",
+      "_id": "684407940e7bdc7beeb3a754"
+    },
+    {
+      "originalname": "1749201244041-944242125-image.png",
+      "filename": "1749288852122-300548300-1749201244041-944242125-image.png",
+      "mimetype": "image/png",
+      "size": 26790,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852122-300548300-1749201244041-944242125-image.webp",
+      "_id": "684407940e7bdc7beeb3a755"
+    },
+    {
+      "originalname": "1749201244053-320556566-image.png",
+      "filename": "1749288852122-187605642-1749201244053-320556566-image.png",
+      "mimetype": "image/png",
+      "size": 20634,
+      "imageURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/images/1749288852122-187605642-1749201244053-320556566-image.webp",
+      "_id": "684407940e7bdc7beeb3a756"
+    }
+  ],
+  "documents": [
+    {
+      "originalname": "1749201244310-886564134-Addison_Wesley_-_Design_Patterns_Explained_(2001).pdf",
+      "filename": "1749288852122-370056407-1749201244310-886564134-Addison_Wesley_-_Design_Patterns_Explained_(2001).pdf",
+      "mimetype": "application/pdf",
+      "size": 7811810,
+      "documentURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/documents/1749288852122-370056407-1749201244310-886564134-Addison_Wesley_-_Design_Patterns_Explained_(2001).pdf",
+      "_id": "684407940e7bdc7beeb3a757"
+    },
+    {
+      "originalname": "1749201244348-454959196-Big_Data_Demystified__How_to_use_big_data,_data_science_and_AI_to_make_better_business_decisions_and_gain_competitive_advantage.pdf",
+      "filename": "1749288852170-822221963-1749201244348-454959196-Big_Data_Demystified__How_to_use_big_data,_data_science_and_AI_to_make_better_business_decisions_and_gain_competitive_advantage.pdf",
+      "mimetype": "application/pdf",
+      "size": 2107277,
+      "documentURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/documents/1749288852170-822221963-1749201244348-454959196-Big_Data_Demystified__How_to_use_big_data,_data_science_and_AI_to_make_better_business_decisions_and_gain_competitive_advantage.pdf",
+      "_id": "684407940e7bdc7beeb3a758"
+    },
+    {
+      "originalname": "1749201244362-225749097-Big_Data_Fundamentals__Concepts,_Drivers_&_Techniques_(_PDFDrive_).pdf",
+      "filename": "1749288852205-918824125-1749201244362-225749097-Big_Data_Fundamentals__Concepts,_Drivers_&_Techniques_(_PDFDrive_).pdf",
+      "mimetype": "application/pdf",
+      "size": 10395267,
+      "documentURL": "http://localhost:3000/propertyUploads/PROP-1749288398337-88460/documents/1749288852205-918824125-1749201244362-225749097-Big_Data_Fundamentals__Concepts,_Drivers_&_Techniques_(_PDFDrive_).pdf",
+      "_id": "684407940e7bdc7beeb3a759"
+    }
+  ],
+  "videoTour": "https://youtu.be/neggt8gjr_c?si=i3vhx1qfp51blnyi",
+  "virtualTour": "https://kuula.co/share/7lk8p?fs=1&vr=1&sd=1&autorotate=0.3&thumbs=1&margin=15&info=0",
+  "listingDate": "2025-06-07T09:26:38.337Z",
+  "availabilityDate": "2025-06-29T18:30:00.000Z",
+  "listingExpiryDate": "2025-09-29T18:30:00.000Z",
+  "addedBy": {
+    "username": "Atapattu",
+    "name": "Buddhika Lahiru Atapattu",
+    "email": "atapattu.buddhika@gmail.com",
+    "role": "admin",
+    "contactNumber": "0777355697",
+    "addedAt": "2025-06-17T14:43:33.588Z",
+    "_id": "68517f401de800775aa5c60b"
+  },
+  "referenceCode": "PROP-1234-DUBAI",
+  "verificationStatus": "approved",
+  "priority": "low",
+  "status": "published",
+  "internalNote": "<h2 class=\"styles_desktop_section__title__f2ztk\">price insights</h2>\r\n<div class=\"styles_desktop_section__content__53ola\">\r\n<div id=\"priceinsights\" data-testid=\"plp-similar-price-transactions\">\r\n<div>\r\n<div>\r\n<p class=\"styles_desktop_title__coqbx\">transactions for similar properties</p>\r\n<p class=\"styles_desktop_subtitle__5xzzz\">1 bed apartment in laya heights</p>\r\n</div>\r\n<div class=\"styles_desktop_table__container__cbiii\">\r\n<div class=\"styles_desktop_table__wrapper__e8ptw\">\r\n<p class=\"styles_desktop_table__title__fvxtd\">sold for</p>\r\n<table class=\"styles_desktop_table__ix8r_ table-module_table__l2zfy\">\r\n<thead data-testid=\"table-header\">\r\n<tr>\r\n<th class=\"table-module_table__header__2owi4\">date</th>\r\n<th class=\"table-module_table__header__2owi4\">aed</th>\r\n<th class=\"table-module_table__header__2owi4\">area (sqft)</th>\r\n</tr>\r\n</thead>\r\n<tbody data-testid=\"table-body\">\r\n<tr>\r\n<td class=\"styles_desktop_table__body__82u9p table-module_table__body__9nnrk\">23 may 2025</td>\r\n<td class=\"styles_desktop_table__body__82u9p table-module_table__body__9nnrk\">935,000</td>\r\n<td class=\"styles_desktop_table__body__82u9p table-module_table__body__9nnrk\">602</td>\r\n</tr>\r\n<tr>\r\n<td class=\"styles_desktop_table__body__82u9p table-module_table__body__9nnrk\">22 may 2025</td>\r\n<td class=\"styles_desktop_table__body__82u9p table-module_table__body__9nnrk\">900,000</td>\r\n<td class=\"styles_desktop_table__body__82u9p table-module_table__body__9nnrk\">603</td>\r\n</tr>\r\n<tr>\r\n<td class=\"styles_desktop_table__body__82u9p table-module_table__body__9nnrk\">13 may 2025</td>\r\n<td class=\"styles_desktop_table__body__82u9p table-module_table__body__9nnrk\">900,000</td>\r\n<td class=\"styles_desktop_table__body__82u9p table-module_table__body__9nnrk\">775</td>\r\n</tr>\r\n<tr>\r\n<td class=\"styles_desktop_table__body__82u9p table-module_table__body__9nnrk\">13 may 2025</td>\r\n<td class=\"styles_desktop_table__body__82u9p table-module_table__body__9nnrk\">950,000</td>\r\n<td class=\"styles_desktop_table__body__82u9p table-module_table__body__9nnrk\">619</td>\r\n</tr>\r\n<tr>\r\n<td class=\"styles_desktop_table__body__82u9p table-module_table__body__9nnrk\">7 may 2025</td>\r\n<td class=\"styles_desktop_table__body__82u9p table-module_table__body__9nnrk\">1,000,000</td>\r\n<td class=\"styles_desktop_table__body__82u9p table-module_table__body__9nnrk\">757</td>\r\n</tr>\r\n</tbody>\r\n</table>\r\n</div>\r\n</div>\r\n</div>\r\n</div>\r\n</div>\r\n<p>&nbsp;</p>",
+  "createdAt": "2025-06-07T09:34:12.462Z",
+  "updatedAt": "2025-06-17T14:53:26.995Z",
+  "__v": 0,
+  "owner": "deanna14",
+  "rentedDate": null,
+  "soldDate": null
+}

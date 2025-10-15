@@ -1,16 +1,16 @@
 // src/controller/notification.controller.ts
-import { Router, RequestHandler } from 'express';
+import {Router, RequestHandler} from 'express';
 import NotificationService from '../services/notification.service';
 import SocketServer from '../socket/socket';
-import { Role } from '../types/roles';
+import {Role} from '../types/roles';
 
 // Auth-augmented request (runtime cast only)
-type AuthedReq = Express.Request & { user: { username: string; role: Role } };
+type AuthedReq = Express.Request & {user: {username: string; role: Role}};
 
 export default class NotificationController {
   public readonly router = Router();
 
-  constructor(
+  constructor (
     private readonly service: NotificationService,
     private readonly sockets: SocketServer
   ) {
@@ -23,8 +23,9 @@ export default class NotificationController {
   /** List all notifications for the logged-in user (filtered by role + username) */
   private listMine: RequestHandler = async (req, res) => {
     try {
-      const { username, role } = ((req as unknown) as AuthedReq).user;
-      const { skip = '0', limit = '50', unread } = req.query as any;
+      const {username, role} = ((req as unknown) as AuthedReq).user;
+      const {skip = '0', limit = '50', unread} = req.query as any;
+
 
       const data = await this.service.listForUser(username, role, {
         skip: Number(skip),
@@ -32,10 +33,10 @@ export default class NotificationController {
         onlyUnread: unread === 'true',
       });
 
-      res.json({ success: true, data });
-    } catch (err: any) {
+      res.json({success: true, data});
+    } catch(err: any) {
       console.error('Error listing notifications:', err);
-      res.status(500).json({ success: false, message: err.message });
+      res.status(500).json({success: false, message: err.message});
     }
   };
 
@@ -43,10 +44,10 @@ export default class NotificationController {
   private create: RequestHandler = async (req, res) => {
     try {
       const allowedRoles: ReadonlyArray<Role> = ['admin', 'operator', 'manager'];
-      const { role } = ((req as unknown) as AuthedReq).user;
+      const {role} = ((req as unknown) as AuthedReq).user;
 
-      if (!allowedRoles.includes(role)) {
-        res.status(403).json({ message: 'Permission denied' });
+      if(!allowedRoles.includes(role)) {
+        res.status(403).json({message: 'Permission denied'});
         return;
       }
 
@@ -58,36 +59,40 @@ export default class NotificationController {
         }
       );
 
-      res.status(201).json({ success: true, data: created });
-    } catch (err: any) {
+      res.status(201).json({success: true, data: created});
+    } catch(err: any) {
       console.error('Error creating notification:', err);
-      res.status(500).json({ success: false, message: err.message });
+      res.status(500).json({success: false, message: err.message});
     }
   };
 
   /** Mark one notification as read for the current user */
   private markRead: RequestHandler = async (req, res) => {
     try {
-      const { username } = ((req as unknown) as AuthedReq).user;
-      const { id } = req.params;
+      const {username} = ((req as unknown) as AuthedReq).user;
+      const {id} = req.params;
+      if(typeof id !== 'string' || !id.trim()) {
+        res.status(400).json({success: false, message: 'Invalid notification ID'});
+        return;
+      }
 
       await this.service.markRead(username, id);
-      res.json({ success: true });
-    } catch (err: any) {
+      res.json({success: true});
+    } catch(err: any) {
       console.error('Error marking notification as read:', err);
-      res.status(500).json({ success: false, message: err.message });
+      res.status(500).json({success: false, message: err.message});
     }
   };
 
   /** Mark all notifications as read */
   private markAllRead: RequestHandler = async (req, res) => {
     try {
-      const { username } = ((req as unknown) as AuthedReq).user;
+      const {username} = ((req as unknown) as AuthedReq).user;
       await this.service.markAllRead(username);
-      res.json({ success: true });
-    } catch (err: any) {
+      res.json({success: true});
+    } catch(err: any) {
       console.error('Error marking all notifications as read:', err);
-      res.status(500).json({ success: false, message: err.message });
+      res.status(500).json({success: false, message: err.message});
     }
   };
 }
