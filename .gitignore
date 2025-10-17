@@ -1,34 +1,91 @@
-# Node modules
+# ---------------------------
+# Node & package managers
+# ---------------------------
 node_modules/
-
-# Build output
-dist/
-public/
-
-# TypeScript build info
-*.tsbuildinfo
-
-# Environment variables
-.env
-
-# Logs
-logs/
-*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
+.package-lock.json.* # npm lock backups if any
 
-# OS-specific files
+# ---------------------------
+# Builds & caches
+# ---------------------------
+dist/
+build/
+out/
+.tmp/
+.temp/
+.cache/
+.eslintcache
+.nyc_output/
+coverage/
+
+# ---------------------------
+# TypeScript
+# ---------------------------
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# ---------------------------
+# Environment / secrets
+# ---------------------------
+.env
+.env.*
+!.env.example           # keep a template in git
+*.pem
+*.key
+*.crt
+
+# ---------------------------
+# Logs & process files
+# ---------------------------
+logs/
+*.log
+*.log.*
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# ---------------------------
+# OS / Editor junk
+# ---------------------------
 .DS_Store
 Thumbs.db
-
-# IDEs / editors
 .vscode/
 .idea/
 *.swp
+*.swo
 
-# Coverage reports
-coverage/
+# ---------------------------
+# Data files (common local DBs)
+# ---------------------------
+*.sqlite
+*.sqlite3
+*.db
 
+# ---------------------------
+# Public folder
+# Keep only explicit static assets; ignore runtime uploads.
+# ---------------------------
+/public/*
+!/public/.gitkeep
+!/public/README.md
+# If you have versioned static assets, un-comment the ones you want to keep:
+# !/public/static/**
+# !/public/assets/**
+
+# Runtime-generated folders under public (always ignored)
+public/uploads/**
+public/recyclebin/**
+public/lease/**
+public/users/**
+public/tenants/**
+public/logs/**
+
+# ---------------------------
 # Misc
+# ---------------------------
 *.local
+.node_repl_history
