@@ -1,5 +1,5 @@
 // src/configs/database.ts
-import {MongoClient, Db, MongoClientOptions, ServerApiVersion} from 'mongodb';
+import mongoose from 'mongoose';
 
 type HandshakeInfo = {
   name: string;
@@ -9,76 +9,91 @@ type HandshakeInfo = {
 
 export default class Database {
   private readonly uri: string;
-  private readonly dbName: string;
-
-  private client: MongoClient | null = null;
-  private db: Db | null = null;
-  private connected = false; // track state explicitly (v5 has no .topology)
+  private readonly dbName: string | undefined;
 
   constructor (
     uri: string = process.env.MONGO_URI ?? 'mongodb://127.0.0.1:27017',
     dbName: string = process.env.MONGO_DB ?? 'propease'
   ) {
-    this.uri = uri;       // always a string (defaults provided)
-    this.dbName = dbName; // always a string (defaults provided)
+    this.uri = uri.trim();
+    // If URI already specifies a DB (e.g. mongodb://.../propease), don't also pass dbName.
+    // That avoids weird double-db logs like ".../propease/propease".
+    this.dbName = this.uriHasDb(this.uri) ? undefined : dbName.trim();
   }
 
-  /** Build MongoClientOptions without assigning any undefined fields */
-  private buildOptions(): MongoClientOptions {
-    const useTls = process.env.MONGO_TLS === 'true' || process.env.MONGO_TLS === '1';
-    const tlsCAFile = process.env.MONGO_TLS_CA_FILE;
-    const tlsCertificateKeyFile = process.env.MONGO_TLS_CERT_KEY_FILE;
+  /** Detect if the Mongo URI already includes a database path */
+  private uriHasDb(u: string): boolean {
+    // quick check: after the first single slash following the authority, is there a non-empty path?
+    // examples with DB: mongodb://host:27017/propease
+    // examples without DB: mongodb://host:27017, mongodb://host:27017/?replicaSet=rs0
+    const after = u.replace(/^mongodb(\+srv)?:\/\/[^/]+\/?/, '');
+    // if after starts with '?' or empty string, there is no db segment
+    return !!after && !after.startsWith('?');
+  }
 
-    const options: MongoClientOptions = {
-      serverApi: ServerApiVersion.v1,
-      // Sensible defaults
-      maxPoolSize: 10,
-      minPoolSize: 0,
+  /** Build Mongoose options (no undefined fields, works with exactOptionalPropertyTypes) */
+  private buildOptions(): mongoose.ConnectOptions {
+    const opts: mongoose.ConnectOptions = {
+      // timeouts
       serverSelectionTimeoutMS: 10_000,
       socketTimeoutMS: 20_000,
-      retryWrites: true,
-      ...(useTls
-        ? {
-          tls: true,
-          ...(tlsCAFile ? {tlsCAFile} : {}),
-          ...(tlsCertificateKeyFile ? {tlsCertificateKeyFile} : {}),
-        }
-        : {}),
+      maxPoolSize: 10,
+      minPoolSize: 0,
+      // modern parser/topology are defaults in v6+
+      // only set dbName if the URI does NOT already include one
+      ...(this.dbName ? {dbName: this.dbName} : {}),
     };
 
-    return options;
+    // Optional TLS (Atlas / SSL self-hosted)
+    const useTls = process.env.MONGO_TLS === 'true' || process.env.MONGO_TLS === '1';
+    if(useTls) {
+      const tlsCAFile = process.env.MONGO_TLS_CA_FILE;
+      const tlsCertificateKeyFile = process.env.MONGO_TLS_CERT_KEY_FILE;
+      Object.assign(opts, {
+        tls: true,
+        ...(tlsCAFile ? {tlsCAFile} : {}),
+        ...(tlsCertificateKeyFile ? {tlsCertificateKeyFile} : {}),
+      });
+    }
+
+    return opts;
   }
 
-  /** Connect and cache the Db reference */
+  /** Connect Mongoose (single connection for the whole app) */
   async connect(): Promise<void> {
-    if(this.connected && this.client && this.db) return; // already connected
-    const options = this.buildOptions();
-    const client = new MongoClient(this.uri, options);
-    this.client = await client.connect();
-    this.db = this.client.db(this.dbName);
-    this.connected = true;
-    console.log(`[db] connected → ${this.uri}/${this.dbName}`);
+    if(this.isConnected()) return;
+
+    // helpful runtime setting (optional)
+    mongoose.set('strictQuery', true);
+
+    const opts = this.buildOptions();
+    await mongoose.connect(this.uri, opts);
+
+    const dbNameShown =
+      this.uriHasDb(this.uri)
+        ? (mongoose.connection.db?.databaseName ?? '(unknown)')
+        : (this.dbName ?? '(unknown)');
+
+    console.log(`[db] connected → ${this.uri}${this.uriHasDb(this.uri) ? '' : '/' + dbNameShown}`);
   }
 
-  /** Close connection if open */
+  /** Close the Mongoose connection */
   async close(): Promise<void> {
-    if(!this.client) return;
+    if(!this.isConnected()) return;
     try {
-      await this.client.close();
+      await mongoose.disconnect();
     } finally {
-      this.client = null;
-      this.db = null;
-      this.connected = false;
       console.log('[db] connection closed');
     }
   }
 
-  /** Is the client logically connected? */
+  /** Is Mongoose connected? */
   isConnected(): boolean {
-    return this.connected;
+    // 1 = connected, 2 = connecting, 0 = disconnected, 3 = disconnecting
+    return mongoose.connection.readyState === 1;
   }
 
-  /** Simple ping command */
+  /** Simple ping using the current DB */
   async ping(): Promise<boolean> {
     try {
       const db = this.assertDb();
@@ -90,45 +105,43 @@ export default class Database {
   }
 
   /**
-   * Handshake: return useful capability info (e.g., changeStreams support).
-   * Change streams require a replica set or sharded cluster with replica sets.
+   * Handshake: get server version + whether change streams are supported
+   * (requires a replica set or sharded cluster with replica sets).
    */
   async handshake(name: string): Promise<HandshakeInfo> {
     const db = this.assertDb();
     const admin = db.admin();
 
-    // buildInfo gives version; replSetGetStatus throws on standalone
-    const [buildInfoRes, replStatusRes] = await Promise.allSettled([
-      admin.command({buildInfo: 1}) as Promise<{version?: string}>,
-      admin.command({replSetGetStatus: 1}) as Promise<{ok?: number}>,
-    ]);
+    let version = 'unknown';
+    let changeStreams = false;
 
-    const version =
-      buildInfoRes.status === 'fulfilled' && buildInfoRes.value?.version
-        ? String(buildInfoRes.value.version)
-        : 'unknown';
+    try {
+      const build = await admin.command({buildInfo: 1}) as {version?: string};
+      if(build?.version) version = String(build.version);
+    } catch {
+      // ignore
+    }
 
-    const changeStreams =
-      replStatusRes.status === 'fulfilled' && replStatusRes.value?.ok === 1;
+    try {
+      const repl = await admin.command({replSetGetStatus: 1}) as {ok?: number};
+      changeStreams = repl?.ok === 1;
+    } catch {
+      changeStreams = false; // standalone server
+    }
 
     console.log(`[db] handshake ${name}: version=${version} changeStreams=${changeStreams}`);
     return {name, version, changeStreams};
   }
 
-  /** Ensure DB is available */
-  private assertDb(): Db {
-    if(!this.db) throw new Error('Database not connected. Call connect() first.');
-    return this.db;
+  /** Internal: ensure we have a db handle */
+  private assertDb(): mongoose.mongo.Db {
+    const db = mongoose.connection.db;
+    if(!db) throw new Error('Database not connected. Call connect() first.');
+    return db;
   }
 
-  /** Expose the Db (read-only accessor) */
-  get database(): Db {
-    return this.assertDb();
-  }
-
-  /** Expose the MongoClient (read-only accessor) */
-  get mongoClient(): MongoClient {
-    if(!this.client) throw new Error('MongoClient not connected.');
-    return this.client;
+  /** Expose underlying Mongoose connection if needed elsewhere */
+  get connection(): mongoose.Connection {
+    return mongoose.connection;
   }
 }

@@ -1,17 +1,25 @@
-import express, {
-  Express,
-  Request,
-  Response,
-  NextFunction,
-  Router,
-} from "express";
-import crypto from "crypto";
+///src/api/lease.ts
+// ============================================================================
+// Lease API Controller
+// - Registers and updates lease agreements (files + DB)
+// - Renders EJS preview and generates Puppeteer PDFs
+// - Queries leases by username/ID with safe helpers
+// - Beginner-friendly comments included
+// ============================================================================
+
+import express, {Request, Response, Router} from "express";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 import multer from "multer";
-import sharp from "sharp";
-import mime from "mime-types";
+import axios from "axios";
+import * as libre from "libreoffice-convert"; // (kept if you later reuse for docs)
+import {promisify} from "util";
+import * as puppeteer from "puppeteer";
+import ejs from "ejs";
+import * as os from "os";
+import QRCode from "qrcode";
+
 import {
   LeaseModel,
   TenantInformation,
@@ -36,154 +44,255 @@ import {
   FILE,
   TokenViceData,
   ScannedFileRecordJSON,
-  TenantScannedFilesDataJSON,
   LeasePayload,
   LeasePayloadWithProperty,
 } from "../models/lease.model";
-import {CryptoService} from "../services/crypto.service";
-import * as puppeteer from "puppeteer";
-import ejs from "ejs";
+
 import {Property} from "../models/property.model";
-import QRCode from 'qrcode';
-import axios, {HttpStatusCode} from 'axios';
-import * as os from 'os';
 import {UserModel} from "../models/user.model";
-import NotificationService from '../services/notification.service';
-
-
+import {CryptoService} from "../services/crypto.service";
+import NotificationService from "../services/notification.service";
 
 dotenv.config();
 
+// Optional (future): promisify libre if you add DOC->PDF here
+const convertToPDF = promisify(libre.convert);
+
+// ----------------------- Small constants / limits -----------------------
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024; // 20 MB per file as a sane cap
+const ALLOWED_MIME = new Set<string>([
+  // Office
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+  "application/rtf",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+  "text/csv",
+  "text/tab-separated-values",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.openxmlformats-officedocument.presentationml.template",
+  // OpenDocument
+  "application/vnd.oasis.opendocument.text",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "application/vnd.oasis.opendocument.presentation",
+  // PDF/Text
+  "application/pdf",
+  "text/plain",
+  // Images
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/bmp",
+  "image/tiff",
+  "image/webp",
+  "image/svg+xml",
+  "image/ico",
+]);
+
+type TokenPayload = {tenant?: string; issuedAt?: number};
+
 export default class Lease {
-  private router: Router;
-  private cryptoService: CryptoService = new CryptoService();
-  private newLeaseAgreement: LeasePayload | null = null;
+  // --------------------------- Static roots ---------------------------
+  private readonly PUBLIC_ROOT = path.resolve(__dirname, "../../public");
+  private readonly UPLOADS_ROOT = path.join(this.PUBLIC_ROOT, "uploads");
+  private readonly RECYCLEBIN_ROOT = path.join(this.PUBLIC_ROOT, "recyclebin");
+
+  // Leases
+  private readonly LEASE_UPLOAD_ROOT = path.join(this.UPLOADS_ROOT, "leases");
+  private readonly LEASE_UPLOAD_DIR_URL = "uploads/leases";
+  private readonly LEASE_RECYCLE_ROOT = path.join(this.RECYCLEBIN_ROOT, "leases");
+  private readonly LEASE_RECYCLE_DIR_URL = "recyclebin/leases";
+
+  // Tenants (for mobile scanned docs)
+  private readonly TENANT_UPLOAD_ROOT = path.join(this.UPLOADS_ROOT, "tenants");
+  private readonly TENANT_UPLOAD_DIR_URL = "uploads/tenants";
+  private readonly TENANT_RECYCLE_ROOT = path.join(this.RECYCLEBIN_ROOT, "tenants");
+  private readonly TENANT_RECYCLE_DIR_URL = "recyclebin/tenants";
+
+  // -------------------- Express + services + caches -------------------
+  private readonly router: Router;
+  private readonly cryptoService: CryptoService = new CryptoService();
   private puppeteerBrowser: puppeteer.Browser | null = null;
+
+  // Cache EJS templates + logo so PDF generation is fast
   private cachedTemplates: {
     header: string;
     footer: string;
     main: string;
     logoBase64: string;
-  } = {
-      header: "",
-      footer: "",
-      main: "",
-      logoBase64: "",
-    };
+  } = {header: "", footer: "", main: "", logoBase64: ""};
 
   constructor () {
     this.router = express.Router();
-    this.cachedTemplates = {
-      header: '',
-      footer: '',
-      main: '',
-      logoBase64: ''
-    };
-    this.registerLeaseAgreement();
-    this.updateLeaseAgreement();
-    this.setupEjsPreview();
-    this.generatePDFOfLeaseAgreement();
-    this.getAllLeaseAgreementsByUsername();
-    this.getLeaseAgreementsByLeaseID();
-    this.getLeaseAgreementByIDAndUpdateValidationStatus();
-    this.getBrowser();
+
+    // Register routes
+    this.registerLeaseAgreement();                 // POST /register/:leaseID   (create)
+    this.updateLeaseAgreement();                   // PUT  /update-lease-agreement/:leaseID  (update)
+    this.setupEjsPreview();                        // GET  /preview-lease-agreement/:leaseID (EJS preview)
+    this.generatePDFOfLeaseAgreement();            // GET  /lease-agreement-pdf/:leaseID/:type/:generator
+    this.getAllLeaseAgreementsByUsername();        // GET  /lease-agreements/:username
+    this.getLeaseAgreementsByLeaseID();            // GET  /lease-agreement/:leaseID
+    this.getLeaseAgreementByIDAndUpdateValidationStatus(); // PUT /lease-status-updated/:leaseID
+    this.getTenantByUsername();                    // GET  /get-tenant-by-username/:username
+    this.getAllLeases();                           // GET  /all-leases?page=&limit=
+
+    // Load templates once
     this.preloadTemplates();
-    this.getTenantByUsername();
-    this.getAllLeases()
   }
 
-  get route(): Router {
+  /** Expose router to app: app.use('/lease', new Lease().route) */
+  public get route(): Router {
     return this.router;
   }
-  //********************************************************** ROUTERS *******************************************************************/
 
-  //<============================================== REGISTER LEASE AGREEMENT ==============================================>
-  private registerLeaseAgreement() {
-    // Allowed MIME types for uploads
-    const allowedTypes = [
-      // Word / Office
-      "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
-      "application/rtf",
+  // ============================================================================
+  // Helpers: URL + path + parsing + validation
+  // ============================================================================
 
-      // Excel
-      "application/vnd.ms-excel",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
-      "text/csv",
-      "text/tab-separated-values",
+  /** Build base URL and honor proxies (X-Forwarded-Proto). */
+  private getBaseUrl(req: Request): string {
+    const forwardedProto = (req.headers["x-forwarded-proto"] as string) || "";
+    const protocol = forwardedProto.split(",")[0]?.trim() || req.protocol;
+    const host = req.get("host") || "localhost";
+    return `${protocol}://${host}`;
+  }
 
-      // PowerPoint
-      "application/vnd.ms-powerpoint",
-      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-      "application/vnd.openxmlformats-officedocument.presentationml.template",
+  /** Prevent path traversal by normalizing under a root. */
+  private safeJoin(root: string, ...segments: string[]): string {
+    const target = path.normalize(path.join(root, ...segments));
+    const normalizedRoot = path.normalize(root);
+    if(!target.startsWith(normalizedRoot)) {
+      throw new Error("Unsafe path resolution detected.");
+    }
+    return target;
+  }
 
-      // OpenDocument
-      "application/vnd.oasis.opendocument.text",
-      "application/vnd.oasis.opendocument.spreadsheet",
-      "application/vnd.oasis.opendocument.presentation",
+  /** Create/return lease directory path; optionally ensure (mkdir -p). */
+  private buildLeasePath(leaseID: string, ensure = false, ...segments: string[]): string {
+    const p = this.safeJoin(this.LEASE_UPLOAD_ROOT, leaseID, ...segments);
+    if(ensure) fs.mkdirSync(p, {recursive: true});
+    return p;
+  }
 
-      // PDF / Text
-      "application/pdf",
-      "text/plain",
+  /** Public URL under /public for lease files. */
+  private buildLeaseUrl(leaseID: string, ...segments: string[]): string {
+    return [this.LEASE_UPLOAD_DIR_URL, leaseID, ...segments].join("/");
+  }
 
-      // Images
-      "image/jpeg",
-      "image/png",
-      "image/gif",
-      "image/bmp",
-      "image/tiff",
-      "image/webp",
-      "image/svg+xml",
-      "image/ico",
-    ];
+  /** Build tenant path (e.g., scanned/mobile). */
+  private buildTenantPath(username: string, ensure = false, ...segments: string[]): string {
+    const p = this.safeJoin(this.TENANT_UPLOAD_ROOT, username, ...segments);
+    if(ensure) fs.mkdirSync(p, {recursive: true});
+    return p;
+  }
 
+  /** Public URL for tenant files. */
+  private buildTenantUrl(username: string, ...segments: string[]): string {
+    return [this.TENANT_UPLOAD_DIR_URL, username, ...segments].join("/");
+  }
+
+  /** Simple filename sanitizer to avoid weird characters + collisions. */
+  private sanitizeFilename(original: string): string {
+    const base = original.replace(/\s+/g, "_").replace(/[^\w.\-]/g, "");
+    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+    return `${uniqueSuffix}-${base}`;
+  }
+
+  /** Parse a required string from any input; throws a helpful error. */
+  private mustString(v: unknown, name: string): string {
+    if(typeof v !== "string" || !v.trim()) throw new Error(`${name} is required`);
+    return v.trim();
+  }
+
+  /** Parse and validate an ISO date string (YYYY-MM-DD or full ISO). */
+  private mustISODate(v: unknown, name: string): string {
+    const s = this.mustString(v, name);
+    if(!this.checkISODate(s)) throw new Error(`${name} must be ISO date (YYYY-MM-DD).`);
+    return s;
+  }
+
+  /** Parse JSON from string with typed generics and friendly error. */
+  private mustJSON<T = any>(v: unknown, name: string): T {
+    const s = this.mustString(v, name);
+    try {
+      return JSON.parse(s) as T;
+    } catch {
+      throw new Error(`${name} must be valid JSON.`);
+    }
+  }
+
+  /** Parse integer in base-10 with nice error. */
+  private toInt10(v: unknown, name: string): number {
+    const s = this.mustString(v, name);
+    const n = parseInt(s, 10);
+    if(!Number.isFinite(n)) throw new Error(`${name} must be a number.`);
+    return n;
+  }
+
+  /** Parse boolean from common forms ("true"/"false"/"1"/"0"). */
+  private parseBoolean(input: string): boolean {
+    const val = input?.toString().trim().toLowerCase();
+    return val === "true" || val === "1";
+  }
+
+  /** Minimal ID/username sanitizer for queries (letters, numbers, _ - .). */
+  private sanitizeIdentifier(input: string): string {
+    return (input || "").trim().replace(/[^\w.\-]/g, "");
+  }
+
+  // ============================================================================
+  // CREATE: Register Lease Agreement
+  // POST /register/:leaseID
+  // ============================================================================
+
+  private registerLeaseAgreement(): void {
+    // 1) Configure multer storage and filtering
     const storage = multer.diskStorage({
       destination: (req, file, cb) => {
-        const leaseID = req.params.leaseID;
-        if(!leaseID) return cb(new Error("Lease ID is required in the URL path."), "");
-
-        let uploadPath = "";
-        switch(file.fieldname) {
-          case "tenantScanedDocuments":
-            uploadPath = path.join(__dirname, `../../public/lease/${leaseID}/documents/`);
-            break;
-          case "tenantSignature":
-            uploadPath = path.join(__dirname, `../../public/lease/${leaseID}/signatures/tenant/`);
-            break;
-          case "landlordSignature":
-            uploadPath = path.join(__dirname, `../../public/lease/${leaseID}/signatures/landlord/`);
-            break;
-          default:
-            return cb(new Error("Unexpected field: " + file.fieldname), "");
+        try {
+          const leaseID = this.mustString(req.params.leaseID, "Lease ID");
+          let uploadPath = "";
+          // NOTE: field names are matched exactly; keep existing names for compatibility
+          switch(file.fieldname) {
+            case "tenantScanedDocuments":
+              uploadPath = this.buildLeasePath(leaseID, true, "documents");
+              break;
+            case "tenantSignature":
+              uploadPath = this.buildLeasePath(leaseID, true, "signatures", "tenant");
+              break;
+            case "landlordSignature":
+              uploadPath = this.buildLeasePath(leaseID, true, "signatures", "landlord");
+              break;
+            default:
+              cb(new Error("Unexpected field: " + file.fieldname), "");
+              return;
+          }
+          cb(null, uploadPath);
+        } catch(err) {
+          cb(err as Error, "");
         }
-        fs.mkdirSync(uploadPath, {recursive: true});
-        cb(null, uploadPath);
       },
-      filename: (_req, file, cb) => {
-        const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-        const sanitized = file.originalname.replace(/\s+/g, "_");
-        cb(null, `${uniqueSuffix}-${sanitized}`);
-      },
+      filename: (_req, file, cb) => cb(null, this.sanitizeFilename(file.originalname)),
     });
 
-    const fileFilter = (_req: Request, file: Express.Multer.File, cb: any) => {
-      const isAllowed = allowedTypes.includes(file.mimetype);
-      if(
-        (file.fieldname === "tenantScanedDocuments" ||
-          file.fieldname === "tenantSignature" ||
-          file.fieldname === "landlordSignature") &&
-        isAllowed
-      ) {
-        cb(null, true);
-      } else {
+    const fileFilter: multer.Options["fileFilter"] = (_req, file, cb) => {
+      if(!ALLOWED_MIME.has(file.mimetype)) {
         cb(new Error(`File type not allowed: ${file.mimetype}`));
+        return;
       }
+      cb(null, true);
     };
 
-    const upload = multer({storage, fileFilter});
+    const upload = multer({
+      storage,
+      fileFilter,
+      limits: {fileSize: MAX_UPLOAD_BYTES, files: 60}, // 50 docs + 2 signatures (+ buffer)
+    });
 
+    // 2) Route handler
     this.router.post(
       "/register/:leaseID",
       upload.fields([
@@ -193,30 +302,7 @@ export default class Lease {
       ]),
       async (req: Request<{leaseID: string}>, res: Response) => {
         try {
-          // --------------------------- basic helpers ----------------------------
-          const mustString = (v: unknown, name: string) => {
-            if(typeof v !== "string" || !v.trim()) throw new Error(`${name} is required`);
-            return v.trim();
-          };
-          const mustISODate = (v: unknown, name: string): string => {
-            const s = mustString(v, name);
-            if(!this.checkISODate(s)) throw new Error(`${name} must be ISO date (YYYY-MM-DD).`);
-            return s;
-          };
-          const mustJSON = <T = any>(v: unknown, name: string): T => {
-            const s = mustString(v, name);
-            try {
-              return JSON.parse(s) as T;
-            } catch {
-              throw new Error(`${name} must be valid JSON.`);
-            }
-          };
-          const toInt10 = (v: unknown, name: string): number => {
-            const s = mustString(v, name);
-            const n = parseInt(s, 10);
-            if(!Number.isFinite(n)) throw new Error(`${name} must be a number.`);
-            return n;
-          };
+          // -------------------- Required maps/guards --------------------
           const ensureFileSig = (obj: any): obj is FILE =>
             obj &&
             typeof obj.fieldname === "string" &&
@@ -226,58 +312,36 @@ export default class Lease {
             typeof obj.filename === "string" &&
             typeof obj.URL === "string";
 
-          // --------------------------- files map -------------------------------
-          const files = req.files as {[fieldname: string]: Express.Multer.File[]} | undefined;
+          const files = req.files as {[field: string]: Express.Multer.File[]} | undefined;
+          const leaseID = this.mustString(req.params.leaseID || req.body.leaseID, "Lease ID");
 
-          // --------------------------- lease id --------------------------------
-          const leaseID = mustString(req.params.leaseID || req.body.leaseID, "Lease ID");
+          // -------------------- Tenant info --------------------
+          const tenantUsername = this.mustString(req.body.tenantUsername, "Tenant ID");
+          const tenantFullName = this.mustString(req.body.tenantFullName, "Tenant Full Name");
+          const tenantEmail = this.mustString(req.body.tenantEmail, "Tenant Email");
+          const tenantNationality = this.mustString(req.body.tenantNationality, "Tenant Nationality");
 
-          // --------------------------- tenant info -----------------------------
-          const tenantUsername: TenantInformation["tenantUsername"] = mustString(
-            req.body.tenantUsername,
-            "Tenant ID"
-          );
-          const tenantFullName: TenantInformation["fullName"] = mustString(
-            req.body.tenantFullName,
-            "Tenant Full Name"
-          );
-          const tenantEmail: TenantInformation["email"] = mustString(
-            req.body.tenantEmail,
-            "Tenant Email"
-          );
-          const tenantNationality: TenantInformation["nationality"] = mustString(
-            req.body.tenantNationality,
-            "Tenant Nationality"
-          );
-          const tenantDateOfBirthStr = mustISODate(req.body.tenantDateOfBirth, "Tenant date of birth");
+          const tenantDateOfBirthStr = this.mustISODate(req.body.tenantDateOfBirth, "Tenant date of birth");
           const tenantDateOfBirth = new Date(tenantDateOfBirthStr);
-          if(Number.isNaN(tenantDateOfBirth.getTime()))
-            throw new Error("Tenant date of birth is not a valid date");
+          if(Number.isNaN(tenantDateOfBirth.getTime())) throw new Error("Tenant date of birth is not a valid date");
 
-          if(!this.checkIsPhoneCodeDetails(mustString(req.body.tenantPhoneCodeDetails, "Tenant phone code")))
+          if(!this.checkIsPhoneCodeDetails(this.mustString(req.body.tenantPhoneCodeDetails, "Tenant phone code")))
             throw new Error("Invalid tenant phone code details");
-          const tenantPhoneCodeDetails: CountryCodes = mustJSON(req.body.tenantPhoneCodeDetails, "Tenant phone code");
+          const tenantPhoneCodeDetails: CountryCodes = this.mustJSON(req.body.tenantPhoneCodeDetails, "Tenant phone code");
 
-          const tenantPhoneNumber: TenantInformation["phoneNumber"] = mustString(
-            req.body.tenantPhoneNumber,
-            "Tenant Phone Number"
-          );
-          const tenantGender: TenantInformation["gender"] = mustString(req.body.tenantGender, "Tenant Gender");
-          const tenantNICOrPassport: TenantInformation["nicOrPassport"] = mustString(
-            req.body.tenantNICOrPassport,
-            "Tenant NIC OR Passport"
-          );
+          const tenantPhoneNumber = this.mustString(req.body.tenantPhoneNumber, "Tenant Phone Number");
+          const tenantGender = this.mustString(req.body.tenantGender, "Tenant Gender");
+          const tenantNICOrPassport = this.mustString(req.body.tenantNICOrPassport, "Tenant NIC OR Passport");
 
-          if(!this.isValidTenantAddress(mustString(req.body.tenantAddress, "Tenant Address")))
+          if(!this.isValidTenantAddress(this.mustString(req.body.tenantAddress, "Tenant Address")))
             throw new Error("Invalid tenant address object");
-          const tenantAddress: Address = mustJSON(req.body.tenantAddress, "Tenant Address");
+          const tenantAddress: Address = this.mustJSON(req.body.tenantAddress, "Tenant Address");
 
           if(!this.checkIsEmergencyContact(req.body.emergencyContact))
             throw new Error("Invalid tenant emergency contact object");
-          const tenantEmergencyContact: EmergencyContact = mustJSON(req.body.emergencyContact, "Emergency Contact");
+          const tenantEmergencyContact: EmergencyContact = this.mustJSON(req.body.emergencyContact, "Emergency Contact");
 
-          // --------------------------- co-tenant (optional) --------------------
-          // NOTE: do not build coTenant if nothing meaningful was provided.
+          // -------------------- Co-tenant (optional) --------------------
           const coTenantFullname = (req.body.coTenantFullname as string | undefined)?.trim();
           const coTenantEmail = (req.body.coTenantEmail as string | undefined)?.trim();
           const coTenantPhoneCodeId = (req.body.coTenantPhoneCodeId as string | undefined)?.trim();
@@ -289,10 +353,16 @@ export default class Lease {
 
           let INSERT_DATA_coTenant: CoTenant | undefined;
           const anyCoTenantFieldProvided =
-            !!(coTenantFullname || coTenantEmail || coTenantPhoneCodeId || coTenantPhoneNumber || coTenantGender || coTenantNicOrPassport || coTenantAgeStr || coTenantRelationship);
+            !!(coTenantFullname ||
+              coTenantEmail ||
+              coTenantPhoneCodeId ||
+              coTenantPhoneNumber ||
+              coTenantGender ||
+              coTenantNicOrPassport ||
+              coTenantAgeStr ||
+              coTenantRelationship);
 
           if(anyCoTenantFieldProvided) {
-            // If you want stricter validation, enforce required fields here.
             const coTenantAge = coTenantAgeStr ? parseInt(coTenantAgeStr, 10) : undefined;
             INSERT_DATA_coTenant = {
               fullName: coTenantFullname ?? "",
@@ -305,139 +375,105 @@ export default class Lease {
               relationship: coTenantRelationship ?? "",
             };
           }
-          // IMPORTANT: we will only include `coTenant` in the payload if INSERT_DATA_coTenant is defined.
 
-          // --------------------------- property -------------------------------
-          const selectedProperty: Property = mustJSON(req.body.selectedProperty, "Selected Property");
+          // -------------------- Property + agreement core --------------------
+          const selectedProperty: Property = this.mustJSON(req.body.selectedProperty, "Selected Property");
 
-          // --------------------------- lease agreement -------------------------
-          const startDate: LeaseAgreement["startDate"] = mustISODate(req.body.startDate, "Agreement starting date");
-          const endDate: LeaseAgreement["endDate"] = mustISODate(req.body.endDate, "Agreement ending date");
-          const durationMonths: LeaseAgreement["durationMonths"] = toInt10(
-            req.body.durationMonths,
-            "Agreement duration in months"
-          );
-          const monthlyRent: LeaseAgreement["monthlyRent"] = toInt10(
-            req.body.monthlyRent,
-            "Agreement monthly rent"
-          );
+          const startDate = this.mustISODate(req.body.startDate, "Agreement starting date");
+          const endDate = this.mustISODate(req.body.endDate, "Agreement ending date");
+          const durationMonths = this.toInt10(req.body.durationMonths, "Agreement duration in months");
+          const monthlyRent = this.toInt10(req.body.monthlyRent, "Agreement monthly rent");
 
-          if(!this.checkCurrencyFormat(mustString(req.body.currency, "Currency"))) throw new Error("Invalid currency");
-          const currency: LeaseAgreement["currency"] = mustJSON(req.body.currency, "Currency");
+          if(!this.checkCurrencyFormat(this.mustString(req.body.currency, "Currency")))
+            throw new Error("Invalid currency");
+          const currency: CurrencyFormat = this.mustJSON(req.body.currency, "Currency");
 
-          if(!this.checkPaymentFrequencyFormat(mustString(req.body.paymentFrequency, "Payment frequency")))
+          if(!this.checkPaymentFrequencyFormat(this.mustString(req.body.paymentFrequency, "Payment frequency")))
             throw new Error("Invalid payment frequency");
-          const paymentFrequency: LeaseAgreement["paymentFrequency"] =
-            mustJSON(req.body.paymentFrequency, "Payment frequency");
+          const paymentFrequency: PaymentFrequency = this.mustJSON(req.body.paymentFrequency, "Payment frequency");
 
-          if(!this.checkPaymentMethodFormat(mustString(req.body.paymentMethod, "Payment method")))
+          if(!this.checkPaymentMethodFormat(this.mustString(req.body.paymentMethod, "Payment method")))
             throw new Error("Invalid payment method");
-          const paymentMethod: LeaseAgreement["paymentMethod"] = mustJSON(req.body.paymentMethod, "Payment method");
+          const paymentMethod: PaymentMethod = this.mustJSON(req.body.paymentMethod, "Payment method");
 
-          if(!this.checkSecurityDepositFormat(mustString(req.body.securityDeposit, "Security deposit")))
+          if(!this.checkSecurityDepositFormat(this.mustString(req.body.securityDeposit, "Security deposit")))
             throw new Error("Invalid security deposit");
-          const securityDeposit: LeaseAgreement["securityDeposit"] =
-            mustJSON(req.body.securityDeposit, "Security deposit");
+          const securityDeposit: SecurityDeposit = this.mustJSON(req.body.securityDeposit, "Security deposit");
 
-          if(!this.checkRentDueDateFormat(mustString(req.body.rentDueDate, "Rent due date")))
+          if(!this.checkRentDueDateFormat(this.mustString(req.body.rentDueDate, "Rent due date")))
             throw new Error("Invalid rent due date");
-          const rentDueDate: LeaseAgreement["rentDueDate"] = mustJSON(req.body.rentDueDate, "Rent due date");
+          const rentDueDate: RentDueDate = this.mustJSON(req.body.rentDueDate, "Rent due date");
 
           if(
             !this.checkLatePaymentPenaltiesFormat(
-              mustString(req.body.selectedLatePaymentPenalties, "Late payment penalties")
+              this.mustString(req.body.selectedLatePaymentPenalties, "Late payment penalties")
             )
           )
             throw new Error("Invalid late payment penalties");
-          const selectedLatePaymentPenalties: LeaseAgreement["latePaymentPenalties"] = mustJSON(
+          const selectedLatePaymentPenalties: LatePaymentPenalty[] = this.mustJSON(
             req.body.selectedLatePaymentPenalties,
             "Late payment penalties"
           );
 
           if(
             !this.checkUtilityResponsibilitiesFormat(
-              mustString(req.body.selectedUtilityResponsibilities, "Utility responsibilities")
+              this.mustString(req.body.selectedUtilityResponsibilities, "Utility responsibilities")
             )
           )
             throw new Error("Invalid utility responsibilities");
-          const selectedUtilityResponsibilities: LeaseAgreement["utilityResponsibilities"] = mustJSON(
+          const selectedUtilityResponsibilities: UtilityResponsibility[] = this.mustJSON(
             req.body.selectedUtilityResponsibilities,
             "Utility responsibilities"
           );
 
-          if(!this.checkNoticePeriodDaysFormat(mustString(req.body.noticePeriodDays, "Notice period days")))
+          if(!this.checkNoticePeriodDaysFormat(this.mustString(req.body.noticePeriodDays, "Notice period days")))
             throw new Error("Invalid notice period days");
-          const noticePeriodDays: LeaseAgreement["noticePeriodDays"] = mustJSON(
-            req.body.noticePeriodDays,
-            "Notice period days"
-          );
+          const noticePeriodDays: NoticePeriod = this.mustJSON(req.body.noticePeriodDays, "Notice period days");
 
-          if(!this.checkRuleAndRegulationsFormat(mustString(req.body.selectedRuleAndRegulations, "Rules & regs")))
+          if(!this.checkRuleAndRegulationsFormat(this.mustString(req.body.selectedRuleAndRegulations, "Rules & regs")))
             throw new Error("Invalid rule and regulations format");
-          const selectedRuleAndRegulations: RulesAndRegulations[] = mustJSON(
+          const selectedRuleAndRegulations: RulesAndRegulations[] = this.mustJSON(
             req.body.selectedRuleAndRegulations,
             "Rules & regs"
           );
 
-          const isReadTheCompanyPolicy: LeaseType["isReadTheCompanyPolicy"] = this.checkBoolean(
-            mustString(req.body.isReadTheCompanyPolicy, "Company policy confirmation")
+          const isReadTheCompanyPolicy: boolean = this.parseBoolean(
+            this.mustString(req.body.isReadTheCompanyPolicy, "Company policy confirmation")
           );
 
-          const signedAtStr = mustISODate(req.body.signedAt, "Agreement signed at date");
+          // -------------------- Signatures + meta --------------------
+          const signedAtStr = this.mustISODate(req.body.signedAt, "Agreement signed at date");
           const signedAt = new Date(signedAtStr);
 
           const ipAddress: string =
             (req.headers["x-forwarded-for"] as string | undefined) ?? req.socket.remoteAddress ?? "Unknown IP";
 
-          // --------------------------- organize scanned docs -------------------
-          const host = req.get("host");
-          const protocol = req.protocol;
-          const baseUrl = `${protocol}://${host}`;
+          const baseUrl = this.getBaseUrl(req);
 
-          const scannedDocumentPath = path.join(__dirname, `../../public/lease/${leaseID}/documents/`);
-          const mobileScannedFolderPath = path.join(__dirname, `../../public/tenants/scanned-files/${tenantUsername}/`);
+          // -------------------- Move tenant mobile scans into lease folder --------------------
+          const scannedDocumentPath = this.buildLeasePath(leaseID, true, "documents");
+          const mobileScannedFolderPath = this.buildTenantPath(tenantUsername, false, "scanned", "mobile");
 
-          const tenantUploadedScanedDocumentsRemoved: ScannedFileRecordJSON[] = mustJSON(
+          // removed tokens (currently not mutating the ledger file — kept for future)
+          const tenantUploadedScanedDocumentsRemoved: ScannedFileRecordJSON[] = this.mustJSON(
             req.body.tenantUploadedScanedDocumentsRemoved,
             "Removed scanned docs"
           );
 
-          const JSON_PATH = path.join(__dirname, "../../public/tenants/scanned-files/tenantScannedFilesData.json");
-          if(fs.existsSync(JSON_PATH)) {
-            const fileContent = await fs.promises.readFile(JSON_PATH, "utf8");
-            const JSON_DATA: TenantScannedFilesDataJSON = JSON.parse(fileContent);
-            const tenantJSONData = JSON_DATA[tenantUsername];
-
-            if(Array.isArray(tenantJSONData)) {
-              const updatedTenantJSONData = tenantJSONData.filter(
-                (data) => !tenantUploadedScanedDocumentsRemoved.some((item) => item.token === data.token)
-              );
-              JSON_DATA[tenantUsername] = updatedTenantJSONData;
-              await fs.promises.writeFile(JSON_PATH, JSON.stringify(JSON_DATA, null, 2));
-            } else {
-              console.warn(`No JSON data found for tenant: ${tenantUsername}`);
-            }
-          } else {
-            console.warn(`[WARN] No JSON data found for tenant '${tenantUsername}' at ${JSON_PATH}`);
-          }
-
-          const tenantUploadedScanedDocuments: ScannedFileRecordJSON[] = mustJSON(
+          const tenantUploadedScanedDocuments: ScannedFileRecordJSON[] = this.mustJSON(
             req.body.tenantUploadedScanedDocuments,
             "Tenant uploaded scanned docs"
           );
 
-          // Move mobile-uploaded scans to lease folder
+          // Move each referenced file from tenant mobile folder -> lease documents
           tenantUploadedScanedDocuments.forEach((item) => {
-            const files = item.files;
-            item.folder = scannedDocumentPath;
-            files.forEach((doc) => {
+            item.files.forEach((doc) => {
               const filename = doc.file.filename;
               const sourcePath = path.join(mobileScannedFolderPath, filename);
               if(fs.existsSync(sourcePath)) {
-                const destinationPath = path.join(scannedDocumentPath, filename);
-                doc.file.URL = `${baseUrl}/lease/${leaseID}/documents/${filename}`;
-                doc.folder = scannedDocumentPath;
-                fs.renameSync(sourcePath, destinationPath);
+                const destPath = path.join(scannedDocumentPath, filename);
+                doc.file.URL = `${baseUrl}/${this.buildLeaseUrl(leaseID, "documents", filename)}`;
+                fs.renameSync(sourcePath, destPath);
               }
             });
           });
@@ -447,39 +483,34 @@ export default class Lease {
             scannedDocuments.push(...tenantUploadedScanedDocuments);
           }
 
-          // Create a token for new uploaded docs
-          const payload = {tenant: tenantUsername, issuedAt: Date.now()};
-          const token = await this.cryptoService.encrypt(payload);
+          // Also include new uploads that came with this request (tenantScanedDocuments)
+          const payloadForToken: TokenPayload = {tenant: tenantUsername, issuedAt: Date.now()};
+          const token = await this.cryptoService.encrypt(payloadForToken);
 
-          const tenantScanedDocuments = files?.["tenantScanedDocuments"];
-          const newScannedFileRecord: ScannedFileRecordJSON = {
+          const leaseDocsNow = (files?.["tenantScanedDocuments"] ?? []) as Express.Multer.File[];
+          const newScannedBatch: ScannedFileRecordJSON = {
             date: new Date().toISOString(),
             tenant: tenantUsername,
-            token: token,
+            token,
             files: [],
-            folder: scannedDocumentPath,
           };
 
-          if(Array.isArray(tenantScanedDocuments)) {
-            tenantScanedDocuments.forEach((doc) => {
-              const data: TokenViceData = {
-                ageInMinutes: 0,
-                file: {
-                  fieldname: doc.fieldname,
-                  originalname: doc.originalname,
-                  mimetype: doc.mimetype,
-                  size: doc.size,
-                  filename: doc.filename,
-                  URL: `${baseUrl}/lease/${leaseID}/documents/${doc.filename}`,
-                },
-              };
-              newScannedFileRecord.files.push(data);
-            });
-          }
+          leaseDocsNow.forEach((doc) => {
+            const data: TokenViceData = {
+              ageInMinutes: 0,
+              file: {
+                fieldname: doc.fieldname,
+                originalname: doc.originalname,
+                mimetype: doc.mimetype,
+                size: doc.size,
+                filename: doc.filename,
+                URL: `${baseUrl}/${this.buildLeaseUrl(leaseID, "documents", doc.filename)}`,
+              },
+            };
+            newScannedBatch.files.push(data);
+          });
 
-          if(newScannedFileRecord.files.length > 0) {
-            scannedDocuments.push(newScannedFileRecord);
-          }
+          if(newScannedBatch.files.length > 0) scannedDocuments.push(newScannedBatch);
 
           if(!scannedDocuments.length) {
             throw new Error(
@@ -487,44 +518,44 @@ export default class Lease {
             );
           }
 
-          // --------------------------- signatures ------------------------------
-          const tenantSignature = files?.["tenantSignature"]?.[0];
+          // -------------------- Signatures (file or old JSON) --------------------
+          const tSig = files?.["tenantSignature"]?.[0];
           const tenantOldSignature = req.body.tenantOldSignature;
           let fallbackTenantSignature: FILE | undefined;
-          if(!tenantSignature) {
+          if(!tSig) {
             if(!ensureFileSig(tenantOldSignature)) throw new Error("Tenant signature is required!");
             fallbackTenantSignature = tenantOldSignature;
           }
           const organizedTenantSignature: FILE = {
-            fieldname: tenantSignature?.fieldname ?? fallbackTenantSignature?.fieldname ?? "",
-            originalname: tenantSignature?.originalname ?? fallbackTenantSignature?.originalname ?? "",
-            mimetype: tenantSignature?.mimetype ?? fallbackTenantSignature?.mimetype ?? "",
-            size: tenantSignature?.size ?? fallbackTenantSignature?.size ?? 0,
-            filename: tenantSignature?.filename ?? fallbackTenantSignature?.filename ?? "",
-            URL: tenantSignature
-              ? `${baseUrl}/lease/${leaseID}/signatures/tenant/${tenantSignature.filename}`
+            fieldname: tSig?.fieldname ?? fallbackTenantSignature?.fieldname ?? "",
+            originalname: tSig?.originalname ?? fallbackTenantSignature?.originalname ?? "",
+            mimetype: tSig?.mimetype ?? fallbackTenantSignature?.mimetype ?? "",
+            size: tSig?.size ?? fallbackTenantSignature?.size ?? 0,
+            filename: tSig?.filename ?? fallbackTenantSignature?.filename ?? "",
+            URL: tSig
+              ? `${this.buildLeaseUrl(leaseID, "signatures", "tenant", tSig.filename)}`
               : fallbackTenantSignature?.URL ?? "",
           };
 
-          const landlordSignature = files?.["landlordSignature"]?.[0];
+          const lSig = files?.["landlordSignature"]?.[0];
           const landlordOldSignature = req.body.landlordOldSignature;
           let fallbackLandlordSignature: FILE | undefined;
-          if(!landlordSignature) {
+          if(!lSig) {
             if(!ensureFileSig(landlordOldSignature)) throw new Error("Landlord signature is required!");
             fallbackLandlordSignature = landlordOldSignature;
           }
           const organizedLandlordSignature: FILE = {
-            fieldname: landlordSignature?.fieldname ?? fallbackLandlordSignature?.fieldname ?? "",
-            originalname: landlordSignature?.originalname ?? fallbackLandlordSignature?.originalname ?? "",
-            mimetype: landlordSignature?.mimetype ?? fallbackLandlordSignature?.mimetype ?? "",
-            size: landlordSignature?.size ?? fallbackLandlordSignature?.size ?? 0,
-            filename: landlordSignature?.filename ?? fallbackLandlordSignature?.filename ?? "",
-            URL: landlordSignature
-              ? `${baseUrl}/lease/${leaseID}/signatures/landlord/${landlordSignature.filename}`
+            fieldname: lSig?.fieldname ?? fallbackLandlordSignature?.fieldname ?? "",
+            originalname: lSig?.originalname ?? fallbackLandlordSignature?.originalname ?? "",
+            mimetype: lSig?.mimetype ?? fallbackLandlordSignature?.mimetype ?? "",
+            size: lSig?.size ?? fallbackLandlordSignature?.size ?? 0,
+            filename: lSig?.filename ?? fallbackLandlordSignature?.filename ?? "",
+            URL: lSig
+              ? `${this.buildLeaseUrl(leaseID, "signatures", "landlord", lSig.filename)}`
               : fallbackLandlordSignature?.URL ?? "",
           };
 
-          // --------------------------- assemble sub-docs -----------------------
+          // -------------------- Build sub-docs --------------------
           const INSERT_DATA_TenantInformation: TenantInformation = {
             tenantUsername,
             fullName: tenantFullName,
@@ -560,20 +591,19 @@ export default class Lease {
             landlordSignature: organizedLandlordSignature,
             signedAt,
             ipAddress,
-            userAgent: mustJSON(req.body.userAgent, "User agent"),
+            userAgent: this.mustJSON(req.body.userAgent, "User agent"),
           };
 
-          if(!this.checkSystemMetaDataFormat(mustString(req.body.systemMetaData, "System metadata")))
+          if(!this.checkSystemMetaDataFormat(this.mustString(req.body.systemMetaData, "System metadata")))
             throw new Error("Invalid system metadata");
-          const systemMetaData: SystemMetadata = mustJSON(req.body.systemMetaData, "System metadata");
+          const systemMetaData: SystemMetadata = this.mustJSON(req.body.systemMetaData, "System metadata");
 
-          // --------------------------- parent payloads -------------------------
-          // IMPORTANT: coTenant is added only if defined — this is what fixes your TS error.
+          // -------------------- Parent payloads --------------------
           const INSERT_DATA: LeasePayload = {
             leaseID,
             tenantInformation: INSERT_DATA_TenantInformation,
             ...(INSERT_DATA_coTenant ? {coTenant: INSERT_DATA_coTenant} : {}),
-            propertyID: selectedProperty.id,
+            propertyID: (selectedProperty as any).id, // keep as your current FE sends
             leaseAgreement: INSERT_DATA_leaseAgreement,
             rulesAndRegulations: selectedRuleAndRegulations,
             isReadTheCompanyPolicy,
@@ -593,174 +623,103 @@ export default class Lease {
             systemMetadata: systemMetaData,
           };
 
-          // --------------------------- save JSON (for pdf) ---------------------
-          const LEASE_JSON_PATH = path.join(
-            __dirname,
-            `../../public/lease/${leaseID}/agreement-data/${leaseID}.json`
-          );
-          await fs.promises.mkdir(path.dirname(LEASE_JSON_PATH), {recursive: true});
-          await fs.promises.writeFile(LEASE_JSON_PATH, JSON.stringify(INSERT_DOCUMENT_DATA, null, 2));
+          // -------------------- Save JSON snapshot for PDF --------------------
+          const LEASE_JSON_PATH = this.buildLeasePath(leaseID, true, "agreement-data", "data.json");
+          await fs.promises.writeFile(LEASE_JSON_PATH, JSON.stringify(INSERT_DOCUMENT_DATA, null, 2), "utf8");
 
-          // --------------------------- persist in DB ---------------------------
+          // -------------------- Persist in DB --------------------
           const INSERT = new LeaseModel(INSERT_DATA);
           await INSERT.save();
 
-          if(INSERT) {
-            // Notify: tenant (user) + admins/operators (roles).
-            const notificationService = new NotificationService();
-            const io = req.app.get("io") as import("socket.io").Server;
+          // -------------------- Notify relevant users --------------------
+          const notificationService = new NotificationService();
+          const io = req.app.get("io") as import("socket.io").Server;
 
-            await notificationService.createNotification(
-              {
-                title: "New Lease",
-                body: `New lease agreement has been created with ID: ${leaseID}. Please review and validate the agreement.`,
-                type: "create",
-                severity: "info",
-                audience: {mode: "role", usernames: [tenantUsername], roles: ["admin", "operator", 'manager']},
-                channels: ["inapp", "email"],
-                metadata: {
-                  tenantUsername,
-                  newLeaseData: INSERT_DOCUMENT_DATA,
-                  leaseID,
-                  action: "created",
-                  performedBy: INSERT_DATA_signatures.userAgent,
-                  ipAddress,
-                },
+          await notificationService.createNotification(
+            {
+              title: "New Lease",
+              body: `New lease agreement has been created with ID: ${leaseID}. Please review and validate the agreement.`,
+              type: "create",
+              severity: "info",
+              audience: {mode: "role", usernames: [tenantUsername], roles: ["admin", "operator", "manager"]},
+              channels: ["inapp", "email"],
+              metadata: {
+                tenantUsername,
+                lease: INSERT_DOCUMENT_DATA,
+                leaseID,
+                action: "created",
+                performedBy: INSERT_DATA_signatures.userAgent,
+                ipAddress,
               },
-              (rooms, payload) => rooms.forEach((room) => io.to(room).emit("notification.new", payload))
-            );
+            },
+            (rooms, payload) => rooms.forEach((room) => io.to(room).emit("notification.new", payload))
+          );
 
-            res.status(200).json({
-              status: "success",
-              message: "Agreement has been created successfully!",
-              data: INSERT,
-            });
-          } else {
-            res.status(501).json({
-              status: "error",
-              message: "Agreement creation failed. Please try again later or contact support.",
-            });
-          }
+          res.status(200).json({
+            status: "success",
+            message: "Agreement has been created successfully!",
+            data: INSERT,
+          });
+          return;
         } catch(error) {
           console.log("Error in register lease agreement:", error);
-          if(error instanceof Error) {
-            res.status(500).json({status: "error", error: error.message});
-          } else {
-            res.status(500).json({status: "error", error: "An unknown error occurred." + error});
-          }
+          res.status(500).json({
+            status: "error",
+            error: error instanceof Error ? error.message : "An unknown error occurred.",
+          });
+          return;
         }
       }
     );
   }
-  //<============================================== END REGISTER LEASE AGREEMENT ==============================================>
-  //<============================================== UPDATE THE LEASE AGREEMENT ==============================================>
-  private updateLeaseAgreement() {
-    // Allowed MIME types
-    const allowedTypes = [
-      "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
-      "application/rtf",
-      "application/vnd.ms-excel",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
-      "text/csv",
-      "text/tab-separated-values",
-      "application/vnd.ms-powerpoint",
-      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-      "application/vnd.openxmlformats-officedocument.presentationml.template",
-      "application/vnd.oasis.opendocument.text",
-      "application/vnd.oasis.opendocument.spreadsheet",
-      "application/vnd.oasis.opendocument.presentation",
-      "application/pdf",
-      "text/plain",
-      "image/jpeg",
-      "image/png",
-      "image/gif",
-      "image/bmp",
-      "image/tiff",
-      "image/webp",
-      "image/svg+xml",
-      "image/ico",
-    ];
 
+  // ============================================================================
+  // UPDATE: Update Lease Agreement
+  // PUT /update-lease-agreement/:leaseID
+  // ============================================================================
+
+  private updateLeaseAgreement(): void {
+    // Reuse the same multer settings as register
     const storage = multer.diskStorage({
       destination: (req, file, cb) => {
-        const leaseID = req.params.leaseID;
-        if(!leaseID) return cb(new Error("Lease ID is required in the URL path."), "");
-
-        let uploadPath = "";
-        switch(file.fieldname) {
-          case "tenantScanedDocuments":
-            uploadPath = path.join(__dirname, `../../public/lease/${leaseID}/documents/`);
-            break;
-          case "tenantSignature":
-            uploadPath = path.join(__dirname, `../../public/lease/${leaseID}/signatures/tenant/`);
-            break;
-          case "landlordSignature":
-            uploadPath = path.join(__dirname, `../../public/lease/${leaseID}/signatures/landlord/`);
-            break;
-          default:
-            return cb(new Error("Unexpected field: " + file.fieldname), "");
+        try {
+          const leaseID = this.mustString(req.params.leaseID, "Lease ID");
+          let uploadPath = "";
+          switch(file.fieldname) {
+            case "tenantScanedDocuments":
+              uploadPath = this.buildLeasePath(leaseID, true, "documents");
+              break;
+            case "tenantSignature":
+              uploadPath = this.buildLeasePath(leaseID, true, "signatures", "tenant");
+              break;
+            case "landlordSignature":
+              uploadPath = this.buildLeasePath(leaseID, true, "signatures", "landlord");
+              break;
+            default:
+              cb(new Error("Unexpected field: " + file.fieldname), "");
+              return;
+          }
+          cb(null, uploadPath);
+        } catch(err) {
+          cb(err as Error, "");
         }
-        fs.mkdirSync(uploadPath, {recursive: true});
-        cb(null, uploadPath);
       },
-      filename: (_req, file, cb) => {
-        const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-        const sanitized = file.originalname.replace(/\s+/g, "_");
-        cb(null, `${uniqueSuffix}-${sanitized}`);
-      },
+      filename: (_req, file, cb) => cb(null, this.sanitizeFilename(file.originalname)),
     });
 
-    const fileFilter = (_req: Request, file: Express.Multer.File, cb: any) => {
-      const isAllowed = allowedTypes.includes(file.mimetype);
-      if(
-        (file.fieldname === "tenantScanedDocuments" ||
-          file.fieldname === "tenantSignature" ||
-          file.fieldname === "landlordSignature") &&
-        isAllowed
-      ) {
-        cb(null, true);
-      } else {
+    const fileFilter: multer.Options["fileFilter"] = (_req, file, cb) => {
+      if(!ALLOWED_MIME.has(file.mimetype)) {
         cb(new Error(`File type not allowed: ${file.mimetype}`));
+        return;
       }
+      cb(null, true);
     };
 
-    const upload = multer({storage, fileFilter});
-
-    // ---------- small helpers (strict-safe parsing) ----------
-    const mustString = (v: unknown, name: string): string => {
-      if(typeof v !== "string" || !v.trim()) throw new Error(`${name} is required`);
-      return v.trim();
-    };
-    const mustISODate = (v: unknown, name: string): string => {
-      const s = mustString(v, name);
-      if(!this.checkISODate(s)) throw new Error(`${name} must be ISO date (YYYY-MM-DD).`);
-      return s;
-    };
-    const mustJSON = <T = any>(v: unknown, name: string): T => {
-      const s = mustString(v, name);
-      try {
-        return JSON.parse(s) as T;
-      } catch {
-        throw new Error(`${name} must be valid JSON.`);
-      }
-    };
-    const toInt10 = (v: unknown, name: string): number => {
-      const s = mustString(v, name);
-      const n = parseInt(s, 10);
-      if(!Number.isFinite(n)) throw new Error(`${name} must be a number.`);
-      return n;
-    };
-    const ensureFileSig = (obj: any): obj is FILE =>
-      obj &&
-      typeof obj.fieldname === "string" &&
-      typeof obj.originalname === "string" &&
-      typeof obj.mimetype === "string" &&
-      typeof obj.size === "number" &&
-      typeof obj.filename === "string" &&
-      typeof obj.URL === "string";
+    const upload = multer({
+      storage,
+      fileFilter,
+      limits: {fileSize: MAX_UPLOAD_BYTES, files: 60},
+    });
 
     this.router.put(
       "/update-lease-agreement/:leaseID",
@@ -771,63 +730,41 @@ export default class Lease {
       ]),
       async (req: Request<{leaseID: string}>, res: Response) => {
         try {
-          const files = req.files as {[fieldname: string]: Express.Multer.File[]} | undefined;
+          const files = req.files as {[field: string]: Express.Multer.File[]} | undefined;
 
-          // Lease ID
-          const leaseID = mustString(req.params.leaseID || req.body.leaseID, "Lease ID");
+          const leaseID = this.mustString(req.params.leaseID || req.body.leaseID, "Lease ID");
           const leaseAgreementDB = await LeaseModel.findOne({leaseID});
           if(!leaseAgreementDB) throw new Error("Lease agreement not found!");
 
           // Tenant
-          const tenantUsername: TenantInformation["tenantUsername"] = mustString(
-            req.body.tenantUsername,
-            "Tenant ID"
-          );
-          const tenantFullName: TenantInformation["fullName"] = mustString(
-            req.body.tenantFullName,
-            "Tenant Full Name"
-          );
-          const tenantEmail: TenantInformation["email"] = mustString(req.body.tenantEmail, "Tenant Email");
-          const tenantNationality: TenantInformation["nationality"] = mustString(
-            req.body.tenantNationality,
-            "Tenant Nationality"
-          );
-          const tenantDOBStr = mustISODate(req.body.tenantDateOfBirth, "Tenant date of birth");
+          const tenantUsername = this.mustString(req.body.tenantUsername, "Tenant ID");
+          const tenantFullName = this.mustString(req.body.tenantFullName, "Tenant Full Name");
+          const tenantEmail = this.mustString(req.body.tenantEmail, "Tenant Email");
+          const tenantNationality = this.mustString(req.body.tenantNationality, "Tenant Nationality");
+
+          const tenantDOBStr = this.mustISODate(req.body.tenantDateOfBirth, "Tenant date of birth");
           const tenantDateOfBirth = new Date(tenantDOBStr);
-          if(Number.isNaN(tenantDateOfBirth.getTime()))
-            throw new Error("Tenant date of birth is not a valid date.");
+          if(Number.isNaN(tenantDateOfBirth.getTime())) throw new Error("Tenant date of birth is not a valid date.");
 
-          if(!this.checkIsPhoneCodeDetails(mustString(req.body.tenantPhoneCodeDetails, "Tenant phone code")))
+          if(!this.checkIsPhoneCodeDetails(this.mustString(req.body.tenantPhoneCodeDetails, "Tenant phone code")))
             throw new Error("Invalid tenant phone code details.");
-          const tenantPhoneCodeDetails: CountryCodes = mustJSON(
-            req.body.tenantPhoneCodeDetails,
-            "Tenant phone code"
-          );
+          const tenantPhoneCodeDetails: CountryCodes = this.mustJSON(req.body.tenantPhoneCodeDetails, "Tenant phone code");
 
-          const tenantPhoneNumber: TenantInformation["phoneNumber"] = mustString(
-            req.body.tenantPhoneNumber,
-            "Tenant Phone Number"
-          );
-          const tenantGender: TenantInformation["gender"] = mustString(req.body.tenantGender, "Tenant Gender");
-          const tenantNICOrPassport: TenantInformation["nicOrPassport"] = mustString(
-            req.body.tenantNICOrPassport,
-            "Tenant NIC OR Passport"
-          );
+          const tenantPhoneNumber = this.mustString(req.body.tenantPhoneNumber, "Tenant Phone Number");
+          const tenantGender = this.mustString(req.body.tenantGender, "Tenant Gender");
+          const tenantNICOrPassport = this.mustString(req.body.tenantNICOrPassport, "Tenant NIC OR Passport");
 
-          if(!this.isValidTenantAddress(mustString(req.body.tenantAddress, "Tenant Address")))
+          if(!this.isValidTenantAddress(this.mustString(req.body.tenantAddress, "Tenant Address")))
             throw new Error(
               "Invalid tenant address: expected an address with houseNumber, street, city, stateOrProvince, postalCode, and country."
             );
-          const tenantAddress: Address = mustJSON(req.body.tenantAddress, "Tenant Address");
+          const tenantAddress: Address = this.mustJSON(req.body.tenantAddress, "Tenant Address");
 
           if(!this.checkIsEmergencyContact(req.body.emergencyContact))
             throw new Error("Invalid tenant emergency contact.");
-          const tenantEmergencyContact: EmergencyContact = mustJSON(
-            req.body.emergencyContact,
-            "Emergency Contact"
-          );
+          const tenantEmergencyContact: EmergencyContact = this.mustJSON(req.body.emergencyContact, "Emergency Contact");
 
-          // Co-tenant (optional) — only include when provided
+          // Co-tenant (optional)
           const coTenantFullname = (req.body.coTenantFullname as string | undefined)?.trim();
           const coTenantEmail = (req.body.coTenantEmail as string | undefined)?.trim();
           const coTenantPhoneCodeId = (req.body.coTenantPhoneCodeId as string | undefined)?.trim();
@@ -862,164 +799,108 @@ export default class Lease {
             };
           }
 
-          // Property
-          const selectedProperty: Property = mustJSON(req.body.selectedProperty, "Selected Property");
+          // Property + agreement values
+          const selectedProperty: Property = this.mustJSON(req.body.selectedProperty, "Selected Property");
+          const startDate = this.mustISODate(req.body.startDate, "Agreement starting date");
+          const endDate = this.mustISODate(req.body.endDate, "Agreement ending date");
+          const durationMonths = this.toInt10(req.body.durationMonths, "Agreement duration in months");
+          const monthlyRent = this.toInt10(req.body.monthlyRent, "Agreement monthly rent");
 
-          // Lease agreement values
-          const startDate: LeaseAgreement["startDate"] = mustISODate(
-            req.body.startDate,
-            "Agreement starting date"
-          );
-          const endDate: LeaseAgreement["endDate"] = mustISODate(req.body.endDate, "Agreement ending date");
-          const durationMonths: LeaseAgreement["durationMonths"] = toInt10(
-            req.body.durationMonths,
-            "Agreement duration in months"
-          );
-          const monthlyRent: LeaseAgreement["monthlyRent"] = toInt10(
-            req.body.monthlyRent,
-            "Agreement monthly rent"
-          );
-
-          if(!this.checkCurrencyFormat(mustString(req.body.currency, "Currency")))
+          if(!this.checkCurrencyFormat(this.mustString(req.body.currency, "Currency")))
             throw new Error("Invalid currency format!");
-          const currency: LeaseAgreement["currency"] = mustJSON(req.body.currency, "Currency");
+          const currency: CurrencyFormat = this.mustJSON(req.body.currency, "Currency");
 
-          if(!this.checkPaymentFrequencyFormat(mustString(req.body.paymentFrequency, "Payment frequency")))
+          if(!this.checkPaymentFrequencyFormat(this.mustString(req.body.paymentFrequency, "Payment frequency")))
             throw new Error("Invalid payment frequency format!");
-          const paymentFrequency: LeaseAgreement["paymentFrequency"] = mustJSON(
-            req.body.paymentFrequency,
-            "Payment frequency"
-          );
+          const paymentFrequency: PaymentFrequency = this.mustJSON(req.body.paymentFrequency, "Payment frequency");
 
-          if(!this.checkPaymentMethodFormat(mustString(req.body.paymentMethod, "Payment method")))
+          if(!this.checkPaymentMethodFormat(this.mustString(req.body.paymentMethod, "Payment method")))
             throw new Error("Invalid payment method format!");
-          const paymentMethod: LeaseAgreement["paymentMethod"] = mustJSON(
-            req.body.paymentMethod,
-            "Payment method"
-          );
+          const paymentMethod: PaymentMethod = this.mustJSON(req.body.paymentMethod, "Payment method");
 
-          if(!this.checkSecurityDepositFormat(mustString(req.body.securityDeposit, "Security deposit")))
+          if(!this.checkSecurityDepositFormat(this.mustString(req.body.securityDeposit, "Security deposit")))
             throw new Error("Invalid security deposit format!");
-          const securityDeposit: LeaseAgreement["securityDeposit"] = mustJSON(
-            req.body.securityDeposit,
-            "Security deposit"
-          );
+          const securityDeposit: SecurityDeposit = this.mustJSON(req.body.securityDeposit, "Security deposit");
 
-          if(!this.checkRentDueDateFormat(mustString(req.body.rentDueDate, "Rent due date")))
+          if(!this.checkRentDueDateFormat(this.mustString(req.body.rentDueDate, "Rent due date")))
             throw new Error("Invalid rent due date format!");
-          const rentDueDate: LeaseAgreement["rentDueDate"] = mustJSON(
-            req.body.rentDueDate,
-            "Rent due date"
-          );
+          const rentDueDate: RentDueDate = this.mustJSON(req.body.rentDueDate, "Rent due date");
 
           if(
             !this.checkLatePaymentPenaltiesFormat(
-              mustString(req.body.selectedLatePaymentPenalties, "Late payment penalties")
+              this.mustString(req.body.selectedLatePaymentPenalties, "Late payment penalties")
             )
           )
             throw new Error("Invalid late payment penalties format!");
-          const selectedLatePaymentPenalties: LeaseAgreement["latePaymentPenalties"] = mustJSON(
+          const selectedLatePaymentPenalties: LatePaymentPenalty[] = this.mustJSON(
             req.body.selectedLatePaymentPenalties,
             "Late payment penalties"
           );
 
           if(
             !this.checkUtilityResponsibilitiesFormat(
-              mustString(req.body.selectedUtilityResponsibilities, "Utility responsibilities")
+              this.mustString(req.body.selectedUtilityResponsibilities, "Utility responsibilities")
             )
           )
             throw new Error("Invalid utility responsibility format!");
-          const selectedUtilityResponsibilities: LeaseAgreement["utilityResponsibilities"] = mustJSON(
+          const selectedUtilityResponsibilities: UtilityResponsibility[] = this.mustJSON(
             req.body.selectedUtilityResponsibilities,
             "Utility responsibilities"
           );
 
-          if(!this.checkNoticePeriodDaysFormat(mustString(req.body.noticePeriodDays, "Notice period days")))
+          if(!this.checkNoticePeriodDaysFormat(this.mustString(req.body.noticePeriodDays, "Notice period days")))
             throw new Error("Invalid notice period days format!");
-          const noticePeriodDays: LeaseAgreement["noticePeriodDays"] = mustJSON(
-            req.body.noticePeriodDays,
-            "Notice period days"
-          );
+          const noticePeriodDays: NoticePeriod = this.mustJSON(req.body.noticePeriodDays, "Notice period days");
 
-          if(!this.checkRuleAndRegulationsFormat(mustString(req.body.selectedRuleAndRegulations, "Rules & regs")))
+          if(!this.checkRuleAndRegulationsFormat(this.mustString(req.body.selectedRuleAndRegulations, "Rules & regs")))
             throw new Error("Invalid rule and regulations format!");
-          const selectedRuleAndRegulations: RulesAndRegulations[] = mustJSON(
+          const selectedRuleAndRegulations: RulesAndRegulations[] = this.mustJSON(
             req.body.selectedRuleAndRegulations,
             "Rules & regs"
           );
 
-          const isReadTheCompanyPolicy: LeaseType["isReadTheCompanyPolicy"] = this.checkBoolean(
-            mustString(req.body.isReadTheCompanyPolicy, "Company policy confirmation")
+          const isReadTheCompanyPolicy = this.parseBoolean(
+            this.mustString(req.body.isReadTheCompanyPolicy, "Company policy confirmation")
           );
 
-          const signedAtStr = mustISODate(req.body.signedAt, "Agreement signed at date");
-          const signedAt: Signatures["signedAt"] = new Date(signedAtStr);
+          const signedAtStr = this.mustISODate(req.body.signedAt, "Agreement signed at date");
+          const signedAt = new Date(signedAtStr);
 
           // Meta
           const ipAddress: string =
             (req.headers["x-forwarded-for"] as string | undefined) ?? req.socket.remoteAddress ?? "Unknown IP";
 
-          if(!this.checkAddedBy(mustString(req.body.userAgent, "User agent")))
+          if(!this.checkAddedBy(this.mustString(req.body.userAgent, "User agent")))
             throw new Error("Invalid added-by format for user agent!");
-          const userAgent: AddedBy = mustJSON(req.body.userAgent, "User agent");
+          const userAgent: AddedBy = this.mustJSON(req.body.userAgent, "User agent");
 
-          if(!this.checkSystemMetaDataFormat(mustString(req.body.systemMetaData, "System metadata")))
+          if(!this.checkSystemMetaDataFormat(this.mustString(req.body.systemMetaData, "System metadata")))
             throw new Error("Invalid system metadata format!");
-          const systemMetaData: SystemMetadata = mustJSON(req.body.systemMetaData, "System metadata");
+          const systemMetaData: SystemMetadata = this.mustJSON(req.body.systemMetaData, "System metadata");
           systemMetaData.lastUpdated = new Date().toISOString();
 
-          // ---------- scanned docs: merge & move ----------
-          const host = req.get("host");
-          const protocol = req.protocol;
-          const baseUrl = `${protocol}://${host}`;
+          // scanned docs: merge & move new
+          const baseUrl = this.getBaseUrl(req);
+          const scannedDocumentPath = this.buildLeasePath(leaseID, true, "documents");
+          const mobileScannedFolderPath = this.buildTenantPath(tenantUsername, false, "scanned", "mobile");
 
-          const scannedDocumentPath = path.join(__dirname, `../../public/lease/${leaseID}/documents/`);
-          const mobileScannedFolderPath = path.join(
-            __dirname,
-            `../../public/tenants/scanned-files/${tenantUsername}/`
-          );
-
-          const tenantUploadedScanedDocumentsRemoved: ScannedFileRecordJSON[] = mustJSON(
+          const tenantUploadedScanedDocumentsRemoved: ScannedFileRecordJSON[] = this.mustJSON(
             req.body.tenantUploadedScanedDocumentsRemoved,
             "Removed scanned docs"
           );
 
-          const JSON_PATH = path.join(
-            __dirname,
-            "../../public/tenants/scanned-files/tenantScannedFilesData.json"
-          );
-          if(fs.existsSync(JSON_PATH)) {
-            const fileContent = await fs.promises.readFile(JSON_PATH, "utf8");
-            const JSON_DATA: TenantScannedFilesDataJSON = JSON.parse(fileContent);
-            const tenantJSONData = JSON_DATA[tenantUsername];
-
-            if(Array.isArray(tenantJSONData)) {
-              const updatedTenantJSONData = tenantJSONData.filter(
-                (data) => !tenantUploadedScanedDocumentsRemoved.some((item) => item.token === data.token)
-              );
-              JSON_DATA[tenantUsername] = updatedTenantJSONData;
-              await fs.promises.writeFile(JSON_PATH, JSON.stringify(JSON_DATA, null, 2));
-            } else {
-              console.warn(`No JSON data found for tenant: ${tenantUsername}`);
-            }
-          } else {
-            console.warn(`[WARN] No JSON data found for tenant '${tenantUsername}' at ${JSON_PATH}`);
-          }
-
-          const tenantUploadedScanedDocuments: ScannedFileRecordJSON[] = mustJSON(
+          const tenantUploadedScanedDocuments: ScannedFileRecordJSON[] = this.mustJSON(
             req.body.tenantUploadedScanedDocuments,
             "Tenant uploaded scanned docs"
           );
 
           tenantUploadedScanedDocuments.forEach((item) => {
-            item.folder = scannedDocumentPath;
             item.files.forEach((doc) => {
               const filename = doc.file.filename;
               const sourcePath = path.join(mobileScannedFolderPath, filename);
               if(fs.existsSync(sourcePath)) {
                 const destinationPath = path.join(scannedDocumentPath, filename);
-                doc.file.URL = `${baseUrl}/lease/${leaseID}/documents/${filename}`;
-                doc.folder = scannedDocumentPath;
+                doc.file.URL = `${baseUrl}/${this.buildLeaseUrl(leaseID, "documents", filename)}`;
                 fs.renameSync(sourcePath, destinationPath);
               }
             });
@@ -1030,7 +911,7 @@ export default class Lease {
             scannedDocuments.push(...tenantUploadedScanedDocuments);
           }
 
-          const payloadToken = {tenant: tenantUsername, issuedAt: Date.now()};
+          const payloadToken: TokenPayload = {tenant: tenantUsername, issuedAt: Date.now()};
           const token = await this.cryptoService.encrypt(payloadToken);
 
           const tenantScanedDocuments = files?.["tenantScanedDocuments"];
@@ -1039,7 +920,6 @@ export default class Lease {
             tenant: tenantUsername,
             token,
             files: [],
-            folder: scannedDocumentPath,
           };
 
           if(Array.isArray(tenantScanedDocuments)) {
@@ -1052,16 +932,14 @@ export default class Lease {
                   mimetype: doc.mimetype,
                   size: doc.size,
                   filename: doc.filename,
-                  URL: `${baseUrl}/lease/${leaseID}/documents/${doc.filename}`,
+                  URL: `${baseUrl}/${this.buildLeaseUrl(leaseID, "documents", doc.filename)}`,
                 },
               };
               newScannedFileRecord.files.push(data);
             });
           }
 
-          if(newScannedFileRecord.files.length > 0) {
-            scannedDocuments.push(newScannedFileRecord);
-          }
+          if(newScannedFileRecord.files.length > 0) scannedDocuments.push(newScannedFileRecord);
 
           if(!scannedDocuments.length) {
             throw new Error(
@@ -1069,11 +947,19 @@ export default class Lease {
             );
           }
 
-          // ---------- signatures (support old signatures JSON) ----------
+          // signatures (support old signatures JSON)
           const tSig = files?.["tenantSignature"]?.[0];
           let tenantOldParsed: any;
           if(!tSig) {
-            tenantOldParsed = mustJSON(req.body.tenantOldSignature, "Tenant old signature");
+            tenantOldParsed = this.mustJSON(req.body.tenantOldSignature, "Tenant old signature");
+            const ensureFileSig = (o: any): o is FILE =>
+              o &&
+              typeof o.fieldname === "string" &&
+              typeof o.originalname === "string" &&
+              typeof o.mimetype === "string" &&
+              typeof o.size === "number" &&
+              typeof o.filename === "string" &&
+              typeof o.URL === "string";
             if(!ensureFileSig(tenantOldParsed)) throw new Error("Tenant signature is required!");
           }
           const organizedTenantSignature: FILE = {
@@ -1082,15 +968,21 @@ export default class Lease {
             mimetype: tSig?.mimetype ?? tenantOldParsed?.mimetype ?? "",
             size: tSig?.size ?? tenantOldParsed?.size ?? 0,
             filename: tSig?.filename ?? tenantOldParsed?.filename ?? "",
-            URL: tSig
-              ? `${baseUrl}/lease/${leaseID}/signatures/tenant/${tSig.filename}`
-              : tenantOldParsed?.URL ?? "",
+            URL: tSig ? `${this.buildLeaseUrl(leaseID, "signatures", "tenant", tSig.filename)}` : tenantOldParsed?.URL ?? "",
           };
 
           const lSig = files?.["landlordSignature"]?.[0];
           let landlordOldParsed: any;
           if(!lSig) {
-            landlordOldParsed = mustJSON(req.body.landlordOldSignature, "Landlord old signature");
+            landlordOldParsed = this.mustJSON(req.body.landlordOldSignature, "Landlord old signature");
+            const ensureFileSig = (o: any): o is FILE =>
+              o &&
+              typeof o.fieldname === "string" &&
+              typeof o.originalname === "string" &&
+              typeof o.mimetype === "string" &&
+              typeof o.size === "number" &&
+              typeof o.filename === "string" &&
+              typeof o.URL === "string";
             if(!ensureFileSig(landlordOldParsed)) throw new Error("Landlord signature is required!");
           }
           const organizedLandlordSignature: FILE = {
@@ -1100,11 +992,11 @@ export default class Lease {
             size: lSig?.size ?? landlordOldParsed?.size ?? 0,
             filename: lSig?.filename ?? landlordOldParsed?.filename ?? "",
             URL: lSig
-              ? `${baseUrl}/lease/${leaseID}/signatures/landlord/${lSig.filename}`
+              ? `${this.buildLeaseUrl(leaseID, "signatures", "landlord", lSig.filename)}`
               : landlordOldParsed?.URL ?? "",
           };
 
-          // ---------- sub-docs ----------
+          // sub-docs
           const UPDATE_DATA_TenantInformation: TenantInformation = {
             tenantUsername,
             fullName: tenantFullName,
@@ -1143,12 +1035,12 @@ export default class Lease {
             userAgent,
           };
 
-          // ---------- parent payloads (omit coTenant if undefined) ----------
+          // parent payloads (omit coTenant if undefined)
           const UPDATE_DATA: LeasePayload = {
             leaseID,
             tenantInformation: UPDATE_DATA_TenantInformation,
             ...(UPDATE_DATA_coTenant ? {coTenant: UPDATE_DATA_coTenant} : {}),
-            propertyID: selectedProperty.id,
+            propertyID: (selectedProperty as any).id,
             leaseAgreement: UPDATE_DATA_leaseAgreement,
             rulesAndRegulations: selectedRuleAndRegulations,
             isReadTheCompanyPolicy,
@@ -1168,221 +1060,186 @@ export default class Lease {
             systemMetadata: systemMetaData,
           };
 
-          // ---------- persist JSON snapshot (keep old copies) ----------
-          const todayStamp = new Date()
-            .toISOString()
-            .replace(/[:.]/g, "-")
-            .replace("T", "_")
-            .replace("Z", "");
-
-          const JSON_CURR = path.join(__dirname, `../../public/lease/${leaseID}/agreement-data/${leaseID}.json`);
-          const JSON_OLD = path.join(
-            __dirname,
-            `../../public/lease/${leaseID}/agreement-data/old/${todayStamp}/${leaseID}.json`
-          );
+          // persist JSON snapshot (version the old copy)
+          const todayStamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").replace("Z", "");
+          const JSON_CURR = this.safeJoin(this.LEASE_UPLOAD_ROOT, leaseID, "data.json");
+          const JSON_OLD = this.safeJoin(this.LEASE_UPLOAD_ROOT, leaseID, "oldAgreements", todayStamp, "data.json");
 
           if(fs.existsSync(JSON_CURR)) {
             await fs.promises.mkdir(path.dirname(JSON_OLD), {recursive: true});
             await fs.promises.rename(JSON_CURR, JSON_OLD);
           }
           await fs.promises.mkdir(path.dirname(JSON_CURR), {recursive: true});
-          await fs.promises.writeFile(JSON_CURR, JSON.stringify(UPDATE_DOCUMENT_DATA, null, 2));
+          await fs.promises.writeFile(JSON_CURR, JSON.stringify(UPDATE_DOCUMENT_DATA, null, 2), "utf8");
 
-          // ---------- DB update ----------
-          const leaseAgreement = await LeaseModel.updateOne(
-            {leaseID},
-            {$set: UPDATE_DATA}
+          // DB update
+          const result = await LeaseModel.updateOne({leaseID}, {$set: UPDATE_DATA});
+
+          // notify
+          const notificationService = new NotificationService();
+          const io = req.app.get("io") as import("socket.io").Server;
+
+          await notificationService.createNotification(
+            {
+              title: "Update Lease",
+              body: `Lease agreement has been updated successfully with ID: ${leaseID}. Please review and validate the agreement.`,
+              type: "update",
+              severity: "info",
+              audience: {mode: "user", usernames: [tenantUsername], roles: ["admin", "operator"]},
+              channels: ["inapp", "email"],
+              metadata: {
+                lease: UPDATE_DOCUMENT_DATA,
+                leaseID,
+                tenantUsername,
+                updatedBy: userAgent,
+                ipAddress,
+                updatedAt: new Date().toISOString(),
+              },
+            },
+            (rooms, payload) => rooms.forEach((room) => io.to(room).emit("notification.new", payload))
           );
 
-          if(leaseAgreement) {
-            const notificationService = new NotificationService();
-            const io = req.app.get("io") as import("socket.io").Server;
-
-            await notificationService.createNotification(
-              {
-                title: "Update Lease",
-                body: `Lease agreement has been updated successfully with ID: ${leaseID}. Please review and validate the agreement.`,
-                type: "update",
-                severity: "info",
-                audience: {mode: "user", usernames: [tenantUsername], roles: ["admin", "operator"]},
-                channels: ["inapp", "email"],
-                metadata: {
-                  updatedLeaseAgreement: UPDATE_DOCUMENT_DATA,
-                  leaseID,
-                  tenantUsername,
-                  updatedBy: userAgent,
-                  ipAddress,
-                  updatedAt: new Date().toISOString(),
-                },
-              },
-              (rooms, payload) => rooms.forEach((room) => io.to(room).emit("notification.new", payload))
-            );
-
-            res.status(200).json({
-              status: "success",
-              message: "Agreement has been updated successfully!",
-              data: leaseAgreement,
-            });
-          } else {
-            res.status(501).json({
-              status: "error",
-              message: "Agreement update failed. Please try again later or contact support.",
-            });
-          }
+          res.status(200).json({
+            status: "success",
+            message: "Agreement has been updated successfully!",
+            data: result,
+          });
+          return;
         } catch(error) {
           console.log("Error in update lease agreement:", error);
-          if(error instanceof Error) {
-            res.status(500).json({status: "error", error: error.message});
-          } else {
-            res.status(500).json({status: "error", error: "An unknown error occurred." + error});
-          }
+          res.status(500).json({
+            status: "error",
+            error: error instanceof Error ? error.message : "An unknown error occurred.",
+          });
+          return;
         }
       }
     );
   }
-  //<============================================== END UPDATE THE LEASE AGREEMENT ==============================================>
 
-  //<============================================== PREVIEW EJS FILE (ROUTE HANDLER) ==============================================>
-  private setupEjsPreview() {
-    this.router.get(
-      "/preview-lease-agreement/:leaseID",
-      async (req: Request<{leaseID: string}>, res: Response) => {
-        try {
-          const leaseID = req.params.leaseID;
-          if(!leaseID) throw new Error("Lease ID is required!");
+  // ============================================================================
+  // PREVIEW: EJS Preview (server-side render)
+  // GET /preview-lease-agreement/:leaseID
+  // ============================================================================
 
-          const LEASE_AGREEMENT_JSON_DATA_FILE_PATH = path.join(
-            __dirname,
-            `../../public/lease/${leaseID}/agreement-data/${leaseID}.json`
-          );
-
-          if(!fs.existsSync(LEASE_AGREEMENT_JSON_DATA_FILE_PATH))
-            throw new Error("Agreement data not found!");
-
-          const fileContent = await fs.promises.readFile(
-            LEASE_AGREEMENT_JSON_DATA_FILE_PATH,
-            "utf8"
-          );
-          const JSON_DATA: LeasePayload = JSON.parse(fileContent);
-
-          // Render the EJS file and pass JSON_DATA as "data"
-          res.render("lease-agreement-pdf.ejs", {data: JSON_DATA});
-
-        } catch(error) {
-          console.log("Error in preview lease agreement:", error);
-          if(error instanceof Error) {
-            res.status(500).json({status: "error", error: error.message});
-          } else {
-            res.status(500).json({
-              status: "error",
-              error: "An unknown error occurred." + error,
-            });
-          }
-        }
+  private setupEjsPreview(): void {
+    this.router.get("/preview-lease-agreement/:leaseID", async (req: Request<{leaseID: string}>, res: Response) => {
+      try {
+        const leaseID = this.mustString(req.params.leaseID, "Lease ID");
+        const jsonPath = this.safeJoin(this.LEASE_UPLOAD_ROOT, leaseID, "data.json");
+        if(!fs.existsSync(jsonPath)) throw new Error("Agreement data not found!");
+        const fileContent = await fs.promises.readFile(jsonPath, "utf8");
+        const JSON_DATA: LeasePayload = JSON.parse(fileContent);
+        // Render the EJS file and pass JSON_DATA as "data"
+        res.render("lease-agreement-pdf.ejs", {data: JSON_DATA});
+        return;
+      } catch(error) {
+        console.log("Error in preview lease agreement:", error);
+        res.status(500).json({status: "error", error: error instanceof Error ? error.message : "Unknown error"});
+        return;
       }
-    );
+    });
   }
-  //<============================================== END PREVIEW EJS FILE ==============================================>
 
-  //<============================================== LAUNCH OR RETURN EXISTING PUPPETEER BROWSER  ==============================================>
-  /**
-   * Launch or return existing Puppeteer browser instance
-   * Used for rendering PDF with consistent performance
-   */
+  // ============================================================================
+  // Puppeteer Browser (singleton-ish)
+  // ============================================================================
+
   private async getBrowser(): Promise<puppeteer.Browser> {
-    if(this.puppeteerBrowser && this.puppeteerBrowser.isConnected()) {
-      return this.puppeteerBrowser;
-    }
+    if(this.puppeteerBrowser && this.puppeteerBrowser.isConnected()) return this.puppeteerBrowser;
 
     const launchOptions: puppeteer.LaunchOptions = {
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
     };
 
-    // Cross-platform Chrome path
+    // Resolve Chrome path cross-platform if available
     const getChromePath = (): string | undefined => {
       const platform = os.platform();
-
-      if(platform === 'win32') {
-        const chromePaths = [
-          'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-          'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe'
+      if(platform === "win32") {
+        const paths = [
+          "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+          "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
         ];
-        return chromePaths.find(p => fs.existsSync(p));
+        return paths.find((p) => fs.existsSync(p));
       }
-
-      if(platform === 'darwin') {
-        const macPath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-        return fs.existsSync(macPath) ? macPath : undefined;
+      if(platform === "darwin") {
+        const mac = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        return fs.existsSync(mac) ? mac : undefined;
       }
-
-      if(platform === 'linux') {
-        const linuxPaths = [
-          '/usr/bin/google-chrome',
-          '/usr/bin/chromium-browser',
-          '/usr/bin/chromium'
-        ];
-        return linuxPaths.find(p => fs.existsSync(p));
+      if(platform === "linux") {
+        const linux = ["/usr/bin/google-chrome", "/usr/bin/chromium-browser", "/usr/bin/chromium"];
+        return linux.find((p) => fs.existsSync(p));
       }
-
       return undefined;
     };
 
     const chromePath = getChromePath();
-    if(chromePath) {
-      launchOptions.executablePath = chromePath;
-    }
+    if(chromePath) launchOptions.executablePath = chromePath;
 
     this.puppeteerBrowser = await puppeteer.launch(launchOptions);
     return this.puppeteerBrowser;
   }
-  //<============================================== END LAUNCH OR RETURN EXISTING PUPPETEER BROWSER  ==============================================>
 
-  //<============================================== GPRELOAD EJS TEMPLATE AND LOGO ==============================================>
-  /**
-  * Preload EJS templates and base64 logo to memory for performance
-  */
-  private preloadTemplates() {
-    const baseDir = path.join(__dirname, '../../public/view/leaseDocumentTemplates/');
-    this.cachedTemplates = {
-      header: fs.readFileSync(path.join(baseDir, 'header.ejs'), 'utf8'),
-      footer: fs.readFileSync(path.join(baseDir, 'footer.ejs'), 'utf8'),
-      main: fs.readFileSync(path.join(baseDir, 'lease-agreement-pdf.ejs'), 'utf8'),
-      logoBase64: fs.readFileSync(path.join(__dirname, '../../public/companyData/images/PropEase.png')).toString('base64')
-    };
+  // ============================================================================
+  // Preload EJS templates + logo (memory cache)
+  // ============================================================================
+
+  private preloadTemplates(): void {
+    try {
+      const baseDir = path.join(__dirname, "../../public/view/leaseDocumentTemplates/");
+      this.cachedTemplates = {
+        header: fs.readFileSync(path.join(baseDir, "header.ejs"), "utf8"),
+        footer: fs.readFileSync(path.join(baseDir, "footer.ejs"), "utf8"),
+        main: fs.readFileSync(path.join(baseDir, "lease-agreement-pdf.ejs"), "utf8"),
+        logoBase64: fs.readFileSync(path.join(__dirname, "../../public/companyData/images/PropEase.png")).toString("base64"),
+      };
+    } catch(e) {
+      // If preload fails, leave empty; we render-time throw with a clearer error.
+      console.error("[Templates] Preload failed:", e);
+      this.cachedTemplates = {header: "", footer: "", main: "", logoBase64: ""};
+    }
   }
-  //<============================================== END GPRELOAD EJS TEMPLATE AND LOGO ==============================================>
 
-  //<============================================== GENERATE LEASE AGREEMENT PDF BASED ON LEASE ID AND RESPONSE TYPE "download/view" ==============================================>
-  /**
-   * Generate PDF from lease agreement data and return as HTTP response
-   * Supports both inline view and file download based on route param `type`
-   */
-  private generatePDFOfLeaseAgreement() {
+  // ============================================================================
+  // Generate Lease PDF (inline view or download)
+  // GET /lease-agreement-pdf/:leaseID/:type/:generator   (type: 'download'|'view')
+  // ============================================================================
+
+  private generatePDFOfLeaseAgreement(): void {
     this.router.get("/lease-agreement-pdf/:leaseID/:type/:generator", async (req: Request, res: Response) => {
       try {
         const {leaseID, type, generator} = req.params;
         if(!leaseID || !type || !generator) throw new Error("Missing parameters");
 
-        const jsonPath = path.join(__dirname, `../../public/lease/${leaseID}/agreement-data/${leaseID}.json`);
+        const jsonPath = this.safeJoin(this.LEASE_UPLOAD_ROOT, leaseID, "data.json");
         if(!fs.existsSync(jsonPath)) throw new Error("Lease data not found");
 
-        const leaseData = JSON.parse(await fs.promises.readFile(jsonPath, 'utf8'));
+        const leaseData = JSON.parse(await fs.promises.readFile(jsonPath, "utf8"));
 
+        // Attach map as data URL if location present
         if(leaseData.property?.location) {
           leaseData.property.location.embeddedUrl = await this.makeDinamicMAPURL(leaseData.property.location);
         }
 
-        const formatDate = (d: string) => {
+        // Small date formatter for printable output
+        const fmt = (d: string) => {
           const dt = new Date(d);
-          return `${dt.getFullYear()}/${(dt.getMonth() + 1).toString().padStart(2, '0')}/${dt.getDate().toString().padStart(2, '0')}`;
+          const y = dt.getFullYear();
+          const m = (dt.getMonth() + 1).toString().padStart(2, "0");
+          const dd = dt.getDate().toString().padStart(2, "0");
+          return `${y}/${m}/${dd}`;
         };
-        leaseData.tenantInformation.dateOfBirth = formatDate(leaseData.tenantInformation.dateOfBirth);
-        leaseData.leaseAgreement.startDate = formatDate(leaseData.leaseAgreement.startDate);
-        leaseData.leaseAgreement.endDate = formatDate(leaseData.leaseAgreement.endDate);
 
-        leaseData.signatures.signedAt = formatDate(leaseData.signatures.signedAt);
-        leaseData.systemMetadata.lastUpdated = formatDate(new Date(leaseData.systemMetadata.lastUpdated).toISOString());
+        leaseData.tenantInformation.dateOfBirth = fmt(leaseData.tenantInformation.dateOfBirth);
+        leaseData.leaseAgreement.startDate = fmt(leaseData.leaseAgreement.startDate);
+        leaseData.leaseAgreement.endDate = fmt(leaseData.leaseAgreement.endDate);
+        leaseData.signatures.signedAt = fmt(leaseData.signatures.signedAt);
+        leaseData.systemMetadata.lastUpdated = fmt(new Date(leaseData.systemMetadata.lastUpdated).toISOString());
+
+        if(!this.cachedTemplates.main || !this.cachedTemplates.header || !this.cachedTemplates.footer) {
+          throw new Error("Templates not loaded. Check template paths and preload.");
+        }
 
         const html = await ejs.render(this.cachedTemplates.main, {data: leaseData});
         const header = await ejs.render(this.cachedTemplates.header, {
@@ -1395,327 +1252,269 @@ export default class Lease {
 
         const browser = await this.getBrowser();
         const page = await browser.newPage();
-        await page.setContent(html, {waitUntil: 'networkidle0'});
-        await page.emulateMediaType('screen');
+        await page.setContent(html, {waitUntil: "networkidle0"});
+        await page.emulateMediaType("screen");
 
         const pdfBuffer = await page.pdf({
-          format: 'A4',
+          format: "A4",
           printBackground: true,
           displayHeaderFooter: true,
           headerTemplate: header,
           footerTemplate: footer,
-          margin: {top: '150px', bottom: '150px'},
+          margin: {top: "150px", bottom: "150px"},
           preferCSSPageSize: true,
         });
 
         await page.close();
 
-        // Send notification about the PDF generation
+        // Notify download/view
         const notificationService = new NotificationService();
-        const io = req.app.get('io') as import('socket.io').Server;
+        const io = req.app.get("io") as import("socket.io").Server;
         await notificationService.createNotification(
           {
-            title: 'Lease Agreement Download',
+            title: "Lease Agreement Download",
             body: `Lease agreement PDF has been generated successfully with ID: ${leaseID}.`,
-            type: 'download',          // OK (your entity allows custom strings)
-            severity: 'info',
-            audience: {mode: 'role', usernames: [leaseData.tenantInformation.tenantUsername], roles: ['admin', 'operator']}, // target the user
-            channels: ['inapp', 'email'], // keep if you'll email later; harmless otherwise 
+            type: "download",
+            severity: "info",
+            audience: {mode: "role", usernames: [leaseData.tenantInformation.tenantUsername], roles: ["admin", "operator"]},
+            channels: ["inapp", "email"],
             metadata: {
-              leaseID: leaseID,
-              tenantUsername: leaseData.tenantInformation.tenantUsername,
+              lease: leaseData,
               generatedAt: new Date().toISOString(),
               generatedBy: generator,
               ipAddress: req.ip,
-              userAgent: req.headers['user-agent'],
+              userAgent: req.headers["user-agent"],
             },
-            // DO NOT send createdAt here; NotificationService sets it
           },
-          // Real-time emit callback: send to each audience room
-          (rooms, payload) => {
-            rooms.forEach((room) => {
-              io.to(room).emit('notification.new', payload);
-            });
-          }
+          (rooms, payload) => rooms.forEach((room) => io.to(room).emit("notification.new", payload))
         );
-
 
         res.setHeader("Content-Type", "application/pdf");
-        res.setHeader("Content-Disposition",
-          type === 'download'
-            ? `attachment; filename=${leaseID}-agreement.pdf`
-            : `inline; filename=${leaseID}-agreement.pdf`
+        res.setHeader(
+          "Content-Disposition",
+          type === "download" ? `attachment; filename=${leaseID}-agreement.pdf` : `inline; filename=${leaseID}-agreement.pdf`
         );
-
         res.send(pdfBuffer);
-
+        return;
       } catch(error) {
         console.error("Error generating PDF:", error);
         res.status(500).json({
           status: "error",
-          error: error instanceof Error ? error.message : String(error)
+          error: error instanceof Error ? error.message : String(error),
         });
+        return;
       }
     });
   }
-  //<============================================== END GENERATE LEASE AGREEMENT PDF BASED ON LEASE ID AND RESPONSE TYPE "download/view" ==============================================>
 
-  //<============================================== GENERATE QR CODE IMAGE ==============================================>
-  /**
-   * Generate a QR Code (base64 image) from lease ID or string input
-   */
+  // ============================================================================
+  // Utilities used by PDF
+  // ============================================================================
+
+  /** Generate a base64 PNG QR code from input text. */
   private async generateQRCode(data: string): Promise<string> {
     try {
       return await QRCode.toDataURL(data, {
-        errorCorrectionLevel: 'H',
-        type: 'image/png',
+        errorCorrectionLevel: "H",
+        type: "image/png",
         margin: 2,
         width: 512,
-        color: {
-          dark: '#000000',
-          light: '#ffffff',
-        },
+        color: {dark: "#000000", light: "#ffffff"},
       });
     } catch(error) {
-      console.error('QR code generation failed:', error);
-      return '';
+      console.error("QR code generation failed:", error);
+      return "";
     }
   }
-  //<============================================== END GENERATE QR CODE IMAGE ==============================================>
 
-  //<============================================== BUILD STATIC GOOGLE MAP URL (WITH FALLBACK) ==============================================>
-  /**
-   * Generate static Google Map image URL (base64 PNG) from coordinates
-   * Used when rendering property location in PDF
-   */
+  /** Build a Static Maps image (base64) for PDFs. Falls back to embeddedUrl string. */
   private async makeDinamicMAPURL(input: any): Promise<string> {
     try {
       const APIkey = process.env.GOOGLE_API_KEY;
       const {lat, lng, embeddedUrl} = input;
       const staticMapUrl = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=14&size=800x300&maptype=roadmap&markers=color:red%7C${lat},${lng}&key=${APIkey}`;
-      const response = await axios.get(staticMapUrl, {responseType: 'arraybuffer'});
+      const response = await axios.get(staticMapUrl, {responseType: "arraybuffer", timeout: 15_000});
       if(response.status === 200) {
-        return `data:image/png;base64,${Buffer.from(response.data, 'binary').toString('base64')}`;
+        return `data:image/png;base64,${Buffer.from(response.data).toString("base64")}`;
       }
-      return embeddedUrl || '';
+      return embeddedUrl || "";
     } catch(error) {
       console.error("Error generating map URL:", error);
-      return '';
+      return "";
     }
   }
-  //<============================================== END BUILD STATIC GOOGLE MAP URL (WITH FALLBACK) ==============================================>
 
-  //<============================================== GET LEASE AGREEMENTS BASE ON THE LEASE ID ==============================================>
-  private getLeaseAgreementsByLeaseID() {
-    this.router.get(
-      "/lease-agreement/:leaseID", async (req: Request<{leaseID: string}>, res: Response) => {
-        try {
-          const {leaseID} = req.params;
-          const safeLeaseID = leaseID.trim()
-          if(!safeLeaseID) throw new Error("Lease ID is required!");
+  // ============================================================================
+  // GET: Lease by leaseID
+  // GET /lease-agreement/:leaseID
+  // ============================================================================
 
-          const data = await LeaseModel.findOne({leaseID: safeLeaseID}, {});
-          if(data) {
-            res.status(200).json({
-              status: "success",
-              message: "Lease agreements retrieved successfully!",
-              data: data,
-            })
-          }
-          else {
-            res.status(404).json({
-              status: "error",
-              message: `No lease agreements found for this lease ID (${leaseID}).`,
-            })
-          }
-        }
-        catch(error) {
-          console.log("Error in preview lease agreement:", error);
-          if(error instanceof Error) {
-            res.status(500).json({status: "error", error: error.message});
-          } else {
-            res.status(500).json({
-              status: "error",
-              error: "An unknown error occurred." + error,
-            });
-          }
-        }
-      })
-  }
-  //<============================================== END GET LEASE AGREEMENTS BASE ON THE LEASE ID ==============================================>
-
-  //<============================================== GET ALL LEASE AGREEMENTS BASE ON THE USERNAME ==============================================>
-  private getAllLeaseAgreementsByUsername() {
-    this.router.get(
-      "/lease-agreements/:username",
-      async (req: Request<{username: string}>, res: Response) => {
-        try {
-          const {username} = req.params;
-          const safeUsername = this.sanitizeInput(username);
-          if(!safeUsername) throw new Error("Username is required!");
-
-          const leaseAgreements = await LeaseModel.find({
-            "tenantInformation.tenantUsername": safeUsername,
-          }).sort({"systemMetadata.lastUpdated": -1});
-
-          if(leaseAgreements) {
-            res.status(200).json({
-              status: "success",
-              message: "Lease agreements retrieved successfully!",
-              data: leaseAgreements,
-            });
-          } else {
-            res.status(404).json({
-              status: "error",
-              message: "No lease agreements found for this user.",
-            });
-          }
-
-        } catch(error) {
-          console.log("Error in get all lease agreements:", error);
-          if(error instanceof Error) {
-            res.status(500).json({status: "error", error: error.message});
-          } else {
-            res.status(500).json({
-              status: "error",
-              error: "An unknown error occurred." + error,
-            });
-          }
-        }
-      }
-    );
-  }
-  //<============================================== END GET ALL LEASE AGREEMENTS BASE ON THE USERNAME ==============================================>
-
-  //<============================================== GET THE LEASE AGREEMENT BY ID AND UPDATE LEASE VALIDATION STATUS ==============================================>
-  private getLeaseAgreementByIDAndUpdateValidationStatus() {
-    const upload = multer();
-    this.router.put("/lease-status-updated/:leaseID", upload.none(), async (req: Request<{leaseID: string}>, res: Response) => {
+  private getLeaseAgreementsByLeaseID(): void {
+    this.router.get("/lease-agreement/:leaseID", async (req: Request<{leaseID: string}>, res: Response) => {
       try {
-        const {leaseID} = req.params;
-        const safeLeaseID = leaseID.trim();
-        if(!safeLeaseID) throw new Error("Lease ID is required!");
-
-        const validationStatus = req.body.validationStatus;
-        if(!validationStatus) throw new Error("Validation status is required!");
-
-        if(!this.checkIsString(validationStatus.trim())) throw new Error("Validation should be string!");
-
-        const today = new Date();
-        const lastUpdated = today.toISOString();
-
-        const leaseAgreement = await LeaseModel.findOneAndUpdate(
-          {leaseID: safeLeaseID},
-          {
-            "systemMetadata.validationStatus": validationStatus,
-            "systemMetadata.lastUpdated": lastUpdated
-          },
-          {new: true}
-        );
-
-        if(leaseAgreement) {
-          res.status(200).json({
-            status: "success",
-            message: "Lease agreement has been updated successfully!",
-            data: leaseAgreement,
-          });
+        const leaseID = this.mustString(req.params.leaseID, "Lease ID");
+        const data = await LeaseModel.findOne({leaseID}).lean();
+        if(!data) {
+          res.status(404).json({status: "error", message: `No lease agreements found for this lease ID (${leaseID}).`});
+          return;
         }
-        else {
-          res.status(404).json({
-            status: "error",
-            message: "No lease agreement found for this lease ID.",
-          });
-        }
-      }
-      catch(error) {
-        console.log("Error in get all lease agreements:", error);
-        if(error instanceof Error) {
-          res.status(500).json({status: "error", error: error.message});
-        } else {
-          res.status(500).json({
-            status: "error",
-            error: "An unknown error occurred." + error,
-          });
-        }
-      }
-    })
-  }
-  //<============================================== END GET THE LEASE AGREEMENT BY ID AND UPDATE LEASE VALIDATION STATUS ==============================================>
-
-  //<============================================== GET ALL LEASES ==============================================>
-  private getAllLeases() {
-    this.router.get("/all-leases", async (req: Request, res: Response) => {
-      try {
-        const leases = await LeaseModel.find();
-        console.log(leases)
-        if(!leases) throw new Error('No leases found');
-        res.status(200).json({status: "success", message: "All leases have been retrieved successfully!", data: leases});
-      }
-      catch(error) {
-        console.log(error)
-        res.status(500).json({status: 'error', error: 'An unknown error occurred: ' + error})
+        res.status(200).json({status: "success", message: "Lease agreements retrieved successfully!", data});
+        return;
+      } catch(error) {
+        console.log("Error in get lease by id:", error);
+        res.status(500).json({status: "error", error: error instanceof Error ? error.message : "Unknown error"});
+        return;
       }
     });
   }
-  //<============================================== END GET ALL LEASES ==============================================>
 
-  //********************************************************** END ROUTERS *******************************************************************/
+  // ============================================================================
+  // GET: All leases by username
+  // GET /lease-agreements/:username
+  // ============================================================================
 
-  //********************************************************** OPERATIONS *******************************************************************/
+  private getAllLeaseAgreementsByUsername(): void {
+    this.router.get("/lease-agreements/:username", async (req: Request<{username: string}>, res: Response) => {
+      try {
+        const safeUsername = this.sanitizeIdentifier(req.params.username);
+        if(!safeUsername) throw new Error("Username is required!");
 
-  //<============================================== SANITIZE INPUT ==============================================>
-  private sanitizeInput(input: string): string {
-    if(typeof input !== 'string') return '';
+        const leaseAgreements = await LeaseModel.find({
+          "tenantInformation.tenantUsername": safeUsername,
+        })
+          .sort({"systemMetadata.lastUpdated": -1})
+          .lean();
 
-    // Trim whitespace
-    let sanitized = input.trim();
-
-    // Replace common HTML special characters
-    sanitized = sanitized
-      .replace(/&/g, '&amp;')   // Escape ampersands first
-      .replace(/</g, '&lt;')    // Escape <
-      .replace(/>/g, '&gt;')    // Escape >
-      .replace(/"/g, '&quot;')  // Escape double quotes
-      .replace(/'/g, '&#x27;')  // Escape single quotes
-      .replace(/\//g, '&#x2F;'); // Escape forward slashes
-
-    return sanitized;
-  }
-  //<============================================== END SANITIZE INPUT ==============================================>
-
-  //<============================================== GET TENANT BY USERNAME ==============================================>
-  private getTenantByUsername() {
-    this.router.get(
-      "/get-tenant-by-username/:username", async (req: Request<{username: string}>, res: Response) => {
-        try {
-          const {username} = req.params;
-          const safeUsername = username.trim();
-          const user = await UserModel.findOne({username: safeUsername});
-          if(!user) throw new Error("User not found!");
-          res.status(200).json({
-            status: "success",
-            message: "User retrieved successfully!",
-            data: user,
-          })
+        if(!leaseAgreements || leaseAgreements.length === 0) {
+          res.status(404).json({status: "error", message: "No lease agreements found for this user."});
+          return;
         }
-        catch(error) {
-          console.log(error)
-          res.status(500).json({status: "error", error: "An unknown error occurred: " + error})
-        }
-      });
+
+        res.status(200).json({
+          status: "success",
+          message: "Lease agreements retrieved successfully!",
+          data: leaseAgreements,
+        });
+        return;
+      } catch(error) {
+        console.log("Error in get all lease agreements:", error);
+        res.status(500).json({
+          status: "error",
+          error: error instanceof Error ? error.message : "Unknown error",
+        });
+        return;
+      }
+    });
   }
-  //<============================================== END GET TENANT BY USERNAME ==============================================>
 
-  //********************************************************** END OPERATIONS *******************************************************************/
+  // ============================================================================
+  // PUT: Update validation status of a lease (by leaseID)
+  // PUT /lease-status-updated/:leaseID
+  // ============================================================================
 
-  //********************************************************** TYPE CHECKING *******************************************************************/
+  private getLeaseAgreementByIDAndUpdateValidationStatus(): void {
+    const upload = multer(); // for parsing form-data without files
+    this.router.put("/lease-status-updated/:leaseID", upload.none(), async (req: Request<{leaseID: string}>, res: Response) => {
+      try {
+        const safeLeaseID = this.mustString(req.params.leaseID, "Lease ID");
+        const validationStatus = this.mustString(req.body.validationStatus, "Validation status");
 
-  //<============================================== CHECK ADDED BY FORMAT TYPE ==============================================>
+        if(!this.checkIsString(validationStatus)) throw new Error("Validation should be string!");
+
+        const lastUpdated = new Date().toISOString();
+
+        const leaseAgreement = await LeaseModel.findOneAndUpdate(
+          {leaseID: safeLeaseID},
+          {"systemMetadata.validationStatus": validationStatus, "systemMetadata.lastUpdated": lastUpdated},
+          {new: true}
+        ).lean();
+
+        if(!leaseAgreement) {
+          res.status(404).json({status: "error", message: "No lease agreement found for this lease ID."});
+          return;
+        }
+
+        res.status(200).json({
+          status: "success",
+          message: "Lease agreement has been updated successfully!",
+          data: leaseAgreement,
+        });
+        return;
+      } catch(error) {
+        console.log("Error in update lease validation status:", error);
+        res.status(500).json({status: "error", error: error instanceof Error ? error.message : "Unknown error"});
+        return;
+      }
+    });
+  }
+
+  // ============================================================================
+  // GET: All leases (with simple pagination)
+  // GET /all-leases?page=&limit=
+  // ============================================================================
+
+  private getAllLeases(): void {
+    this.router.get("/all-leases", async (req: Request, res: Response) => {
+      try {
+        const page = Math.max(parseInt((req.query.page as string) || "1", 10), 1);
+        const limit = Math.min(Math.max(parseInt((req.query.limit as string) || "20", 10), 1), 100);
+        const skip = (page - 1) * limit;
+
+        const [data, total] = await Promise.all([
+          LeaseModel.find().skip(skip).limit(limit).lean(),
+          LeaseModel.countDocuments(),
+        ]);
+
+        res.status(200).json({
+          status: "success",
+          message: "All leases retrieved successfully!",
+          page,
+          limit,
+          total,
+          data,
+        });
+        return;
+      } catch(error) {
+        console.log(error);
+        res.status(500).json({status: "error", error: "An unknown error occurred: " + error});
+        return;
+      }
+    });
+  }
+
+  // ============================================================================
+  // GET: User by username
+  // GET /get-tenant-by-username/:username
+  // ============================================================================
+
+  private getTenantByUsername(): void {
+    this.router.get("/get-tenant-by-username/:username", async (req: Request<{username: string}>, res: Response) => {
+      try {
+        const safeUsername = this.sanitizeIdentifier(req.params.username);
+        if(!safeUsername) throw new Error("Username is required!");
+        const user = await UserModel.findOne({username: safeUsername}).lean();
+        if(!user) {
+          res.status(404).json({status: "error", message: "User not found!"});
+          return;
+        }
+        res.status(200).json({status: "success", message: "User retrieved successfully!", data: user});
+        return;
+      } catch(error) {
+        console.log(error);
+        res.status(500).json({status: "error", error: "An unknown error occurred: " + (error as any)});
+        return;
+      }
+    });
+  }
+
+  // ============================================================================
+  // Type checks (kept from your original, lightly adjusted)
+  // ============================================================================
+
   private checkSystemMetaDataFormat(input: any): input is SystemMetadata {
     const data = typeof input === "string" ? JSON.parse(input) : input;
     if(!data || typeof data !== "object") return false;
     return (
-      data &&
       typeof data.ocrAutoFillStatus === "boolean" &&
       typeof data.validationStatus === "string" &&
       typeof data.language === "string" &&
@@ -1723,24 +1522,17 @@ export default class Lease {
       typeof data.lastUpdated === "string"
     );
   }
-  //<============================================== END CHECK ADDED BY FORMAT TYPE ==============================================>
 
-  //<============================================== CHECK ADDED BY FORMAT TYPE ==============================================>
   private checkRentDueDateFormat(input: any): input is RentDueDate {
     const data = typeof input === "string" ? JSON.parse(input) : input;
     if(!data || typeof data !== "object") return false;
-    return (
-      data && typeof data.id === "string" && typeof data.label === "string"
-    );
+    return typeof data.id === "string" && typeof data.label === "string";
   }
-  //<============================================== END CHECK ADDED BY FORMAT TYPE ==============================================>
 
-  //<============================================== CHECK ADDED BY FORMAT TYPE ==============================================>
   private checkAddedBy(input: any): input is AddedBy {
     const data = typeof input === "string" ? JSON.parse(input) : input;
     if(!data || typeof data !== "object") return false;
     return (
-      data &&
       typeof data.username === "string" &&
       typeof data.name === "string" &&
       typeof data.email === "string" &&
@@ -1748,189 +1540,96 @@ export default class Lease {
       (typeof data.addedAt === "string" || data.addedAt instanceof Date)
     );
   }
-  //<============================================== END CHECK ADDED BY FORMAT TYPE ==============================================>
 
-  //<============================================== CHECK BOOLEAN TYPE ==============================================>
-  private checkBoolean(input: any): boolean {
-    return input.toLowerCase() === "true";
+  private checkIsString(input: any): input is string {
+    return typeof input === "string" && input.trim().length > 0;
   }
-  //<============================================== END CHECK BOOLEAN FORMAT TYPE ==============================================>
 
-  //<============================================== CHECK LATE PAYMENT PENALTIES FORMAT TYPE ==============================================>
-  private checkRuleAndRegulationsFormat(
-    input: any
-  ): input is RulesAndRegulations[] {
+  private checkRuleAndRegulationsFormat(input: any): input is RulesAndRegulations[] {
     const data = typeof input === "string" ? JSON.parse(input) : input;
     if(!Array.isArray(data)) return false;
-
-    return data.every(
-      (item) =>
-        item &&
-        typeof item.rule === "string" &&
-        typeof item.description === "string"
-    );
+    return data.every((item) => item && typeof item.rule === "string" && typeof item.description === "string");
   }
-  //<============================================== END CHECK LATE PAYMENT PENALTIES FORMAT TYPE ==============================================>
 
-  //<============================================== CHECK NOTICE PERIOD DAYS FORMAT TYPE ==============================================>
   private checkNoticePeriodDaysFormat(input: any): input is NoticePeriod {
     const data = typeof input === "string" ? JSON.parse(input) : input;
     if(!data || typeof data !== "object") return false;
-    return (
-      data &&
-      typeof data.id === "string" &&
-      typeof data.label === "string" &&
-      typeof data.days === "number" &&
-      typeof data.description === "string"
-    );
+    return typeof data.id === "string" && typeof data.label === "string" && typeof data.days === "number" && typeof data.description === "string";
   }
-  //<============================================== END CHECK NOTICE PERIOD DAYS FORMAT TYPE ==============================================>
 
-  //<============================================== CHECK LATE PAYMENT PENALTIES FORMAT TYPE ==============================================>
-  private checkUtilityResponsibilitiesFormat(
-    input: any
-  ): input is UtilityResponsibility[] {
-    const data = typeof input === "string" ? JSON.parse(input) : input;
-    if(!Array.isArray(data)) return false;
-
-    return data.every(
-      (item) =>
-        item &&
-        typeof item.id === "string" &&
-        typeof item.utility === "string" &&
-        typeof item.paidBy === "string" &&
-        typeof item.description === "string"
-    );
-  }
-  //<============================================== END CHECK LATE PAYMENT PENALTIES FORMAT TYPE ==============================================>
-
-  //<============================================== CHECK LATE PAYMENT PENALTIES FORMAT TYPE ==============================================>
-  private checkLatePaymentPenaltiesFormat(
-    input: any
-  ): input is LatePaymentPenalty[] {
+  private checkUtilityResponsibilitiesFormat(input: any): input is UtilityResponsibility[] {
     const data = typeof input === "string" ? JSON.parse(input) : input;
     if(!Array.isArray(data)) return false;
     return data.every(
-      (item) =>
-        item &&
-        typeof item.label === "string" &&
-        typeof item.type === "string" &&
-        typeof item.value === "number" &&
-        typeof item.description === "string"
+      (item) => item && typeof item.id === "string" && typeof item.utility === "string" && typeof item.paidBy === "string" && typeof item.description === "string"
     );
   }
-  //<============================================== END CHECK LATE PAYMENT PENALTIES FORMAT TYPE ==============================================>
 
-  //<============================================== CHECK SECURITY DEPOSIT FORMAT TYPE ==============================================>
+  private checkLatePaymentPenaltiesFormat(input: any): input is LatePaymentPenalty[] {
+    const data = typeof input === "string" ? JSON.parse(input) : input;
+    if(!Array.isArray(data)) return false;
+    return data.every(
+      (item) => item && typeof item.label === "string" && typeof item.type === "string" && typeof item.value === "number" && typeof item.description === "string"
+    );
+  }
+
   private checkSecurityDepositFormat(input: any): input is SecurityDeposit {
     const data = typeof input === "string" ? JSON.parse(input) : input;
     if(!data || typeof data !== "object") return false;
-    return (
-      data &&
-      typeof data.id === "string" &&
-      typeof data.name === "string" &&
-      typeof data.description === "string" &&
-      typeof data.refundable === "boolean"
-    );
+    return typeof data.id === "string" && typeof data.name === "string" && typeof data.description === "string" && typeof data.refundable === "boolean";
   }
-  //<============================================== END CHECK SECURITY DEPOSIT FORMAT TYPE ==============================================>
 
-  //<============================================== CHECK PAYMENT METHOD FORMAT TYPE ==============================================>
   private checkPaymentMethodFormat(input: any): input is PaymentMethod {
     const data = typeof input === "string" ? JSON.parse(input) : input;
     if(!data || typeof data !== "object") return false;
-    return (
-      data &&
-      typeof data.id === "string" &&
-      typeof data.name === "string" &&
-      typeof data.category === "string"
-    );
+    return typeof data.id === "string" && typeof data.name === "string" && typeof data.category === "string";
   }
-  //<============================================== END CHECK PAYMENT METHOD FORMAT TYPE ==============================================>
 
-  //<============================================== CHECK PAYMENT FREQUENCY FORMAT TYPE ==============================================>
   private checkPaymentFrequencyFormat(input: any): input is PaymentFrequency {
     const data = typeof input === "string" ? JSON.parse(input) : input;
     if(!data || typeof data !== "object") return false;
-    return (
-      data &&
-      typeof data.id === "string" &&
-      typeof data.name === "string" &&
-      typeof data.duration === "string" &&
-      typeof data.unit === "string"
-    );
+    return typeof data.id === "string" && typeof data.name === "string" && typeof data.duration === "string" && typeof data.unit === "string";
   }
-  //<============================================== END CHECK PAYMENT FREQUENCY FORMAT TYPE ==============================================>
 
-  //<============================================== CHECK CURRENCY FORMAT TYPE ==============================================>
   private checkCurrencyFormat(input: any): input is CurrencyFormat {
     const data = typeof input === "string" ? JSON.parse(input) : input;
     if(!data || typeof data !== "object") return false;
     return (
-      data &&
       typeof data.country === "string" &&
-      typeof data.symbol === "string" &&
+      typeof (data as any).symbol === "string" && // your schema allows string
       typeof data.flags === "object" &&
       typeof data.flags.png === "string" &&
       typeof data.flags.svg === "string" &&
       typeof data.currency === "string"
     );
   }
-  //<============================================== END CHECK CURRENCY FORMAT TYPE ==============================================>
 
-  //<============================================== CHECK ISO DATE TYPE ==============================================>
   private checkISODate(input: any): boolean {
     if(typeof input !== "string") return false;
-    const isoDateRegex =
-      /^\d{4}-\d{2}-\d{2}([T\s]\d{2}:\d{2}:\d{2}(.\d+)?(Z|([+-]\d{2}:\d{2})))?$/;
+    const isoDateRegex = /^\d{4}-\d{2}-\d{2}([T\s]\d{2}:\d{2}:\d{2}(.\d+)?(Z|([+-]\d{2}:\d{2})))?$/;
     return isoDateRegex.test(input) && !isNaN(Date.parse(input));
   }
-  //<============================================== END CHECK ISO DATE TYPE ==============================================>
 
-  //<============================================== CHECK STRING TYPE ==============================================>
-  private checkIsString(input: any): input is string {
-    return typeof input === "string" && input.trim().length > 0;
-  }
-  //<============================================== END CHECK STRING TYPE ==============================================>
-
-  //<============================================== CHECK PHONE CODE DETAILS TYPE ==============================================>
   private checkIsPhoneCodeDetails(input: any): boolean {
     const data = typeof input === "string" ? JSON.parse(input) : input;
     if(!data || typeof data !== "object") return false;
-    return (
-      typeof data.name === "string" &&
-      typeof data.code === "string" &&
-      typeof data.flags === "object" &&
-      typeof data.flags.png === "string" &&
-      typeof data.flags.svg === "string"
-    );
+    return typeof data.name === "string" && typeof data.code === "string" && typeof data.flags === "object" && typeof data.flags.png === "string" && typeof data.flags.svg === "string";
   }
-  //<============================================== END CHECK PHONE CODE DETAILS TYPE ==============================================>
 
-  //<============================================== CHECK EMERGENCY CONTACT TYPE ==============================================>
   private checkIsEmergencyContact(input: any): input is EmergencyContact {
     try {
       const data = typeof input === "string" ? JSON.parse(input) : input;
       if(!data || typeof data !== "object") return false;
-      return (
-        data &&
-        typeof data.name === "string" &&
-        typeof data.relationship === "string" &&
-        typeof data.contact === "string"
-      );
-    } catch(error) {
-      console.error("Failed to parse emergency contact:", error);
+      return typeof data.name === "string" && typeof data.relationship === "string" && typeof data.contact === "string";
+    } catch {
       return false;
     }
   }
-  //<============================================== END CHECK EMERGENCY CONTACT TYPE ==============================================>
 
-  //<============================================== CHECK ADDRESS TYPE ==============================================>
   private isValidTenantAddress(input: any): input is Address {
     const data = typeof input === "string" ? JSON.parse(input) : input;
     if(!data || typeof data !== "object") return false;
     return (
-      data &&
       typeof data.houseNumber === "string" &&
       typeof data.street === "string" &&
       typeof data.city === "string" &&
@@ -1939,37 +1638,4 @@ export default class Lease {
       typeof data.country === "object"
     );
   }
-  //<============================================== END CHECK ADDRESS TYPE ==============================================>
-
-  //<============================================== CHECK ADDRESS TYPE ==============================================>
-  private isValidAddress(input: any): input is Address {
-    const data = typeof input === "string" ? JSON.parse(input) : input;
-    if(!data || typeof data !== "object") return false;
-    return (
-      data &&
-      typeof data.houseNumber === "string" &&
-      typeof data.street === "string" &&
-      typeof data.city === "string" &&
-      typeof data.stateOrProvince === "string" &&
-      typeof data.postalCode === "string" &&
-      typeof data.country === "string"
-    );
-  }
-  //<============================================== END CHECK ADDRESS TYPE ==============================================>
-
-  //<============================================== CHECK ADDED BY TYPE ==============================================>
-  private isValidAddedBy(input: any): input is AddedBy {
-    const data = typeof input === "string" ? JSON.parse(input) : input;
-    if(!data || typeof data !== "object") return false;
-    return (
-      data &&
-      typeof data.username === "string" &&
-      typeof data.name === "string" &&
-      typeof data.email === "string" &&
-      typeof data.role === "string"
-    );
-  }
-  //<============================================== END CHECK ADDED BY TYPE ==============================================>
-
-  //********************************************************** END TYPE CHECKING *******************************************************************/
 }

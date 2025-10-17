@@ -1,41 +1,50 @@
 // src/services/notification.service.ts
+// ─────────────────────────────────────────────────────────────────────────────
+// NotificationService
+// - Create notifications + fan-out to users
+// - List notifications and merge per-user state
+// - Restore & Permanent Delete from /public/recyclebin/* (JSON + media folders)
+// - Category dispatchers call small wrappers, which call generic helpers
+// - Everything is class-based; no free functions
+// - Comments are beginner-friendly and explain WHY, not just WHAT
+// ─────────────────────────────────────────────────────────────────────────────
+
+import path from 'path';                    // build safe file paths
+import * as fsp from 'fs/promises';         // async fs (rm, mkdir, etc.)
 
 import {
     FilterQuery,
     ProjectionType,
     ClientSession,
     Types,
-    // types only:
-    MongooseBulkWriteOptions,
-    QueryOptions,
+    Connection,
 } from 'mongoose';
+
+import RecycleBinService from './recyclebin.service';
 import {Role, AudienceMode} from '../types/roles';
-import {UserModel, IUser} from '../models/user.model';
+import {UserModel, type IUser} from '../models/user.model';
 
-import {NotificationModel} from '../models/notifications/notification.model';
-
-import type {
-    Title,
-    TitleCategory,
-    DefinedTypes,
-    Severity as NotificationSeverity,
-    Channel as NotificationChannel,
-    NotificationEntity,
+// Master (notification) + per-user state
+import {
+    NotificationModel,
+    type NotificationEntity,
+    type Title,
+    type TitleCategory,
+    type DefinedTypes,
+    type Severity as NotificationSeverity,
+    type Channel as NotificationChannel,
 } from '../models/notifications/notification.model';
 
 import {UserNotificationModel} from '../models/notifications/user-notification.model';
 
-
-/* ────────────────────────────────────────────────────────────────────────────
- * DTOs aligned with FE shape
- * ──────────────────────────────────────────────────────────────────────────── */
+// ─────────────────────────────────────────────────────────────────────────────
+// DTOs (kept as-is, used across controller/service)
+// ─────────────────────────────────────────────────────────────────────────────
 
 export interface NotificationAudienceDTO {
     mode: AudienceMode;
-    usernames?: string[]; // explicit user targeting
-    roles?: Array<
-        'admin' | 'agent' | 'tenant' | 'owner' | 'operator' | 'manager' | 'developer' | 'user'
-    >; // role-based
+    usernames?: string[];
+    roles?: Array<'admin' | 'agent' | 'tenant' | 'owner' | 'operator' | 'manager' | 'developer' | 'user'>;
 }
 
 export interface CreateNotificationDTO {
@@ -51,6 +60,8 @@ export interface CreateNotificationDTO {
     tags?: string[];
     link?: string;
     source?: string;
+    // optional reference to the domain entity this notification is about
+    target?: {kind?: TitleCategory; refId?: string};
 }
 
 export interface UserNotificationStateDTO {
@@ -89,8 +100,8 @@ export interface NotificationWithStateDTO {
 
 export interface ListOptions {
     limit?: number;
-    page?: number; // 0-based
-    skip?: number; // legacy
+    page?: number;
+    skip?: number;
     onlyUnread?: boolean;
     category?: TitleCategory;
     titles?: Title[];
@@ -102,87 +113,87 @@ export interface ListOptions {
     createdBefore?: Date;
 }
 
-/* ────────────────────────────────────────────────────────────────────────────
- * Service
- * ──────────────────────────────────────────────────────────────────────────── */
+// ─────────────────────────────────────────────────────────────────────────────
+// Restore / Permanent delete inputs & results
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface RestoreByCategoryInput {
+    category: TitleCategory;                 // which domain collection
+    refId?: string;                          // preferred key to find recyclebin entry
+    snapshot?: Record<string, any>;          // optional fallback JSON from the request
+    metadata?: Record<string, any>;          // free-form audit context
+    requestedBy: string;                     // who triggered the action
+    useTransaction?: boolean;                // wrap DB writes in a transaction
+}
+
+export interface PermanentDeleteInput {
+    category: TitleCategory;                 // domain collection
+    refId: string;                           // recyclebin entity to destroy
+    metadata?: Record<string, any>;
+    requestedBy: string;
+    useTransaction?: boolean;
+}
+
+export interface DispatchResult {
+    ok: boolean;                             // success flag
+    message?: string;                        // human readable result
+    rooms?: string[];                        // Socket.IO rooms to notify
+    restored?: any;                          // restored document (or just its id)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Service
+// ─────────────────────────────────────────────────────────────────────────────
+
 export default class NotificationService {
+    // Keep one RecycleBinService instance around
+    private readonly bin = new RecycleBinService();
+
     constructor () {}
 
-    /* =========================================================================
-     * Utilities for strict-safe Mongoose options (exactOptionalPropertyTypes)
-     * ========================================================================= */
+    // ========== Small helper builders (bulk options, guards, etc.) =============
 
-    /** BulkWrite options with ordered=false and optional session (no undefined/null leakage) */
-    private bulkOpts(
-        session?: ClientSession
-    ): {ordered: false} | {ordered: false; session: ClientSession} {
-        return session ? {ordered: false, session} : {ordered: false};
+    private bulkOpts(session?: ClientSession) {
+        return session ? {ordered: false as const, session} : {ordered: false as const};
     }
 
-    /** findOneAndUpdate options with upsert/new and optional session (no undefined/null leakage) */
-    private findOneAndUpdateOpts(
-        session?: ClientSession
-    ):
-        | {upsert: true; new: false}
-        | {upsert: true; new: false; session: ClientSession} {
-        return session ? {upsert: true, new: false, session} : {upsert: true, new: false};
+    private findOneAndUpdateOpts(session?: ClientSession) {
+        return session
+            ? {upsert: true as const, new: false as const, session}
+            : {upsert: true as const, new: false as const};
     }
 
-    /** Delete options with optional session (compatible with Mongoose v6+) */
-    private deleteOpts(session?: ClientSession): {session: ClientSession} | {} {
+    private deleteOpts(session?: ClientSession) {
         return session ? {session} : {};
     }
 
-    /* =========================================================================
-     * Creation (masters) + Fan-out delivery (per-user state)
-     * ========================================================================= */
-
-    /** Guard audience payload for safety & early failure. */
+    /** Validate audience input early so we fail fast with a clear message. */
     private validateAudience(a: NotificationAudienceDTO) {
         if(!a?.mode) throw new Error('Audience mode is required');
-        if(a.mode === 'user' && !a.usernames?.length) {
-            throw new Error('Audience usernames are required for mode=user');
-        }
-        if(a.mode === 'role' && !a.roles?.length) {
-            throw new Error('Audience roles are required for mode=role');
-        }
+        if(a.mode === 'user' && !a.usernames?.length) throw new Error('Audience usernames are required for mode=user');
+        if(a.mode === 'role' && !a.roles?.length) throw new Error('Audience roles are required for mode=role');
     }
 
-    /** Compute Socket.IO rooms for this audience. */
+    /** Compute Socket.IO rooms for broadcast/user/role. */
     private roomsForAudience(a: NotificationAudienceDTO): string[] {
         const rooms = new Set<string>();
         if(a.mode === 'broadcast') rooms.add('broadcast');
-        if(a.mode === 'user') (a.usernames ?? []).forEach((u) => rooms.add(`user:${u}`));
-        if(a.mode === 'role') (a.roles ?? []).forEach((r) => rooms.add(`role:${r}`));
+        if(a.mode === 'user') (a.usernames ?? []).forEach(u => rooms.add(`user:${u}`));
+        if(a.mode === 'role') (a.roles ?? []).forEach(r => rooms.add(`role:${r}`));
         return Array.from(rooms);
     }
 
-    /**
-     * Translate audience to a User query.
-     * - broadcast → all active users
-     * - user      → those usernames (and active)
-     * - role      → users in those roles (and active)
-     */
+    /** Turn the audience into a Mongoose query for users. */
     private userQueryForAudience(a: NotificationAudienceDTO): FilterQuery<IUser> {
-        if(a.mode === 'broadcast') {
-            return {isActive: true};
-        }
-        if(a.mode === 'user') {
-            return {isActive: true, username: {$in: a.usernames ?? []}};
-        }
-        // mode === 'role'
+        if(a.mode === 'broadcast') return {isActive: true};
+        if(a.mode === 'user') return {isActive: true, username: {$in: a.usernames ?? []}};
         return {isActive: true, role: {$in: a.roles ?? []}};
     }
 
-    /**
-     * Fan-out: upsert one `UserNotification` row for each eligible user.
-     * - Uses a cursor to stream users.
-     * - Batches bulkWrite to avoid huge payloads.
-     * - Upsert is idempotent and safe for retries.
-     */
+    /** Create/Upsert per-user states for the given notification. */
     private async deliverToAudience(notification: NotificationEntity, session?: ClientSession) {
         const q = this.userQueryForAudience(notification.audience as NotificationAudienceDTO);
-        const cursor = UserModel.find(q).select({username: 1}).lean().cursor();
+        const cursor = UserModel.find(q).select({username: 1}).lean().cursor();   // stream users to avoid huge memory
 
         const ops: any[] = [];
         const notifId = String(notification._id);
@@ -194,35 +205,26 @@ export default class NotificationService {
             ops.push({
                 updateOne: {
                     filter: {username: u.username, notificationId: notifId},
-                    update: {
-                        $setOnInsert: {
-                            deliveredAt: now,
-                            isRead: false,
-                            isArchived: false,
-                        },
-                    },
+                    update: {$setOnInsert: {deliveredAt: now, isRead: false, isArchived: false}},
                     upsert: true,
                 },
             });
 
-            // Flush every 1k operations to keep memory and doc size in check
+            // flush in chunks to keep memory steady
             if(ops.length >= 1000) {
                 await UserNotificationModel.bulkWrite(ops, this.bulkOpts(session));
                 ops.length = 0;
             }
         }
 
-        // Flush remaining ops
-        if(ops.length) {
-            await UserNotificationModel.bulkWrite(ops, this.bulkOpts(session));
-        }
+        if(ops.length) await UserNotificationModel.bulkWrite(ops, this.bulkOpts(session));
     }
 
+    // ============================ Creation =====================================
+
     /**
-     * Create a master notification.
-     * - Schema pre-validate derives `category` from `title`.
-     * - Immediately fan-out per-user state rows.
-     * - Optionally emit to Socket.IO rooms.
+     * Create a master notification and fan-out per-user states.
+     * FE benefits because reads can include `userState` immediately.
      */
     async createNotification(
         doc: CreateNotificationDTO,
@@ -231,36 +233,30 @@ export default class NotificationService {
     ) {
         this.validateAudience(doc.audience);
 
-        // Create as an array to support transactions (Mongo needs array when session is used)
-        const saved = await NotificationModel.create([{...doc, createdAt: new Date()}], session ? {session} : undefined);
-        const persisted = saved[0];
-
-        // Fan-out to all eligible users now (so FE won't see missing userState)
-        await this.deliverToAudience(
-            typeof (persisted as any).toObject === 'function' ? (persisted as any).toObject() : (persisted as any),
-            session
+        // create returns an array when we pass array payloads
+        const [persisted] = await NotificationModel.create(
+            [{...doc, createdAt: new Date()}],
+            session ? {session} : undefined
         );
 
-        // Socket emit to audience rooms
-        const payload: NotificationEntity =
-            typeof (persisted as any).toObject === 'function' ? (persisted as any).toObject() : (persisted as any);
-        emit?.(this.roomsForAudience(doc.audience), payload);
+        // convert to POJO to avoid Mongoose docs leaking into sockets
+        const plain = typeof (persisted as any).toObject === 'function'
+            ? (persisted as any).toObject()
+            : (persisted as any);
+
+        // ensure per-user states exist
+        await this.deliverToAudience(plain, session);
+
+        // optional socket emission
+        emit?.(this.roomsForAudience(doc.audience), plain);
 
         return persisted;
     }
 
-    /* =========================================================================
-     * Listing / Counting (masters) + Ensuring states exist
-     * ========================================================================= */
+    // ============================ Listing ======================================
 
-    /** Audience visibility for master query (what masters a user can see). */
     private buildAudienceFilter(username: string, role: Role) {
-        // ⬇️ Admin override: see *all* notifications, regardless of audience targeting
-        if(role === 'admin') {
-            return {} as FilterQuery<NotificationEntity>;
-        }
-
-        // Non-admin: original audience rules
+        if(role === 'admin') return {} as FilterQuery<NotificationEntity>;
         return {
             $or: [
                 {'audience.mode': 'broadcast'},
@@ -270,25 +266,20 @@ export default class NotificationService {
         } as FilterQuery<NotificationEntity>;
     }
 
-
-    /** Build additional master filters (category, search, time window, etc.). */
     private buildListFilters(opts: ListOptions) {
         const f: FilterQuery<NotificationEntity> = {};
-
         if(opts.category) f.category = opts.category;
         if(opts.titles?.length) f.title = {$in: opts.titles};
         if(opts.type) f.type = opts.type;
         if(opts.severity) f.severity = opts.severity;
         if(opts.channel) f.channels = opts.channel;
 
-        // time window
         if(opts.createdAfter || opts.createdBefore) {
             f.createdAt = {};
             if(opts.createdAfter) (f.createdAt as any).$gte = opts.createdAfter;
             if(opts.createdBefore) (f.createdAt as any).$lte = opts.createdBefore;
         }
 
-        // simple contains search (title/body/tags)
         if(opts.search?.trim()) {
             const q = opts.search.trim();
             f.$or = [
@@ -298,57 +289,33 @@ export default class NotificationService {
             ];
         }
 
-        // ignore expired
+        // hide expired
         const now = new Date();
         f.$and = [{$or: [{expiresAt: {$exists: false}}, {expiresAt: {$gt: now}}]}];
 
         return f;
     }
 
-    /** Projection used by list queries (lean for speed). */
     private buildProjection(): ProjectionType<NotificationEntity> {
         return {
-            title: 1,
-            category: 1,
-            body: 1,
-            type: 1,
-            severity: 1,
-            audience: 1,
-            channels: 1,
-            createdAt: 1,
-            expiresAt: 1,
-            metadata: 1,
-            icon: 1,
-            tags: 1,
-            link: 1,
-            source: 1,
+            title: 1, category: 1, body: 1, type: 1, severity: 1,
+            audience: 1, channels: 1, createdAt: 1, expiresAt: 1,
+            metadata: 1, icon: 1, tags: 1, link: 1, source: 1, target: 1,
         };
     }
 
-    /** Ensure per-user state rows exist for all provided masters (idempotent). */
-    private async ensureStatesForMasters(
-        username: string,
-        masters: NotificationEntity[],
-        session?: ClientSession
-    ) {
+    private async ensureStatesForMasters(username: string, masters: NotificationEntity[], session?: ClientSession) {
         await Promise.all(
-            masters.map((n) =>
+            masters.map(n =>
                 UserNotificationModel.findOneAndUpdate(
                     {username, notificationId: String(n._id)},
-                    {
-                        $setOnInsert: {
-                            deliveredAt: new Date(),
-                            isRead: false,
-                            isArchived: false,
-                        },
-                    },
+                    {$setOnInsert: {deliveredAt: new Date(), isRead: false, isArchived: false}},
                     this.findOneAndUpdateOpts(session)
                 )
             )
         );
     }
 
-    /** Fetch `UserNotification` rows as a Map by notificationId for fast merging. */
     private async fetchStatesMap(
         username: string,
         masterIds: string[],
@@ -361,10 +328,9 @@ export default class NotificationService {
             .select({username: 1, notificationId: 1, isRead: 1, isArchived: 1, deliveredAt: 1, readAt: 1})
             .lean<UserNotificationStateDTO[]>();
 
-        return new Map(states.map((s) => [String(s.notificationId), s]));
+        return new Map(states.map(s => [String(s.notificationId), s]));
     }
 
-    /** ISO-safe helper (accepts Date or string). */
     private iso(v?: Date | string) {
         if(!v) return undefined;
         if(v instanceof Date) return v.toISOString();
@@ -372,16 +338,15 @@ export default class NotificationService {
         return Number.isNaN(asDate.getTime()) ? String(v) : asDate.toISOString();
     }
 
-    /** Merge masters + per-user state → FE DTO, respecting `onlyUnread`. */
     private mergeToDTO(
         masters: NotificationEntity[],
         stateById: Map<string, UserNotificationStateDTO>,
         onlyUnread?: boolean
     ): NotificationWithStateDTO[] {
         return masters
-            .map((n) => {
+            .map(n => {
                 const s = stateById.get(String(n._id));
-                if(onlyUnread && s?.isRead) return null; // strictly filter read rows when asked
+                if(onlyUnread && s?.isRead) return null;
 
                 const createdAtISO = this.iso(n.createdAt)!;
                 const expiresAtISO = this.iso(n.expiresAt);
@@ -409,28 +374,15 @@ export default class NotificationService {
                             deliveredAt: this.iso(s.deliveredAt)!,
                             readAt: this.iso(s.readAt),
                         }
-                        : {
-                            // In the unlikely case upsert hasn’t completed yet
-                            isRead: false,
-                            isArchived: false,
-                            deliveredAt: createdAtISO,
-                        },
+                        : {isRead: false, isArchived: false, deliveredAt: createdAtISO},
                 } as NotificationWithStateDTO;
             })
             .filter((x): x is NotificationWithStateDTO => Boolean(x));
     }
 
-    /**
-     * Main list used by FE.
-     * - Pull masters in user’s audience, apply filters/pagination
-     * - Ensure per-user states exist (idempotent)
-     * - Merge and return DTOs (optionally onlyUnread)
-     */
     async listForUser(username: string, role: Role, opts: ListOptions = {}) {
         const limit = Math.max(1, opts.limit ?? 20);
-        const page = Number.isFinite(opts.skip)
-            ? Math.floor((opts.skip as number) / (opts.limit ?? 20))
-            : Math.max(0, opts.page ?? 0);
+        const page = Number.isFinite(opts.skip) ? Math.floor((opts.skip as number) / (opts.limit ?? 20)) : Math.max(0, opts.page ?? 0);
         const onlyUnread = !!opts.onlyUnread;
 
         const audienceFilter = this.buildAudienceFilter(username, role);
@@ -443,16 +395,14 @@ export default class NotificationService {
             .limit(limit)
             .lean<NotificationEntity[]>();
 
-        // ensure state rows exist so FE always receives userState
         await this.ensureStatesForMasters(username, masters);
 
-        const ids = masters.map((m) => String(m._id));
+        const ids = masters.map(m => String(m._id));
         const stateById = await this.fetchStatesMap(username, ids, onlyUnread);
 
         return this.mergeToDTO(masters, stateById, onlyUnread);
     }
 
-    /** Count masters (for pagination meta). If you need `onlyUnread` in count, you’d join with states. */
     async countForUser(username: string, role: Role, opts: ListOptions = {}) {
         const audienceFilter = this.buildAudienceFilter(username, role);
         const extraFilters = this.buildListFilters(opts);
@@ -460,21 +410,16 @@ export default class NotificationService {
         return NotificationModel.countDocuments(masterFilter).exec();
     }
 
-    /* =========================================================================
-     * Read / Archive / Delete (per-user state)
-     * ========================================================================= */
+    // ========================== Per-user state ops ==============================
 
-    /** Mark one notification as read (upsert-safe). */
     markRead(username: string, notificationId: string) {
         return UserNotificationModel.updateOne(
             {username, notificationId: String(notificationId)},
             {$set: {isRead: true, readAt: new Date()}},
             {upsert: true}
         );
-        // options object here doesn't need session; add a session param + this.findOneAndUpdateOpts if you want
     }
 
-    /** Mark a set of notifications as read. */
     markManyRead(username: string, notificationIds: Array<string | Types.ObjectId>) {
         const ids = notificationIds.map(String);
         return UserNotificationModel.updateMany(
@@ -483,7 +428,6 @@ export default class NotificationService {
         );
     }
 
-    /** Mark ALL notifications as read (fast bulk). */
     markAllRead(username: string) {
         return UserNotificationModel.updateMany(
             {username, isRead: false},
@@ -491,7 +435,6 @@ export default class NotificationService {
         );
     }
 
-    /** Soft delete everything (archive flag). */
     archiveAll(username: string) {
         return UserNotificationModel.updateMany(
             {username, isArchived: false},
@@ -499,83 +442,400 @@ export default class NotificationService {
         );
     }
 
-    /** Hard delete all per-user state rows (does NOT remove master notifications). */
     deleteAllStatesForUser(username: string, session?: ClientSession) {
         return UserNotificationModel.deleteMany({username}, this.deleteOpts(session));
     }
 
-    /** Hard delete a subset of per-user states. */
-    deleteStatesForUser(
-        username: string,
-        notificationIds: Array<string | Types.ObjectId>,
-        session?: ClientSession
-    ) {
+    deleteStatesForUser(username: string, notificationIds: Array<string | Types.ObjectId>, session?: ClientSession) {
         const ids = notificationIds.map(String);
-        return UserNotificationModel.deleteMany(
-            {username, notificationId: {$in: ids}},
-            this.deleteOpts(session)
-        );
+        return UserNotificationModel.deleteMany({username, notificationId: {$in: ids}}, this.deleteOpts(session));
     }
 
-    /**
-     * Remove state rows that reference a non-existing master notification.
-     * (Good housekeeping, run occasionally or on demand.)
-     */
     async pruneOrphanStates(session?: ClientSession) {
         const orphans = await (UserNotificationModel as any)
             .aggregate([
-                {
-                    $lookup: {
-                        from: 'notifications',
-                        localField: 'notificationId',
-                        foreignField: '_id',
-                        as: 'n',
-                    },
-                },
+                {$lookup: {from: 'notifications', localField: 'notificationId', foreignField: '_id', as: 'n'}},
                 {$match: {n: {$size: 0}}},
                 {$project: {_id: 1}},
             ])
-            .session(session ?? null); // expects ClientSession | null
+            .session(session ?? null);
 
         if(!orphans.length) return 0;
-
         const ids = orphans.map((o: any) => o._id);
         const res = await UserNotificationModel.deleteMany({_id: {$in: ids}}, this.deleteOpts(session));
         return res.deletedCount || 0;
     }
 
-    /* =========================================================================
-     * Backfill / Auto-monitoring (keeps FE in sync across user changes)
-     * ========================================================================= */
+    // ========================= Restore / Hard Delete ============================
 
     /**
-     * Ensure a user has state rows for ALL masters currently visible to them.
-     * Call on login, or when enabling a user, etc.
+     * RESTORE public API (controller calls this).
+     * - Reads snapshot JSON from /public/recyclebin/<category>/<refId>/data.json
+     * - Recreates the DB row (with deleted flags cleared)
+     * - Moves media folder from recyclebin back to its original dest
+     * - Optionally runs inside a transaction
      */
+    async restoreByCategory(input: RestoreByCategoryInput): Promise<DispatchResult> {
+        const {category, refId, snapshot, requestedBy} = input;
+        const metadata = input.metadata ?? {};
+        const useTransaction = !!input.useTransaction;
+
+        // Pick a session if the caller wants a transaction
+        if(useTransaction) {
+            const conn: Connection = NotificationModel.db;
+            const session = await conn.startSession();
+            try {
+                session.startTransaction();
+
+                // Only include properties that exist; avoids {refId: undefined}
+                const payload = {
+                    category,
+                    metadata,
+                    requestedBy,
+                    ...(refId ? {refId} : {}),
+                    ...(snapshot ? {snapshot} : {}),
+                } as const;
+
+                const res = await this._restoreDispatcher(payload, session);
+                await session.commitTransaction();
+                session.endSession();
+                return res;
+            } catch(e: any) {
+                await session.abortTransaction();
+                session.endSession();
+                return {ok: false, message: e?.message || 'Restore failed (tx)'};
+            }
+        }
+
+        // Non-transaction path
+        const payload = {
+            category,
+            metadata,
+            requestedBy,
+            ...(refId ? {refId} : {}),
+            ...(snapshot ? {snapshot} : {}),
+        } as const;
+
+        return this._restoreDispatcher(payload);
+    }
+
+    /**
+     * PERMANENT DELETE public API (controller calls this).
+     * - Purges recyclebin copy for that entity
+     * - Also tries to remove any leftover original public folder (defense-in-depth)
+     */
+    async permanentDeleteByCategory(input: PermanentDeleteInput): Promise<DispatchResult> {
+        const {category} = input;
+        const metadata = input.metadata ?? {};
+        const requestedBy = input.requestedBy;
+        const useTransaction = !!input.useTransaction;
+
+        const refId = typeof input.refId === 'string' ? input.refId.trim() : '';
+        if(!refId) return {ok: false, message: 'refId is required for permanent delete'};
+
+        if(useTransaction) {
+            const conn: Connection = NotificationModel.db;
+            const session = await conn.startSession();
+            try {
+                session.startTransaction();
+                const res = await this._permanentDeleteDispatcher({category, refId, metadata, requestedBy}, session);
+                await session.commitTransaction();
+                session.endSession();
+                return res;
+            } catch(e: any) {
+                await session.abortTransaction();
+                session.endSession();
+                return {ok: false, message: e?.message || 'Permanent delete failed (tx)'};
+            }
+        }
+
+        return this._permanentDeleteDispatcher({category, refId, metadata, requestedBy});
+    }
+
+    // ----------------------- Dispatchers (internal) ----------------------------
+
+    private async _restoreDispatcher(
+        input: {category: TitleCategory; refId?: string; snapshot?: Record<string, any>; metadata: any; requestedBy: string},
+        session?: ClientSession
+    ): Promise<DispatchResult> {
+        const {category} = input;
+
+        // We keep small category methods to stay class-based and future-extensible
+        switch(category) {
+            case 'User': return this.restoreUser(input, session);
+            case 'Tenant': return this.restoreTenant(input, session);
+            case 'Property': return this.restoreProperty(input, session);
+            case 'Lease': return this.restoreLease(input, session);
+            case 'Agent': return this.restoreAgent(input, session);
+            case 'Developer': return this.restoreDeveloper(input, session);
+            case 'Maintenance': return this.restoreMaintenance(input, session);
+            case 'Complaint': return this.restoreComplaint(input, session);
+            case 'Team': return this.restoreTeam(input, session);
+            case 'Registration':
+            case 'Payment':
+            case 'System':
+            default:
+                return {ok: false, message: `Restore not supported for category "${category}"`};
+        }
+    }
+
+    private async _permanentDeleteDispatcher(
+        input: {category: TitleCategory; refId: string; metadata: any; requestedBy: string},
+        _session?: ClientSession
+    ): Promise<DispatchResult> {
+        const {category} = input;
+
+        switch(category) {
+            case 'User': return this.hardDeleteUser(input);
+            case 'Tenant': return this.hardDeleteTenant(input);
+            case 'Property': return this.hardDeleteProperty(input);
+            case 'Lease': return this.hardDeleteLease(input);
+            case 'Agent': return this.hardDeleteAgent(input);
+            case 'Developer': return this.hardDeleteDeveloper(input);
+            case 'Maintenance': return this.hardDeleteMaintenance(input);
+            case 'Complaint': return this.hardDeleteComplaint(input);
+            case 'Team': return this.hardDeleteTeam(input);
+            case 'Registration':
+            case 'Payment':
+            case 'System':
+            default:
+                return {ok: false, message: `Permanent delete not supported for category "${category}"`};
+        }
+    }
+
+    // --------------------- Generic helpers (core logic) ------------------------
+
+    /**
+     * Get the Mongoose model for a TitleCategory without importing it directly.
+     * This avoids circular imports. Update names if your model names differ.
+     */
+    private getModelFor(category: TitleCategory) {
+        switch(category) {
+            case 'User': return NotificationModel.db.model('User');
+            case 'Tenant': return NotificationModel.db.model('Tenant');
+            case 'Property': return NotificationModel.db.model('Property');
+            case 'Lease': return NotificationModel.db.model('Lease');
+            case 'Agent': return NotificationModel.db.model('Agent');
+            case 'Developer': return NotificationModel.db.model('Developer');
+            case 'Maintenance': return NotificationModel.db.model('Maintenance');
+            case 'Complaint': return NotificationModel.db.model('Complaint');
+            case 'Team': return NotificationModel.db.model('Team');
+            case 'Registration': return NotificationModel.db.model('Registration');
+            case 'Payment': return NotificationModel.db.model('Payment');
+            case 'System': return NotificationModel.db.model('SystemEvent');
+            default: return null;
+        }
+    }
+
+    /**
+     * Compute where original files live by category (relative to /public).
+     * Prefer snapshot.__filesRoot if your deletion step saved it.
+     */
+    private resolveDestFolder(category: TitleCategory, refId: string, snapshot?: Record<string, any>): string {
+        if(snapshot && typeof snapshot.__filesRoot === 'string' && snapshot.__filesRoot.trim()) {
+            return snapshot.__filesRoot.trim();
+        }
+        const base = 'uploads';
+        switch(category) {
+            case 'User': return path.posix.join(base, 'users', refId);
+            case 'Tenant': return path.posix.join(base, 'tenants', refId);
+            case 'Property': return path.posix.join(base, 'properties', refId);
+            case 'Lease': return path.posix.join(base, 'leases', refId);
+            case 'Agent': return path.posix.join(base, 'agents', refId);
+            case 'Developer': return path.posix.join(base, 'developers', refId);
+            case 'Maintenance': return path.posix.join(base, 'maintenance', refId);
+            case 'Complaint': return path.posix.join(base, 'complaints', refId);
+            case 'Team': return path.posix.join(base, 'teams', refId);
+            case 'Registration': return path.posix.join(base, 'registrations', refId);
+            case 'Payment': return path.posix.join(base, 'payments', refId);
+            case 'System': return path.posix.join(base, 'system', refId);
+            default: return path.posix.join(base, 'misc', refId);
+        }
+    }
+
+    /**
+     * Generic RESTORE:
+     * 1) read JSON from recyclebin
+     * 2) insert into DB with deleted flags cleared
+     * 3) move media folder back under /public/<dest>
+     * 4) purge recyclebin copy
+     */
+    private async restoreGeneric(
+        category: TitleCategory,
+        refId: string,
+        metadata: Record<string, any>,
+        session?: ClientSession,
+        incomingSnapshot?: Record<string, any>
+    ): Promise<DispatchResult> {
+        // 1) model lookup
+        const Model = this.getModelFor(category);
+        if(!Model) return {ok: false, message: `${category} model unavailable`};
+
+        // 2) prefer recyclebin copy; fallback to payload snapshot
+        const fileSnap = await this.bin.readSnapshot(category, refId);
+        const payload = (fileSnap.ok && fileSnap.data) ? fileSnap.data : (incomingSnapshot ?? null);
+        if(!payload) return {ok: false, message: `No snapshot found in recyclebin for ${category}/${refId}`};
+
+        // 3) clear deletion flags and (optionally) _id strategy
+        const {_id, ...rest} = payload;
+        const toInsert = {
+            ...rest,
+            deleted: false,
+            deletedAt: null,
+            deletedBy: null,
+        };
+
+        // If you want to keep the same _id, replace with: const [doc] = await Model.create([{ _id, ...toInsert }], ...)
+        const [doc] = await (Model as any).create([toInsert], session ? {session} : undefined);
+
+        // 4) move media back
+        try {
+            const destRel = this.resolveDestFolder(category, String(doc._id), payload);
+            await this.bin.restoreFolder(category, refId, destRel);
+        } catch(e) {
+            console.warn(`[restore:${category}] Media move warning:`, e);
+        }
+
+        // 5) purge recyclebin copy
+        try {await this.bin.purge(category, refId);} catch {}
+
+        return {
+            ok: true,
+            message: `${category} restored`,
+            restored: {_id: doc._id},
+            rooms: this.roomsOnRestore(category.toLowerCase(), metadata),
+        };
+    }
+
+    /**
+     * Generic HARD DELETE:
+     * - purge recyclebin copy
+     * - remove original dest folder under /public if it exists (safe + force)
+     */
+    private async hardDeleteGeneric(
+        category: TitleCategory,
+        refId: string,
+        metadata: Record<string, any>
+    ): Promise<DispatchResult> {
+        // remove recyclebin copy
+        await this.bin.purge(category, refId);
+
+        // attempt to cleanup original dest folder too
+        try {
+            const destRel = this.resolveDestFolder(category, refId);
+            const abs = path.resolve(process.cwd(), 'public', destRel);
+            await fsp.rm(abs, {recursive: true, force: true});
+        } catch(e) {
+            console.warn(`[hardDelete:${category}] leftover public folder cleanup warning:`, e);
+        }
+
+        return {ok: true, message: `${category} permanently deleted`, rooms: this.roomsOnDelete(category.toLowerCase(), metadata)};
+    }
+
+    // ---------------------- Category restore (thin wrappers) --------------------
+
+    private async restoreUser({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {if(!refId) return {ok: false, message: 'refId required for restore'}; return this.restoreGeneric('User', refId, metadata, s, snapshot);}
+    private async restoreTenant({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {if(!refId) return {ok: false, message: 'refId required for restore'}; return this.restoreGeneric('Tenant', refId, metadata, s, snapshot);}
+    private async restoreProperty({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {if(!refId) return {ok: false, message: 'refId required for restore'}; return this.restoreGeneric('Property', refId, metadata, s, snapshot);}
+    private async restoreLease({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {if(!refId) return {ok: false, message: 'refId required for restore'}; return this.restoreGeneric('Lease', refId, metadata, s, snapshot);}
+    private async restoreAgent({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {if(!refId) return {ok: false, message: 'refId required for restore'}; return this.restoreGeneric('Agent', refId, metadata, s, snapshot);}
+    private async restoreDeveloper({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {if(!refId) return {ok: false, message: 'refId required for restore'}; return this.restoreGeneric('Developer', refId, metadata, s, snapshot);}
+    private async restoreMaintenance({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {if(!refId) return {ok: false, message: 'refId required for restore'}; return this.restoreGeneric('Maintenance', refId, metadata, s, snapshot);}
+    private async restoreComplaint({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {if(!refId) return {ok: false, message: 'refId required for restore'}; return this.restoreGeneric('Complaint', refId, metadata, s, snapshot);}
+    private async restoreTeam({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {if(!refId) return {ok: false, message: 'refId required for restore'}; return this.restoreGeneric('Team', refId, metadata, s, snapshot);}
+
+    // ---------------------- Category hard delete (thin wrappers) ----------------
+
+    private async hardDeleteUser({refId, metadata}: {refId: string; metadata: any}) {return this.hardDeleteGeneric('User', refId, metadata);}
+    private async hardDeleteTenant({refId, metadata}: {refId: string; metadata: any}) {return this.hardDeleteGeneric('Tenant', refId, metadata);}
+    private async hardDeleteProperty({refId, metadata}: {refId: string; metadata: any}) {return this.hardDeleteGeneric('Property', refId, metadata);}
+    private async hardDeleteLease({refId, metadata}: {refId: string; metadata: any}) {return this.hardDeleteGeneric('Lease', refId, metadata);}
+    private async hardDeleteAgent({refId, metadata}: {refId: string; metadata: any}) {return this.hardDeleteGeneric('Agent', refId, metadata);}
+    private async hardDeleteDeveloper({refId, metadata}: {refId: string; metadata: any}) {return this.hardDeleteGeneric('Developer', refId, metadata);}
+    private async hardDeleteMaintenance({refId, metadata}: {refId: string; metadata: any}) {return this.hardDeleteGeneric('Maintenance', refId, metadata);}
+    private async hardDeleteComplaint({refId, metadata}: {refId: string; metadata: any}) {return this.hardDeleteGeneric('Complaint', refId, metadata);}
+    private async hardDeleteTeam({refId, metadata}: {refId: string; metadata: any}) {return this.hardDeleteGeneric('Team', refId, metadata);}
+
+    // ===================== Room helpers for live updates ========================
+
+    private roomsOnRestore(kind: string, meta: Record<string, any> = {}): string[] {
+        const rooms: string[] = [];
+        if(typeof meta?.byUser === 'string' && meta.byUser.trim()) rooms.push(`user:${meta.byUser.trim()}`);
+        rooms.push(`domain:${kind}`);
+        rooms.push('role:admin');
+        return rooms;
+    }
+
+    private roomsOnDelete(kind: string, meta: Record<string, any> = {}): string[] {
+        const rooms: string[] = [];
+        if(typeof meta?.byUser === 'string' && meta.byUser.trim()) rooms.push(`user:${meta.byUser.trim()}`);
+        rooms.push(`domain:${kind}`);
+        rooms.push('role:admin');
+        return rooms;
+    }
+
+    // ====================== Change streams (optional) ===========================
+
+    watchChanges(io?: import('socket.io').Namespace) {
+        // Watch Notification inserts and fan-out automatically
+        try {
+            const notifStream = NotificationModel.watch([], {fullDocument: 'updateLookup'});
+            notifStream.on('change', async (ev: any) => {
+                if(ev.operationType === 'insert') {
+                    const n = ev.fullDocument as NotificationEntity;
+                    await this.deliverToAudience(n);
+                    if(io) {
+                        const rooms = this.roomsForAudience(n.audience as any);
+                        rooms.forEach(room => io.to(room).emit('notification.new', n));
+                    }
+                }
+            });
+        } catch {
+            /* change streams unavailable — ok */
+        }
+
+        // Example: on user changes, backfill notification states as needed
+        try {
+            const userStream = UserModel.watch([], {fullDocument: 'updateLookup'});
+            userStream.on('change', async (ev: any) => {
+                if(ev.operationType === 'insert') {
+                    const u = ev.fullDocument as IUser;
+                    if(u?.isActive) await this.backfillForUser(u.username, u.role);
+                } else if(ev.operationType === 'update' && ev.updateDescription?.updatedFields) {
+                    const updated = ev.updateDescription.updatedFields;
+                    if('role' in updated || 'isActive' in updated) {
+                        const u = ev.fullDocument as IUser;
+                        if(!u) return;
+                        if(u.isActive) await this.backfillForUser(u.username, u.role);
+                        else await this.archiveAll(u.username);
+                    }
+                }
+            });
+        } catch {
+            /* change streams unavailable — ok */
+        }
+    }
+
+    // ============================= Backfill helpers =============================
+
     async backfillForUser(username: string, role: Role, session?: ClientSession) {
         const audienceFilter = this.buildAudienceFilter(username, role);
-        const masters = await NotificationModel.find(audienceFilter, {_id: 1}).lean<
-            Pick<NotificationEntity, '_id'>[]
-        >();
+        const masters = await NotificationModel.find(audienceFilter, {_id: 1}).lean<{_id: Types.ObjectId}[]>();
         if(!masters.length) return 0;
 
-        const ops = masters.map((m) => ({
+        const ops = masters.map(m => ({
             updateOne: {
                 filter: {username, notificationId: String(m._id)},
                 update: {$setOnInsert: {deliveredAt: new Date(), isRead: false, isArchived: false}},
                 upsert: true,
             },
         }));
-        if(!ops.length) return 0;
 
+        if(!ops.length) return 0;
         const res = await UserNotificationModel.bulkWrite(ops, this.bulkOpts(session));
         return (res.upsertedCount ?? 0) + (res.modifiedCount ?? 0);
     }
 
-    /**
-     * Push a historic/older notification to all eligible users now.
-     * Useful after audience policy changes or migrations.
-     */
     async backfillForAllUsersForNotification(notificationId: string, session?: ClientSession) {
         const n = await NotificationModel.findById(notificationId).lean<NotificationEntity | null>();
         if(!n) return 0;
@@ -583,96 +843,29 @@ export default class NotificationService {
         return 1;
     }
 
-    /**
-     * Keep per-user states aligned with role transitions.
-     * - Backfill for the new role.
-     * - (Optional) Remove states for masters no longer visible to the user.
-     */
     async syncForUserRoleChange(
         username: string,
-        oldRole: Role,
+        _oldRole: Role,
         newRole: Role,
         removeNoLongerEligible = false,
         session?: ClientSession
     ) {
-        // Always add rows the user SHOULD see now
         await this.backfillForUser(username, newRole, session);
 
         if(!removeNoLongerEligible) return {added: true, removed: false};
 
-        // Optionally remove any states not in the new audience
-        const inScopeNow = await NotificationModel.find(this.buildAudienceFilter(username, newRole), {_id: 1}).lean<
-            {_id: Types.ObjectId}[]
-        >();
-        const keep = new Set(inScopeNow.map((x) => String(x._id)));
+        const inScopeNow = await NotificationModel
+            .find(this.buildAudienceFilter(username, newRole), {_id: 1})
+            .lean<{_id: Types.ObjectId}[]>();
 
+        const keep = new Set(inScopeNow.map(x => String(x._id)));
         const existing = await UserNotificationModel.find({username}).select({notificationId: 1}).lean();
 
-        const removeIds = existing.map((s) => s.notificationId).filter((id) => !keep.has(String(id)));
-
+        const removeIds = existing.map(s => s.notificationId).filter(id => !keep.has(String(id)));
         if(removeIds.length) {
-            await UserNotificationModel.deleteMany(
-                {username, notificationId: {$in: removeIds}},
-                this.deleteOpts(session)
-            );
+            await UserNotificationModel.deleteMany({username, notificationId: {$in: removeIds}}, this.deleteOpts(session));
         }
 
         return {added: true, removed: removeIds.length > 0};
-    }
-
-    /**
-     * Optional: live auto-monitoring via Mongo Change Streams.
-     * - New notifications → deliver immediately + emit to rooms
-     * - New users / role changes → backfill/sync
-     * Call once at app bootstrap if your MongoDB supports change streams.
-     */
-    watchChanges(io?: import('socket.io').Namespace) {
-        // Watch notifications
-        try {
-            const notifStream = NotificationModel.watch([], {fullDocument: 'updateLookup'});
-            notifStream.on('change', async (ev: any) => {
-                if(ev.operationType === 'insert') {
-                    const n = ev.fullDocument as NotificationEntity;
-
-                    // Deliver to all eligible users now
-                    await this.deliverToAudience(n);
-
-                    // Emit to rooms so FE can update in real-time
-                    if(io) {
-                        const rooms = this.roomsForAudience(n.audience as any);
-                        rooms.forEach((room) => io.to(room).emit('notification.new', n));
-                    }
-                }
-            });
-        } catch {
-            // Change streams not available (standalone mongo, tests, etc.) — safe to ignore
-        }
-
-        // Watch users (new accounts, role toggles, activation changes)
-        try {
-            const userStream = UserModel.watch([], {fullDocument: 'updateLookup'});
-            userStream.on('change', async (ev: any) => {
-                if(ev.operationType === 'insert') {
-                    const u = ev.fullDocument as IUser;
-                    if(u?.isActive) {
-                        await this.backfillForUser(u.username, u.role);
-                    }
-                } else if(ev.operationType === 'update' && ev.updateDescription?.updatedFields) {
-                    const updated = ev.updateDescription.updatedFields;
-                    if('role' in updated || 'isActive' in updated) {
-                        const u = ev.fullDocument as IUser;
-                        if(!u) return;
-                        if(u.isActive) {
-                            await this.backfillForUser(u.username, u.role);
-                        } else {
-                            // If deactivated, you may prefer archiving their state rows
-                            await this.archiveAll(u.username);
-                        }
-                    }
-                }
-            });
-        } catch {
-            // Change streams not available — safe to ignore
-        }
     }
 }

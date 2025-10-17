@@ -50,10 +50,7 @@ export interface FILE {
 
 export interface TokenViceData {
   ageInMinutes: number;
-  date?: string;
   file: FILE;
-  token?: string;
-  folder?: string;
 }
 
 export interface ScannedFileRecordJSON {
@@ -61,12 +58,8 @@ export interface ScannedFileRecordJSON {
   tenant: string;
   token: string;
   files: TokenViceData[];
-  folder: string;
 }
 
-export interface TenantScannedFilesDataJSON {
-  [tenantUsername: string]: ScannedFileRecordJSON[];
-}
 
 // Structure of country code info for phone numbers
 export interface CountryCodes {
@@ -316,7 +309,6 @@ const ScannedFileRecordSchema = new Schema<ScannedFileRecordJSON>({
   tenant: {type: String, required: true},
   token: {type: String, required: true},
   files: {type: [TokenViceDataSchema], default: []},
-  folder: {type: String, required: true},
 });
 
 

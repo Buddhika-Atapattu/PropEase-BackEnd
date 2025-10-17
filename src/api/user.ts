@@ -6,7 +6,7 @@ import express, {
   Router,
 } from "express";
 import * as path from "path";
-import * as fs from "fs-extra";
+import fse from 'fs-extra';
 import {UserModel, IUser} from "../models/user.model";
 import * as Argon2 from "argon2";
 import multer from "multer";
@@ -35,6 +35,13 @@ import {Config} from '../configs/config';
 dotenv.config();
 
 export default class UserRoute {
+
+
+  private readonly DEFAULT_PATH = path.join(__dirname, '../../public/uploads/users/');
+  private readonly RECYCLE_PATH = path.join(__dirname, '../../public/recyclebin/users/');
+  private readonly DEFAULT_URL = 'uploads/users';
+  private readonly RECYCLE_URL = 'recyclebin/users';
+
   private router: express.Router;
   private readonly twilioClient: Twilio = twilio(Config.twilio.sid, Config.twilio.token);
   constructor () {
@@ -66,7 +73,25 @@ export default class UserRoute {
     return await Argon2.hash(password);
   }
 
+  //<=========== HELPER ============>
+  private isSafeSegment(seg: string): boolean {
+    return /^[A-Za-z0-9._-]+$/.test(seg);
+  }
+
+  private parseJSON<T = any>(value: unknown, fallback: T): T {
+    try {
+      if(typeof value !== 'string') return fallback;
+      return JSON.parse(value) as T;
+    } catch {
+      return fallback;
+    }
+  }
+  //<=========== END HELPER ============>
+
+
   //<====== VERIFY THE LOGIN USER ============>
+
+
 
   private getUserData() {
     this.router.post(
@@ -357,400 +382,389 @@ export default class UserRoute {
 
   //<========== CREATE USER ==========>
   private createUser(): void {
+    // 1) In-memory storage (we immediately convert → .webp)
     const storage = multer.memoryStorage();
-    const allowedTypes = [
-      "image/jpeg",
-      "image/png",
-      "image/webp",
-      "image/gif",
-      "image/jpg",
-      "image/ico",
-    ];
+
+    // 2) Only allow images; cap size (e.g., 5MB)
+    const allowedTypes = new Set([
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+      'image/gif',
+      'image/jpg',
+      'image/x-icon',
+      'image/vnd.microsoft.icon',
+      'image/ico',
+    ]);
 
     const upload = multer({
       storage,
-      fileFilter: (req, file, cb) => {
-        if(allowedTypes.includes(file.mimetype)) {
-          cb(null, true);
-        } else {
-          cb(new Error("Only image files are allowed"));
-        }
+      limits: {fileSize: 5 * 1024 * 1024}, // 5 MB
+      fileFilter: (_req, file, cb) => {
+        if(allowedTypes.has(file.mimetype)) cb(null, true);
+        else cb(new Error('Only image files are allowed'));
       },
     });
+
     this.router.post(
-      "/create-user",
-      upload.fields([{name: "userimage", maxCount: 1}]),
-      async (req: Request, res: Response, next: NextFunction) => {
+      '/create-user',
+      upload.fields([{name: 'userimage', maxCount: 1}]),
+      async (req: Request, res: Response, _next: NextFunction): Promise<void> => {
         try {
-          const files = req.files as {
-            [fieldname: string]: Express.Multer.File[];
-          };
-
+          // 3) Extract uploaded image & basic fields
+          const files = req.files as Record<string, Express.Multer.File[] | undefined>;
           const image = files?.userimage?.[0];
-          const username = req.body.username;
+          const username = String(req.body.username || '').trim();
 
-          const io = req.app.get('io');
-
-          if(!username) throw new Error("Invalid username");
-
-          if(image) {
-            // Create user-specific directory
-            const userDir = path.join(
-              __dirname,
-              "../../public/users",
-              username
-            );
-
-            //Define the image path
-            const imagePath = path.join(userDir, "image.webp");
-            fs.mkdirSync(userDir, {recursive: true});
-
-            // Convert and save image as .webp
-            const imagetoWebp = await sharp(image.buffer)
-              .webp({quality: 80})
-              .toFile(imagePath);
-
-            //Checking the image is converted and stored
-            if(imagetoWebp) {
-              //Define the local Variables
-              const host = req.get("host");
-              const protocol = req.protocol;
-              const baseUrl = `${protocol}://${host}`;
-              const verifyEmail = JSON.parse(req.body.verifyEmail);
-              const token = verifyEmail.token;
-              const verifyDate = new Date(verifyEmail.expires);
-              const otp = this.generateOTP();
-              const otpValidTimeJson = JSON.parse(req.body.otpValidTime);
-              const otpValidTime = otpValidTimeJson.otpValidTime;
-              const email = req.body.email.trim();
-              const phone = req.body.phoneNumber.trim();
-              const publicPath = `${baseUrl}/users/${username}/image.webp`;
-              const pass = req.body.userPassword.trim();
-              if(!pass) throw new Error("Password is required");
-
-              //Hashing the password
-              const password = await this.hashPassword(pass);
-              const access = JSON.parse(req.body.access);
-
-              //Calling the method to verify the email
-              if(email) {
-                const sendEmail = await this.sendVerificationEmail(
-                  email,
-                  token
-                );
-                if(!sendEmail) {
-                  throw new Error("Failed to send email");
-                }
-              } else {
-                throw new Error("Email is required");
-              }
-
-              //Calling the method to verify the phone number *USE THIS ONLY FOR THE PRODUCTION*
-              // if (phone) {
-              //   const sendPhone = await this.verifyPhoneNumber(phone, otp);
-              //   if (!sendPhone) {
-              //     throw new Error("Failed to send phone number");
-              //   }
-              // } else {
-              //   throw new Error("Contact number is required");
-              // }
-
-              if(!phone) throw new Error("Contact number is required");
-
-              const newUser = new UserModel({
-                name: req.body.name,
-                username: req.body.username,
-                email: req.body.email,
-                dateOfBirth: req.body.dateOfBirth,
-                age: req.body.age,
-                gender: req.body.gender,
-                bio: req.body.bio,
-                phoneNumber: phone,
-                image: publicPath,
-                role: req.body.role,
-                isActive: req.body.isActive,
-                address: {
-                  street: req.body.street,
-                  houseNumber: req.body.houseNumber,
-                  city: req.body.city,
-                  postcode: req.body.postcode,
-                  country: req.body.country,
-                  stateOrProvince: req.body.stateOrProvince,
-                },
-                access: access,
-                password: password,
-                otpToken: otp,
-                otpValidTime: otpValidTime,
-                emailVerificationToken: token,
-                emailVerificationTokenExpires: verifyDate,
-                creator: req.body.creator,
-                createdAt: new Date(),
-                updatedAt: new Date(),
-              });
-              const save = await newUser.save();
-              if(save) {
-                // Notify all admins about the new property added
-                const notificationService = new NotificationService();
-                // get the Socket.IO instance you attached in app.ts (this.app.set('io', this.io))
-                const io = req.app.get('io') as import('socket.io').Server;
-
-                await notificationService.createNotification(
-                  {
-                    title: 'New User',
-                    body: `User ${newUser.name} has registered.`,
-                    type: 'create',          // OK (your entity allows custom strings)
-                    severity: 'info',
-                    audience: {mode: 'role', roles: ['admin', 'manager', 'operator']}, // target all admins
-                    channels: ['inapp', 'email'], // keep if you'll email later; harmless otherwise
-                    metadata: {
-                      newUserData: {
-                        name: req.body.name,
-                        username: req.body.username,
-                        email: req.body.email,
-                        dateOfBirth: req.body.dateOfBirth,
-                        age: req.body.age,
-                        gender: req.body.gender,
-                        bio: req.body.bio,
-                        phoneNumber: phone,
-                        image: publicPath,
-                        role: req.body.role,
-                        isActive: req.body.isActive,
-                        address: {
-                          street: req.body.street,
-                          houseNumber: req.body.houseNumber,
-                          city: req.body.city,
-                          postcode: req.body.postcode,
-                          country: req.body.country,
-                          stateOrProvince: req.body.stateOrProvince,
-                        },
-                        access: access,
-                        emailVerificationTokenExpires: verifyDate,
-                        creator: req.body.creator,
-                        createdAt: new Date(),
-                        updatedAt: new Date(),
-                      },
-                      createdBy: req.body.creator,
-                      createdAt: new Date(),
-                      updatedAt: new Date(),
-                    },
-                    // DO NOT send createdAt here; NotificationService sets it
-                  },
-                  // Real-time emit callback: send to each audience room
-                  (rooms, payload) => {
-                    rooms.forEach((room) => {
-                      io.to(room).emit('notification.new', payload);
-                    });
-                  }
-                );
-
-                res.status(201).json({
-                  status: "success",
-                  message: "User created successfully",
-                  user: newUser,
-                });
-              } else {
-                throw new Error("Failed to create user");
-              }
-            } else {
-              throw new Error("Failed to convert image");
-            }
-          } else {
-            throw new Error("Image is required");
+          // 4) Basic input guards
+          if(!username) {res.status(400).json({status: 'error', message: 'Invalid username'}); return;}
+          if(!this.isSafeSegment(username)) {
+            res.status(400).json({status: 'error', message: 'Invalid username format'});
+            return;
           }
-        } catch(error) {
-          console.error("User creation error:", error);
-          res.status(500).json({
-            status: "error",
-            message: "Failed to create user: " + error,
+          if(!image) {res.status(400).json({status: 'error', message: 'Image is required'}); return;}
+
+          // 5) Unique username check up-front (avoid writing files if user exists)
+          const exists = await UserModel.exists({username});
+          if(exists) {
+            res.status(409).json({status: 'error', message: 'Username already exists'});
+            return;
+          }
+
+          // 6) Build the absolute path for the final image: /public/uploads/users/<username>/image.webp
+          const imagePath = path.join(this.DEFAULT_PATH, username, 'image.webp');
+          await fse.ensureDir(path.dirname(imagePath)); // make sure folder exists
+
+          // 7) Convert uploaded image buffer → .webp (quality 80)
+          await sharp(image.buffer).webp({quality: 80}).toFile(imagePath);
+
+          // 8) Construct a public URL to the image (served by express.static /public)
+          const baseUrl = `${req.protocol}://${req.get('host')}`;
+          const publicImageUrl = `${baseUrl}/${this.DEFAULT_URL}/${encodeURIComponent(username)}/image.webp`;
+
+          // 9) Parse/validate structured fields (safely)
+          const verifyEmailObj = this.parseJSON<{token?: string; expires?: string}>(req.body.verifyEmail, {});
+          const token = String(verifyEmailObj.token || '').trim();
+          const verifyDate = verifyEmailObj.expires ? new Date(verifyEmailObj.expires) : new Date(Date.now() + 24 * 3600_000);
+
+          const otpValidTimeObj = this.parseJSON<{otpValidTime?: number}>(req.body.otpValidTime, {});
+          const otpValidTime = Number.isFinite(otpValidTimeObj.otpValidTime) ? otpValidTimeObj.otpValidTime! : 300; // seconds
+
+          const access = this.parseJSON<any>(req.body.access, {}); // adjust type if you have one
+
+          // 10) Primitive field guards
+          const email = String(req.body.email || '').trim();
+          const phone = String(req.body.phoneNumber || '').trim();
+          const passRaw = String(req.body.userPassword || '').trim();
+          if(!email) {res.status(400).json({status: 'error', message: 'Email is required'}); return;}
+          if(!this.isSafeSegment(email)) {
+            res.status(400).json({status: 'error', message: 'Invalid email format'});
+            return;
+          }
+          if(!phone) {
+            res.status(400).json({status: 'error', message: 'Phone number is required'});
+            return;
+          }
+          if(!passRaw) {
+            res.status(400).json({status: 'error', message: 'Password is required'});
+            return;
+          }
+
+          // 11) (Optional) Send verification email first — fail fast if email service is down
+          if(token) {
+            const ok = await this.sendVerificationEmail(email, token);
+            if(!ok) {res.status(502).json({status: 'error', message: 'Failed to send verification email'}); return;}
+          }
+
+          // 12) Hash password & generate OTP
+          const password = await this.hashPassword(passRaw);
+          const otp = this.generateOTP();
+
+          // 13) Construct and save the user
+          const newUser = new UserModel({
+            name: String(req.body.name || '').trim(),
+            username,
+            email,
+            dateOfBirth: req.body.dateOfBirth || null,
+            age: req.body.age || null,
+            gender: req.body.gender || null,
+            bio: req.body.bio || '',
+            phoneNumber: phone,
+            image: publicImageUrl, // public URL to the uploaded .webp
+            role: req.body.role || 'user',
+            isActive: req.body.isActive ?? true,
+            address: {
+              street: req.body.street || '',
+              houseNumber: req.body.houseNumber || '',
+              city: req.body.city || '',
+              postcode: req.body.postcode || '',
+              country: req.body.country || '',
+              stateOrProvince: req.body.stateOrProvince || '',
+            },
+            access,
+            password,
+            otpToken: otp,
+            otpValidTime,
+            emailVerificationToken: token || undefined,
+            emailVerificationTokenExpires: verifyDate,
+            creator: req.body.creator || 'system',
+            createdAt: new Date(),
+            updatedAt: new Date(),
           });
+
+          await newUser.save();
+
+          // 14) Send a notification to back-office roles
+          const notificationService = new NotificationService();
+          const io = req.app.get('io') as import('socket.io').Server;
+
+          await notificationService.createNotification(
+            {
+              title: 'New User',
+              body: `User ${newUser.name || newUser.username} has registered.`,
+              type: 'create',
+              severity: 'info',
+              audience: {mode: 'role', roles: ['admin', 'manager', 'operator']},
+              channels: ['inapp', 'email'],
+              metadata: {
+                username: newUser.username,
+                email: newUser.email,
+                phoneNumber: newUser.phoneNumber,
+                image: newUser.image,
+                role: newUser.role,
+                createdAt: newUser.createdAt,
+                creator: newUser.creator,
+              },
+            },
+            (rooms, payload) => rooms.forEach((room) => io.to(room).emit('notification.new', payload))
+          );
+
+          // 15) Done
+          res.status(201).json({
+            status: 'success',
+            message: 'User created successfully',
+            user: newUser,
+          });
+          return;
+        } catch(error: any) {
+          console.error('[create-user] error:', error?.message || error);
+          res.status(500).json({
+            status: 'error',
+            message: `Failed to create user: ${error?.message || 'Internal error'}`,
+          });
+          return;
         }
       }
     );
   }
+  //<========== END CREATE USER =========>
 
   //<=========== UPDATE USER ==============>
   private updateUser(): void {
+    // 1) Store uploads in memory (we’ll convert to .webp and write ourselves)
     const storage = multer.memoryStorage();
 
-    const allowedTypes = [
-      "image/jpeg",
-      "image/png",
-      "image/webp",
-      "image/gif",
-      "image/jpg",
-      "image/ico",
-    ];
+    // 2) Strict file types + size limit
+    const allowedTypes = new Set([
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+      'image/gif',
+      'image/jpg',
+      'image/x-icon',
+      'image/vnd.microsoft.icon',
+      'image/ico',
+    ]);
 
     const upload = multer({
       storage,
-      fileFilter: (req, file, cb) => {
-        if(allowedTypes.includes(file.mimetype)) {
-          cb(null, true);
-        } else {
-          cb(new Error("Only image files are allowed"));
-        }
+      limits: {fileSize: 5 * 1024 * 1024}, // 5MB cap; tune as you wish
+      fileFilter: (_req, file, cb) => {
+        if(allowedTypes.has(file.mimetype)) cb(null, true);
+        else cb(new Error('Only image files are allowed'));
       },
     });
 
     this.router.put(
-      "/user-update/:username",
-      upload.fields([{name: "userimage", maxCount: 1}]),
-      async (req: Request<{username: string}>, res: Response) => {
+      '/user-update/:username',
+      upload.fields([{name: 'userimage', maxCount: 1}]),
+      async (req: Request<{username: string}>, res: Response, _next: NextFunction): Promise<void> => {
         try {
-          const username = req.params.username?.trim();
-
-          if(!username) throw new Error("Invalid username");
-
-          const isUserExist = await UserModel.findOne({username});
-
-          if(!isUserExist) {
-            throw new Error("User not found");
+          // 3) Pull the username from URL and validate quickly
+          const username = String(req.params.username || '').trim();
+          if(!username) {res.status(400).json({status: 'error', message: 'Invalid username'}); return;}
+          if(!this.isSafeSegment(username)) {
+            res.status(400).json({status: 'error', message: 'Invalid username format'});
+            return;
           }
 
-          const files = req.files as {
-            [fieldname: string]: Express.Multer.File[];
-          };
+          // 4) Fetch the user once (we’ll reuse it for defaults)
+          const user = await UserModel.findOne({username});
+          if(!user) {res.status(404).json({status: 'error', message: 'User not found'}); return;}
 
+          // 5) Pull optional image file (multer format)
+          const files = req.files as Record<string, Express.Multer.File[] | undefined>;
           const image = files?.userimage?.[0];
 
-          const host = req.get("host");
-          const protocol = req.protocol;
-          let imageUrl: string;
+          // 6) Compute a public URL base (served by express.static('/public'))
+          const baseUrl = `${req.protocol}://${req.get('host')}`;
 
+          // 7) If an image was uploaded, convert → .webp and place at:
+          //    /public/uploads/users/<username>/image.webp
+          let imageUrl = user.image; // default to existing
           if(image) {
-            const userDir = path.join(
-              __dirname,
-              `../../public/users/${username}`
-            );
-            const imagePath = path.join(userDir, "image.webp");
+            const imagePath = path.join(this.DEFAULT_PATH, username, 'image.webp');
+            // Ensure the directory exists (IMPORTANT: use dirname, not the file path)
+            await fse.ensureDir(path.dirname(imagePath));
 
-            if(fs.existsSync(userDir)) {
-              fs.rmSync(userDir, {recursive: true, force: true});
-            }
+            // Remove old file if present (safe & optional)
+            await fse.remove(imagePath).catch(() => { /* ignore */});
 
-            fs.mkdirSync(userDir, {recursive: true});
-
+            // Convert the new image to webp at quality 80
             await sharp(image.buffer).webp({quality: 80}).toFile(imagePath);
 
-            imageUrl = `${protocol}://${host}/users/${username}/image.webp`;
-          } else {
-            imageUrl = req.body.userimage?.trim();
+            // Build the new public URL
+            imageUrl = `${baseUrl}/${this.DEFAULT_URL}/${encodeURIComponent(username)}/image.webp`;
           }
 
-          // Compare old and new email
-          const oldEmail = req.body.oldEmail?.trim();
-          const newEmail = req.body.email?.trim();
+          // 8) Pull new values from body (they may be missing)
+          const body = req.body as Record<string, any>;
 
-          let verifyToken: {token?: string; expires?: string} = {};
-          let otpValidTimeJson: {otpValidTime?: string} = {};
+          // 9) Handle potential email change (oldEmail vs email)
+          const oldEmail = String(body.oldEmail ?? user.email ?? '').trim();
+          const newEmail = String(body.email ?? user.email ?? '').trim();
+          const emailChanged = oldEmail && newEmail && oldEmail !== newEmail;
 
-          if(oldEmail !== newEmail) {
-            try {
-              verifyToken = JSON.parse(req.body.otpToken || "{}");
-              otpValidTimeJson = JSON.parse(req.body.otpValidTime || "{}");
-            } catch {
-              verifyToken = {};
-              otpValidTimeJson = {};
-            }
+          // 10) If email changed, read verification payloads safely
+          let verifyToken = this.parseJSON<{token?: string; expires?: string}>(body.otpToken, {});
+          let otpValidTimeJson = this.parseJSON<{otpValidTime?: number}>(body.otpValidTime, {});
+          // normalize expires date
+          const tokenExpires =
+            verifyToken.expires ? new Date(verifyToken.expires) : undefined;
+
+          // 11) Optional password change: hash only if provided and non-empty
+          const pwRaw = typeof body.password === 'string' ? body.password.trim() : '';
+          let hashedPassword: string | undefined;
+          if(pwRaw) {
+            hashedPassword = await this.hashPassword(pwRaw);
           }
 
-          const pw = req.body.password.trim();
+          // 12) Access object (if provided as JSON string)
+          const access = this.parseJSON<any>(body.access, user.access);
 
-          const access = JSON.parse(req.body.access || "{}");
-
-          const data: any = {
-            name: req.body.name?.trim(),
-            username: username.trim(),
-            email: newEmail,
-            dateOfBirth: req.body.dateOfBirth?.trim(),
-            age: req.body.age?.trim(),
-            gender: req.body.gender?.trim(),
-            bio: req.body.bio?.trim(),
-            phoneNumber: req.body.phoneNumber?.trim(),
-            image: imageUrl,
-            role: req.body.role?.trim(),
-            isActive: req.body.isActive?.trim(),
-            address: {
-              street: req.body.street?.trim(),
-              houseNumber: req.body.houseNumber?.trim(),
-              city: req.body.city?.trim(),
-              postcode: req.body.postcode?.trim(),
-              country: req.body.country?.trim(),
-              stateOrProvince: req.body.stateOrProvince?.trim(),
-            },
-            access,
-            creator: req.body.creator?.trim(),
-            updator: req.body.updator?.trim(),
+          // 13) Prepare update doc. We only include properties that were actually provided,
+          //     so we don’t overwrite existing fields with undefined.
+          //     For primitives we check `in body` rather than truthiness.
+          const updates: Record<string, any> = {
             updatedAt: new Date(),
           };
 
-          if(pw) {
-            data.password = await this.hashPassword(pw);
+          const setField = (key: string, val: unknown) => {updates[key] = val;};
+
+          if('name' in body) setField('name', String(body.name ?? '').trim());
+          // never change username here intentionally — it’s your identity key
+          setField('username', username); // keep the same username
+
+          if('email' in body) setField('email', newEmail);
+
+          if('dateOfBirth' in body) setField('dateOfBirth', body.dateOfBirth ?? null);
+          if('age' in body) setField('age', body.age ?? null);
+          if('gender' in body) setField('gender', body.gender ?? null);
+          if('bio' in body) setField('bio', String(body.bio ?? '').trim());
+          if('phoneNumber' in body) setField('phoneNumber', String(body.phoneNumber ?? '').trim());
+
+          // image: always update to new URL if changed; otherwise keep existing
+          setField('image', imageUrl);
+
+          if('role' in body) setField('role', String(body.role ?? '').trim());
+
+          // isActive: accept "true"/"false" or boolean
+          if('isActive' in body) {
+            const raw = body.isActive;
+            const boolVal = typeof raw === 'boolean' ? raw : String(raw).trim().toLowerCase() === 'true';
+            setField('isActive', boolVal);
           }
 
+          // address (merge, do not nuke the object entirely if only some fields sent)
+          const addrUpdate: Record<string, any> = {};
+          const addrKeys = ['street', 'houseNumber', 'city', 'postcode', 'country', 'stateOrProvince'] as const;
+          for(const k of addrKeys) {
+            if(k in body) addrUpdate[k] = String(body[k] ?? '').trim();
+          }
+          if(Object.keys(addrUpdate).length > 0) setField('address', {...(user.address || {}), ...addrUpdate});
 
-          // Append token & time if email was changed
-          if(oldEmail !== newEmail) {
-            Object.assign(data, {
-              otpToken: verifyToken?.token,
-              otpValidTime: otpValidTimeJson?.otpValidTime,
-              emailVerificationToken: verifyToken?.token,
-              emailVerificationTokenExpires: verifyToken?.expires
-                ? new Date(verifyToken.expires)
-                : undefined,
-            });
+          // access (object)
+          if('access' in body) setField('access', access);
+
+          if('creator' in body) setField('creator', String(body.creator ?? '').trim());
+          if('updator' in body) setField('updator', String(body.updator ?? '').trim());
+
+          // Password (only if provided)
+          if(hashedPassword) setField('password', hashedPassword);
+
+          // If email changed, update verification-related fields
+          if(emailChanged) {
+            setField('otpToken', verifyToken?.token);
+            if(typeof otpValidTimeJson?.otpValidTime === 'number') {
+              setField('otpValidTime', otpValidTimeJson.otpValidTime);
+            }
+            setField('emailVerificationToken', verifyToken?.token);
+            setField('emailVerificationTokenExpires', tokenExpires);
           }
 
+          // 14) Perform the update
           const updatedUser = await UserModel.findOneAndUpdate(
             {username},
-            data,
+            {$set: updates},
             {new: true, upsert: false}
           );
 
           if(!updatedUser) {
-            throw new Error("User not found or update failed");
+            res.status(404).json({status: 'error', message: 'User not found or update failed'});
+            return;
           }
 
-          // Notify all admins about the user update
+          // 15) Notify admins/operators/managers that a user was updated
           const notificationService = new NotificationService();
-          // get the Socket.IO instance you attached in app.ts (this.app.set('io', this.io))
           const io = req.app.get('io') as import('socket.io').Server;
-          // Create notification
+
           await notificationService.createNotification(
             {
               title: 'Update User',
-              body: `User ${updatedUser.name} has been updated.`,
-              type: 'update',          // OK (your entity allows custom strings)
+              body: `User ${updatedUser.name || updatedUser.username} has been updated.`,
+              type: 'update',
               severity: 'info',
-              audience: {mode: 'role', roles: ['admin', 'manager', 'operator']}, // target admins
-              channels: ['inapp', 'email'], // keep if you'll email later; harmless otherwise
+              audience: {mode: 'role', roles: ['admin', 'manager', 'operator']},
+              channels: ['inapp', 'email'],
               metadata: {
-                UpdatedUserData: data,
-                updatedBy: req.body.updator.trim(),
+                username: updatedUser.username,
+                email: updatedUser.email,
+                phoneNumber: updatedUser.phoneNumber,
+                image: updatedUser.image,
+                role: updatedUser.role,
                 updatedAt: new Date(),
+                updatedBy: (typeof body.updator === 'string' ? body.updator.trim() : undefined) || 'system',
+                // include only “diff-like” info if you want; here we include the fields we set
+                appliedUpdates: updates,
               },
-              // DO NOT send createdAt here; NotificationService sets it    
             },
-            // Real-time emit callback: send to each audience room
-            (rooms, payload) => {
-              rooms.forEach((room) => {
-                io.to(room).emit('notification.new', payload);
-              });
-            }
+            (rooms, payload) => rooms.forEach((room) => io.to(room).emit('notification.new', payload))
           );
 
-
+          // 16) Respond OK
           res.status(200).json({
-            status: "success",
-            message: "User updated successfully",
+            status: 'success',
+            message: 'User updated successfully',
             user: updatedUser,
           });
+          return;
         } catch(error: any) {
-          console.error("User update error:", error.message);
+          console.error('[user-update] error:', error?.message || error);
           res.status(500).json({
-            status: "error",
-            message: error.message || "Internal server error",
+            status: 'error',
+            message: error?.message || 'Internal server error',
           });
+          return;
         }
       }
     );
@@ -959,152 +973,181 @@ export default class UserRoute {
   }
 
   //<============= END GET USER BY TOKEN =============>
-
   //<============= USER DOCUMENT UPLOAD =============>
-  private uploadDocument() {
-    const allowedTypes = [
-      // Word Documents
-      "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
-      "application/rtf",
+  private uploadDocument(): void {
+    // Allow common office docs, PDFs, text, CSV/TSV, ODF, and images
+    const allowedTypes = new Set<string>([
+      // Word
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
+      'application/rtf',
 
-      // Excel Documents
-      "application/vnd.ms-excel",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
-      "text/csv",
-      "text/tab-separated-values",
+      // Excel
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.template',
+      'text/csv',
+      'text/tab-separated-values',
 
-      // PowerPoint Documents
-      "application/vnd.ms-powerpoint",
-      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-      "application/vnd.openxmlformats-officedocument.presentationml.template",
+      // PowerPoint
+      'application/vnd.ms-powerpoint',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/vnd.openxmlformats-officedocument.presentationml.template',
 
-      // OpenDocument Formats
-      "application/vnd.oasis.opendocument.text",
-      "application/vnd.oasis.opendocument.spreadsheet",
-      "application/vnd.oasis.opendocument.presentation",
+      // OpenDocument
+      'application/vnd.oasis.opendocument.text',
+      'application/vnd.oasis.opendocument.spreadsheet',
+      'application/vnd.oasis.opendocument.presentation',
 
-      // PDF
-      "application/pdf",
+      // PDF & plain text
+      'application/pdf',
+      'text/plain',
 
-      // Plain Text
-      "text/plain",
+      // Images
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+      'image/gif',
+      'image/jpg',
+      'image/svg+xml',
+      'image/x-icon',
+      'image/vnd.microsoft.icon',
+    ]);
 
-      // Common Image Types
-      "image/jpeg",
-      "image/png",
-      "image/webp",
-      "image/gif",
-      "image/jpg",
-      "image/ico",
-      "image/svg+xml",
-    ];
-
+    // Disk storage so large docs don’t sit in memory; define where & how to name
     const storage = multer.diskStorage({
-      destination: (req, file, cb) => {
-        const username = req.params.username;
+      destination: async (req, file, cb) => {
+        try {
+          // Username is defined in route params
+          const username = String(req.params.username || '').trim();
 
-        if(!username)
-          return cb(new Error("Username is required in form data."), "");
+          // Validate presence + restrict characters (avoid weird folder names)
+          if(!username) return cb(new Error('Username is required in URL.'), '');
+          if(!this.isSafeSegment(username)) return cb(new Error('Invalid username format.'), '');
 
-        const uploadPath = path.join(
-          __dirname,
-          `../../public/uploads/${username}/documents`
-        );
-        fs.mkdirSync(uploadPath, {recursive: true});
-        cb(null, uploadPath);
-      },
-      filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-        const sanitized = file.originalname.replace(/\s+/g, "_");
-        cb(null, `${uniqueSuffix}-${sanitized}`);
-      },
-    });
+          // Build absolute path: /public/uploads/users/<username>/documents
+          // NOTE: DEFAULT_PATH is already absolute (…/public/uploads/users/)
+          const uploadPath = path.join(this.DEFAULT_PATH, username, 'documents');
 
-    const upload = multer({
-      storage,
-      fileFilter: (req, file, cb) => {
-        if(allowedTypes.includes(file.mimetype)) {
-          cb(null, true);
-        } else {
-          cb(new Error(`File type not allowed: ${file.mimetype}`));
+          // Ensure folder exists
+          await fse.ensureDir(uploadPath);
+
+          // Hand the path back to multer
+          cb(null, uploadPath);
+        } catch(e: any) {
+          cb(e instanceof Error ? e : new Error(String(e)), '');
         }
       },
+      filename: (_req, file, cb) => {
+        // Make a safe filename: replace spaces, strip path-like bits, keep extension
+        const original = path.basename(file.originalname).replace(/\s+/g, '_');
+        const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+        cb(null, `${unique}-${original}`);
+      },
     });
 
+    // Multer instance with file type checks + size limits
+    const upload = multer({
+      storage,
+      limits: {
+        fileSize: 20 * 1024 * 1024, // 20MB per file; adjust to your needs
+        files: 10,                   // limit number of files per request
+      },
+      fileFilter: (_req, file, cb) => {
+        if(allowedTypes.has(file.mimetype)) cb(null, true);
+        else cb(new Error(`File type not allowed: ${file.mimetype}`));
+      },
+    });
+
+    // Route: POST /user-document-upload/:username
     this.router.post(
-      "/user-document-upload/:username",
-      upload.array("files", 10),
-      async (req: Request<{username: string}>, res: Response) => {
+      '/user-document-upload/:username',
+      upload.array('files', 10), // field name "files" on the form; up to 10 files
+      async (req: Request<{username: string}>, res: Response): Promise<any> => {
         try {
-          if(req.files) {
-            console.log(req.body);
-            const username = req.body.username;
-            if(!username) throw new Error("Username is required.");
-
-            const uploader = req.body.uploader;
-            if(!uploader) throw new Error("Uploader is required.");
-
-            const files = req.files as Express.Multer.File[];
-            if(!files || files.length === 0) {
-              throw new Error("No files uploaded.");
-            }
-
-            const savedFiles = files.map((file) => ({
-              originalName: file.originalname,
-              storedName: file.filename,
-              mimeType: file.mimetype,
-              size: file.size,
-              path: file.path,
-              extension: path.extname(file.originalname),
-              download: `${username}/documents/${file.filename}`,
-              URL: `${req.protocol}://${req.get(
-                "host"
-              )}/uploads/${username}/documents/${file.filename}`,
-              uploader: uploader,
-            }));
-
-            // Check if username exists in DB
-            let doc = await UserDocument.findOne({username});
-
-            if(doc) {
-              // Append new files
-              doc.files.push(...savedFiles);
-            } else {
-              // Create new document
-              doc = new UserDocument({
-                username,
-                files: savedFiles,
-              });
-            }
-
-            const save = await doc.save();
-            if(save) {
-              res.status(200).json({
-                status: "success",
-                message: "Files uploaded and saved successfully.",
-                fileCount: files.length,
-                uploadedFiles: savedFiles,
-              });
-            } else {
-              throw new Error("Failed to save files.");
-            }
-          } else {
-            throw new Error("Files are required.");
+          // 1) Ensure files were uploaded
+          const files = req.files as Express.Multer.File[] | undefined;
+          if(!files || files.length === 0) {
+            return res.status(400).json({status: 'error', message: 'No files uploaded.'});
           }
-        } catch(error) {
-          console.error("Upload error:", error);
-          res.status(500).json({
-            status: "error",
-            message: "Server error: " + error,
+
+          // 2) Use the username from the URL (not the body)
+          const username = String(req.params.username || '').trim();
+          if(!username) return res.status(400).json({status: 'error', message: 'Username is required.'});
+          if(!this.isSafeSegment(username)) {
+            return res.status(400).json({status: 'error', message: 'Invalid username format.'});
+          }
+
+          // 3) (Optional) Validate the user actually exists in DB
+          const userExists = await UserModel.exists({username});
+          if(!userExists) {
+            // Optionally: clean up uploaded files if the user doesn't exist
+            await Promise.all(files.map(f => fse.remove(f.path).catch(() => {})));
+            return res.status(404).json({status: 'error', message: 'User not found.'});
+          }
+
+          // 4) Who uploaded? (optional meta)
+          const uploader = String((req.body?.uploader ?? '')).trim() || 'system';
+
+          // 5) Build public URLs pointing to /uploads/users/<username>/documents/<file>
+          const baseUrl = `${req.protocol}://${req.get('host')}`;
+
+          const savedFiles = files.map((file) => ({
+            originalName: file.originalname,
+            storedName: file.filename,
+            mimeType: file.mimetype,
+            size: file.size,
+            // WARNING: file.path is absolute and should not be sent to the client if you’re concerned about disclosure.
+            // Keep it for internal use only; comment out if you don’t want to expose it.
+            path: file.path,
+            extension: path.extname(file.originalname),
+            download: `${username}/documents/${file.filename}`, // your relative pattern (if you need it internally)
+            URL: `${baseUrl}/${this.DEFAULT_URL}/${encodeURIComponent(username)}/documents/${encodeURIComponent(file.filename)}`,
+            uploader,
+            uploadedAt: new Date(),
+          }));
+
+          // 6) Upsert UserDocument record for this username
+          //    If you use a schema like: { username: string, files: FileMeta[] }
+          const doc = await UserDocument.findOneAndUpdate(
+            {username},
+            {$push: {files: {$each: savedFiles}}},
+            {upsert: true, new: true}
+          );
+
+          if(!doc) {
+            // Super-rare: findOneAndUpdate could return null only on unexpected errors
+            return res.status(500).json({status: 'error', message: 'Failed to save files.'});
+          }
+
+          // 7) All good
+          return res.status(200).json({
+            status: 'success',
+            message: 'Files uploaded and saved successfully.',
+            fileCount: files.length,
+            uploadedFiles: savedFiles.map(f => ({
+              originalName: f.originalName,
+              storedName: f.storedName,
+              mimeType: f.mimeType,
+              size: f.size,
+              extension: f.extension,
+              URL: f.URL,
+              uploader: f.uploader,
+              uploadedAt: f.uploadedAt,
+            })),
+          });
+        } catch(error: any) {
+          // If multer threw a fileFilter/storage error, it will land here
+          console.error('[user-document-upload] error:', error?.message || error);
+          return res.status(500).json({
+            status: 'error',
+            message: error?.message || 'Server error',
           });
         }
       }
     );
   }
-
   //<============= END USER DOCUMENT UPLOAD =============>
 
   //<============= GET USER DOCUMENTS =============>
@@ -1169,80 +1212,133 @@ export default class UserRoute {
   //<============= DELETE USER BY USERNAME =============>
   private deleteUserByUsername() {
     this.router.delete(
-      "/user-delete/:username/:deletedBy",
-      async (req: Request<{username: string; deletedBy: string}>, res: Response): Promise<any> => {
+      '/user-delete/:username/:deletedBy',
+      async (req: Request<{username: string; deletedBy: string}>, res: Response): Promise<void> => {
         try {
-          const username = req.params.username?.trim() || req.body?.username?.trim() || req.query?.username?.toString().trim();
-          const deletedBy = req.params.deletedBy?.trim() || req.body?.deletedBy?.trim() || req.query?.deletedBy?.toString().trim();
+          // 1) Collect inputs from params/body/query (first non-empty wins)
+          const username =
+            req.params.username?.trim() ||
+            req.body?.username?.trim() ||
+            (req.query?.username as string | undefined)?.trim();
 
-          if(!username) throw new Error("Username is required");
-          if(!deletedBy) throw new Error("Deletor is required");
+          const deletedBy =
+            req.params.deletedBy?.trim() ||
+            req.body?.deletedBy?.trim() ||
+            (req.query?.deletedBy as string | undefined)?.trim();
 
+          if(!username) throw new Error('Username is required');
+          if(!deletedBy) throw new Error('Deletor is required');
 
-          const user = await UserModel.findOne({username});
-
-          const recycleBinPath = path.join(__dirname, `../../public/recyclebin/users/${username}/`);
-          const userImagePath = path.join(__dirname, `../../public/users/${username}/`);
-          const userFilesPath = path.join(__dirname, `../../public/uploads/${username}/`);
-
-          await fs.mkdir(recycleBinPath, {recursive: true});
-
-          // backup user doc
-          if(user) {
-            const userJsonPath = path.join(recycleBinPath, "user.json");
-            fs.writeFileSync(
-              userJsonPath,
-              JSON.stringify(user.toObject ? user.toObject() : user, null, 2),
-              "utf-8"
-            );
+          // 2) Path traversal safety
+          if(!this.isSafeSegment(username)) {
+            res.status(400).json({status: 'error', message: 'Invalid username format'});
+            return;
           }
 
-          // move assets to recycle bin
-          if(fs.existsSync(userImagePath)) {
-            await fs.copy(userImagePath, path.join(recycleBinPath, "user-image"));
-            fs.rmSync(userImagePath, {recursive: true, force: true});
-          }
-          if(fs.existsSync(userFilesPath)) {
-            await fs.copy(userFilesPath, path.join(recycleBinPath, "user-documents"));
-            fs.rmSync(userFilesPath, {recursive: true, force: true});
+          // 3) Build URLs for previewing "deleted" image (optional)
+          //    Note: trust proxy must be true for correct protocol behind proxies.
+          const baseUrl = `${req.protocol}://${req.get('host')}`;
+
+          // 4) Look up the user first (so we can snapshot data.json)
+          const userDoc = await UserModel.findOne({username}).lean();
+
+          // 5) Compute all important paths — IMPORTANT: do NOT prepend __dirname again;
+          //    your class constants are already absolute.
+          const recycleUserDir = path.join(this.RECYCLE_PATH, username);                  // /public/recyclebin/users/<username>/
+          const userImagePath = path.join(this.DEFAULT_PATH, username, 'image.webp');    // /public/uploads/users/<username>/image.webp
+          const userDocsPath = path.join(this.DEFAULT_PATH, username, 'documents');     // /public/uploads/users/<username>/documents/
+          const deletedCopyDir = path.join(this.DEFAULT_PATH, 'deleted', username);       // /public/uploads/users/deleted/<username>/
+          const deletedCopyImage = path.join(deletedCopyDir, 'image.webp');                 // /public/uploads/users/deleted/<username>/image.webp
+          const deletedImageURL = `${baseUrl}/${this.DEFAULT_URL}/deleted/${encodeURIComponent(username)}/image.webp`;
+
+          // 6) Make sure recyclebin dir exists
+          await fse.ensureDir(recycleUserDir);
+
+          // 7) Write data.json snapshot into recyclebin (if we found the user)
+          if(userDoc) {
+            const userJsonPath = path.join(recycleUserDir, 'data.json');
+            await fse.writeJson(userJsonPath, userDoc, {spaces: 2});
           }
 
-          // clear relationships
+          // 8) Copy a "deleted preview" of image into /uploads/users/deleted/<username>/image.webp (optional UX)
+          //    This gives admins an easy place to quickly preview what was deleted.
+          if(await fse.pathExists(userImagePath)) {
+            await fse.ensureDir(deletedCopyDir);
+            await fse.copy(userImagePath, deletedCopyImage, {overwrite: true});
+          }
+
+          // 9) Move/copy user assets into recyclebin, preserving structure
+          //    - We COPY first (safer), then remove the original to avoid data loss on mid-operation crash.
+          //    image.webp -> /recyclebin/users/<username>/image.webp
+          if(await fse.pathExists(userImagePath)) {
+            await fse.copy(userImagePath, path.join(recycleUserDir, 'image.webp'), {overwrite: true});
+            await fse.remove(userImagePath);
+          }
+
+          //    documents/ -> /recyclebin/users/<username>/documents
+          if(await fse.pathExists(userDocsPath)) {
+            await fse.copy(userDocsPath, path.join(recycleUserDir, 'documents'), {overwrite: true});
+            await fse.remove(userDocsPath);
+          }
+
+          // 10) Clear relationships referencing this user (example)
           await PropertyModel.updateMany({owner: username}, {$unset: {owner: 1}});
-          await PropertyModel.updateMany({"addedBy.username": username}, {$unset: {addedBy: {}}});
+          await PropertyModel.updateMany({'addedBy.username': username}, {$unset: {addedBy: {} as any}});
 
-          // notify
-          if(user) {
+          // 11) Emit a notification for admins/operators/managers
+          if(userDoc) {
             const notificationService = new NotificationService();
             const io = req.app.get('io') as import('socket.io').Server;
 
             await notificationService.createNotification(
               {
                 title: 'Delete User',
-                body: `User ${user.name} has been deleted.`,
+                body: `User ${userDoc.name ?? username} has been deleted.`,
                 type: 'delete',
                 severity: 'warning',
-                audience: {mode: 'role', usernames: [username], roles: ['admin', 'manager', 'operator']},
+                audience: {
+                  mode: 'role',
+                  roles: ['admin', 'manager', 'operator'], // broadcast to back-office staff
+                },
                 channels: ['inapp', 'email'],
                 metadata: {
-                  deletedUserData: user,
+                  username,
+                  userId: String(userDoc._id ?? ''),
                   deletedBy,
                   deletedAt: new Date().toISOString(),
-                  recyclebinPath: recycleBinPath
+                  recyclebinUrl: `${this.RECYCLE_URL}/${encodeURIComponent(username)}/`, // relative web url (blocked to public, but informative metadata)
+                  deletedImageURL,
                 },
               },
-              (rooms, payload) => {rooms.forEach(r => io.to(r).emit('notification.new', payload));}
+              (rooms, payload) => {
+                rooms.forEach((r) => io.to(r).emit('notification.new', payload));
+              }
             );
           }
 
-          // delete user
-          const deleted = await UserModel.findOneAndDelete({username});
-          if(!deleted) throw new Error("User not found");
+          // 12) Finally remove the user document from DB
+          const deleted = await UserModel.findOneAndDelete({username}).lean();
+          if(!deleted) {
+            // If this happens, you still have a snapshot + media in recyclebin for safety
+            res.status(404).json({status: 'error', message: 'User not found'});
+            return;
+          }
 
-          return res.status(200).json({status: "success", message: "User deleted successfully"});
+          // 13) Return success
+          res.status(200).json({
+            status: 'success',
+            message: 'User deleted successfully',
+            data: {
+              username,
+              recyclebin: path.join(this.RECYCLE_URL, username, '/'),  // relative web path (blocked by your middleware)
+              deletedImageURL,
+            },
+          });
+          return;
         } catch(err: any) {
-          console.error(err?.message || err);
-          return res.status(500).json({status: "error", message: err?.message || "Internal error"});
+          console.error('[user-delete] error:', err?.message || err);
+          res.status(500).json({status: 'error', message: err?.message || 'Internal error'});
+          return;
         }
       }
     );

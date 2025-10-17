@@ -1,16 +1,14 @@
 // File: src/api/property.ts
-// Import necessary modules and types
-import express, {
-  Express,
-  Request,
-  Response,
-  NextFunction,
-  Router,
-} from "express";
-import crypto from "crypto";
+// Class-based Property API with all helpers encapsulated as private methods/fields
+
+import express, {Request, Response, Router} from "express";
 import dotenv from "dotenv";
-import {UserDocument} from "../models/file-upload.model";
-import {UserModel} from "../models/user.model";
+import multer from "multer";
+import sharp from "sharp";
+import path from "path";
+import fs from "fs";
+import fse from "fs-extra";
+import NotificationService from "../services/notification.service";
 import {
   PropertyModel,
   IProperty,
@@ -19,66 +17,93 @@ import {
   AddedBy,
   GoogleMapLocation,
 } from "../models/property.model";
-import fs from "fs";
-import path from "path";
-import multer from "multer";
-import sharp from "sharp";
-import NotificationService from '../services/notification.service';
-import fsp from 'fs/promises';
-import {Types} from "mongoose";
-import {Http2ServerResponse} from "http2";
-import {HttpMethod} from "twilio/lib/interfaces";
-
-
 
 dotenv.config();
 
-interface filterDialogData {
-  minPrice: number;
-  maxPrice: number;
-  beds: string;
-  bathrooms: string;
-  amenities: string[];
-  type: string;
-  status: string;
-}
-
-interface UploadedImage {
+type UploadedImage = {
   originalname: string;
   filename: string;
   mimetype: string;
   size: number;
   imageURL: string;
-}
+};
 
-interface UploadedDocument {
+type UploadedDocument = {
   originalname: string;
   filename: string;
   mimetype: string;
   size: number;
   documentURL: string;
-}
+};
 
 export default class Property {
-  // Define the router for the property API
-  // This will handle the routing for the property API
+  /* ------------------------------- Paths/URLs ------------------------------- */
+  private readonly DEFAULT_UPLOAD_PATH = path.join(
+    __dirname,
+    "../../public/uploads/properties/"
+  );
+  private readonly DEFAULT_RECYCLE_PATH = path.join(
+    __dirname,
+    "../../public/recyclebin/properties/"
+  );
+  private readonly DEFAULT_PROPERTY_URL = "uploads/properties";
+  private readonly DEFAULT_RECYCLE_URL = "recyclebin/properties";
+
+  /* ------------------------------- Enum sets -------------------------------- */
+  private readonly PROPERTY_TYPES = new Set([
+    "apartment",
+    "house",
+    "villa",
+    "commercial",
+    "land",
+    "studio",
+  ]);
+  private readonly LISTINGS = new Set(["sale", "rent", "sold", "rented"]);
+  private readonly FURNISHING = new Set([
+    "furnished",
+    "semi-furnished",
+    "unfurnished",
+  ]);
+  private readonly CONDITIONS = new Set([
+    "new",
+    "old",
+    "excellent",
+    "good",
+    "needs renovation",
+  ]);
+  private readonly OWNERSHIP = new Set([
+    "freehold",
+    "leasehold",
+    "company",
+    "trust",
+  ]);
+  private readonly AVAILABILITY = new Set([
+    "available",
+    "not available",
+    "pending",
+    "ready to move",
+  ]);
+  private readonly VERIFICATION = new Set([
+    "pending",
+    "verified",
+    "rejected",
+    "approved",
+  ]);
+  private readonly PRIORITY = new Set(["high", "medium", "low"]);
+  private readonly STATUS = new Set(["draft", "published", "archived"]);
+
+  /* -------------------------------- Router --------------------------------- */
   private router: express.Router;
-  // This is the constructor for the Property class
-  // It initializes the router and sets up the routes
+
   constructor () {
     this.router = express.Router();
-    // Insert property and used muter for file handle
-    this.insertProperty();
+
     this.test();
-    // Get all properties with pagination, search and filter
+    this.insertProperty();
     this.getAllPropertiesWithPagination();
-    // Get single property by ID
     this.getSinglePropertyById();
-    // Delete the property by ID
     this.deleteProperty();
-    // Update the property by ID and used muter to file handle
     this.updateProperty();
-    // Get all properties
     this.getAllProperties();
   }
 
@@ -86,54 +111,35 @@ export default class Property {
     return this.router;
   }
 
+  /* =============================== ROUTES =================================== */
+
   private test() {
-    this.router.get("/test", (req: Request, res: Response) => {
-      // This is a test route to check if the server is running
-      // It returns a simple message
-      res.status(200).json({
-        status: "success",
-        message: "Property API is working",
-      });
+    this.router.get("/test", (_req, res) => {
+      res.status(200).json({status: "success", message: "Property API is working"});
     });
   }
-  //<==================== INSERT PROPERTY ====================>
-  // This method is used to insert a property into the database
+
+  // ------------------------------ INSERT -------------------------------------
   private insertProperty(): void {
-    // Define allowed document types
-    // You can add more types as per your requirements
     const allowedDocumentTypes = [
-      // Word Documents
       "application/msword",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
       "application/rtf",
-
-      // Excel Documents
       "application/vnd.ms-excel",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
       "text/csv",
       "text/tab-separated-values",
-
-      // PowerPoint Documents
       "application/vnd.ms-powerpoint",
       "application/vnd.openxmlformats-officedocument.presentationml.presentation",
       "application/vnd.openxmlformats-officedocument.presentationml.template",
-
-      // OpenDocument Formats
       "application/vnd.oasis.opendocument.text",
       "application/vnd.oasis.opendocument.spreadsheet",
       "application/vnd.oasis.opendocument.presentation",
-
-      // PDF
       "application/pdf",
-
-      // Plain Text
       "text/plain",
     ];
-
-    // Define allowed images types
-    // You can add more types as per your requirements
     const allowedImageTypes = [
       "image/jpeg",
       "image/png",
@@ -144,506 +150,199 @@ export default class Property {
       "image/svg+xml",
     ];
 
-    // Define the storage engine for multer
-    // This will save the files to the disk
     const storage = multer.diskStorage({
-      // Define the destination for the uploaded files
-      // The destination is determined based on the field name
       destination: (req, file, cb) => {
-        // Check if the property ID is provided in the form data
-        // This is used to create a unique folder for each property
-        const propertyID = req.params.propertyID;
-
-        // If property ID is not provided, return an error
-        // This is important to ensure that files are saved in the correct location
-        if(!propertyID) {
-          // If property ID is not provided, return an error
-          // This is important to ensure that files are saved in the correct location
-          return cb(new Error("Property ID is required in form data."), "");
-        }
-
-        // Define the upload path based on the field name
-        // This will create a unique folder for each property
-        let uploadPath = "";
-        // Check the field name to determine the upload path
-        // If the field name is "images", save to the images folder
-        if(file.fieldname === "images") {
-          // Create the upload path for images
-          // This will create a unique folder for each property
-          uploadPath = path.join(
-            __dirname,
-            `../../public/propertyUploads/${propertyID}/tempImages/`
-          );
-          // If the field name is "documents", save to the documents folder
-          // This will create a unique folder for each property
-        } else if(file.fieldname === "documents") {
-          // Create the upload path for documents
-          // This will create a unique folder for each property
-          uploadPath = path.join(
-            __dirname,
-            `../../public/propertyUploads/${propertyID}/documents/`
-          );
-          // If the field name is not recognized, return an error
-          // This is important to ensure that files are saved in the correct location
-        } else {
-          // If the field name is not recognized, return an error
-          // This is important to ensure that files are saved in the correct location
+        const propertyID = this.s(req.params.propertyID);
+        if(!propertyID)
+          return cb(new Error("Property ID is required in URL param."), "");
+        const base = path.join(this.DEFAULT_UPLOAD_PATH, propertyID);
+        const uploadPath =
+          file.fieldname === "images"
+            ? path.join(base, "tempImages")
+            : file.fieldname === "documents"
+              ? path.join(base, "documents")
+              : "";
+        if(!uploadPath)
           return cb(new Error("Unexpected field: " + file.fieldname), "");
-        }
-        // Create the upload path if it doesn't exist
-        // This is important to ensure that files are saved in the correct location
-        fs.mkdirSync(uploadPath, {recursive: true});
-        // Return the upload path to multer
-        // This is important to ensure that files are saved in the correct location
+        fse.mkdirpSync(uploadPath);
         cb(null, uploadPath);
       },
-      // Define the filename for the uploaded files
-      // This will create a unique filename for each file
-      filename: (req, file, cb) => {
-        // Create a unique filename using the current timestamp and a random number
-        // This is important to ensure that files are saved in the correct location
-        const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-        // Replace spaces in the original filename with underscores
-        // This is important to ensure that files are saved in the correct location
-        const sanitized = file.originalname.replace(/\s+/g, "_");
-        // Create the final filename using the unique suffix and the sanitized original filename
-        // This is important to ensure that files are saved in the correct location
-        cb(null, `${uniqueSuffix}-${sanitized}`);
+      filename: (_req, file, cb) => {
+        const u = Date.now() + "-" + Math.round(Math.random() * 1e9);
+        cb(null, `${u}-${file.originalname.replace(/\s+/g, "_")}`);
       },
     });
 
-    // Define the file filter for multer
-    // This will check the file type and size before uploading
-    const fileFilter = (req: Request, file: Express.Multer.File, cb: any) => {
-      // Check if the image type is allowed
-      // This is important to ensure that files are saved in the correct location
+    const fileFilter: multer.Options["fileFilter"] = (_req, file, cb) => {
       if(
         file.fieldname === "images" &&
         allowedImageTypes.includes(file.mimetype)
-      ) {
-        // If the image type is allowed, return true
-        // This is important to ensure that files are saved in the correct location
-        cb(null, true);
-        // Check if the document type is allowed
-        // This is important to ensure that files are saved in the correct location
-      } else if(
+      )
+        return cb(null, true);
+      if(
         file.fieldname === "documents" &&
         allowedDocumentTypes.includes(file.mimetype)
-      ) {
-        // If the document type is allowed, return true
-        // This is important to ensure that files are saved in the correct location
-        cb(null, true);
-      } else {
-        // If the file type is not allowed, return an error
-        // This is important to ensure that files are saved in the correct location
-        cb(new Error("File type not allowed: " + file.mimetype));
-      }
+      )
+        return cb(null, true);
+      return cb(
+        new Error(`File type not allowed for ${file.fieldname}: ${file.mimetype}`)
+      );
     };
 
-    // Create the multer instance with the defined storage and file filter
-    // This will check the file type and size before uploading
-    const upload = multer({storage, fileFilter});
+    const upload = multer({
+      storage,
+      fileFilter,
+      limits: {fileSize: 25 * 1024 * 1024, files: 40},
+    });
 
-    // Define the route for inserting a property
-    // This will handle the file upload and save the property to the database
     this.router.post(
       "/insert-property/:propertyID",
-      upload.fields([{name: "images"}, {name: "documents"}]),
-      async (
-        req: Request<{propertyID: string}>,
-        res: Response,
-        next: NextFunction
-      ): Promise<any> => {
+      upload.fields([
+        {name: "images", maxCount: 30},
+        {name: "documents", maxCount: 20},
+      ]),
+      async (req: Request<{propertyID: string}>, res: Response): Promise<void> => {
         try {
-          // Get the property ID from the form data
-          const propertyID = req.body.id;
-
-
-
-          // Define the property files
-          const propertyFiles = req.files as
-            | {[fieldname: string]: Express.Multer.File[]}
-            | undefined;
-
-          // Check if the property files are provided in the form data
-          if(!propertyFiles) {
-            throw new Error("No property files were uploaded.");
-          }
-
-          // Check if the property ID is provided in the form data
+          const propertyID = this.s(req.params.propertyID);
           if(!propertyID) {
-            throw new Error("Property ID is required in form data.");
+            res
+              .status(400)
+              .json({status: "error", message: "Property ID missing in URL."});
+            return;
           }
 
-          // Define the property documents and images
-          const documents = propertyFiles?.documents;
-          const propertyImages = propertyFiles?.images;
-          // Define the property empty images and document arrays
+          // Build media arrays & convert images to .webp
+          const files = req.files as {[k: string]: Express.Multer.File[]} | undefined;
+          const imagesIn = files?.images ?? [];
+          const docsIn = files?.documents ?? [];
 
-          const Images: UploadedImage[] = [];
-          const Docs: UploadedDocument[] = [];
+          const images: UploadedImage[] = [];
+          const documents: UploadedDocument[] = [];
+          const conversions: Promise<void>[] = [];
 
-          // Array to hold promises
-          const conversionPromises: Promise<void>[] = [];
-
-          // Check if the property documents are provided
-          if(documents) {
-            // Loop through each document and create a file URL
-            for(const file of documents) {
-              // Create the file path for the document
-              // const filePath = path.join(
-              //   __dirname,
-              //   `../../public/propertyUploads/${propertyID}/documents/${file.filename}`
-              // );
-              // Create the file URL for the document
-              const fileURL = `${req.protocol}://${req.get(
-                "host"
-              )}/propertyUploads/${propertyID}/documents/${file.filename}`;
-              // Create the document object and push it to the documents array
-              Docs.push({
-                originalname: file.originalname.trim(),
-                filename: file.filename.trim(),
-                mimetype: file.mimetype.trim(),
-                size: file.size,
-                documentURL: fileURL.trim(),
-              });
-            }
-          } else {
-            //Throw new error No property documents were uploaded
-            throw new Error("No property documents were uploaded.");
-          }
-
-          // Check if the property images are provided
-          if(propertyImages) {
-            const convertDir = path.join(
-              __dirname,
-              `../../public/propertyUploads/${propertyID}/images/`
-            );
-
-            fs.mkdirSync(convertDir, {recursive: true});
-            // Loop through each image and create a file URL
-            for(const file of propertyImages) {
-              // Create the file path for the image
-              const ext = path.extname(file.filename);
-              const baseName = path.basename(file.filename, ext);
-
-              const convertedImagePath = path.join(
-                __dirname,
-                `../../public/propertyUploads/${propertyID}/images/${baseName}.webp`
-              );
-              const originalImagePath = file.path;
-
-              // Create the file URL for the image
-              const fileURL = `${req.protocol}://${req.get(
-                "host"
-              )}/propertyUploads/${propertyID}/images/${baseName}.webp`;
-
-              /*
-              All image conversions using sharp finish properly before deleting the temp folder,
-
-              Avoid the EBUSY error caused by open file handles,
-
-              Ensure correct .webp file naming and referencing,
-
-              Should move all conversion tasks into an array of Promises and await them using Promise.all(...) before proceeding to deletion.
-                          
-              */
-
-              // Push the conversion promise into the array and Reshape the image to a specific size
-              const conversionPromise = sharp(originalImagePath)
-                .webp({quality: 100})
-                .resize(800, 600, {
-                  fit: "inside",
-                  withoutEnlargement: true,
-                })
-                .toFile(convertedImagePath)
-                .then(() => {
-                  // console.log("WebP Image saved to:", convertedImagePath);
-                })
-                .catch((error) => {
-                  // console.error("Error converting image to WebP:", error);
-                });
-
-              // Create the image object and push it to the images array
-              Images.push({
-                originalname: file.originalname.trim(),
-                filename: `${baseName}.webp`,
-                mimetype: "image/webp",
-                size: file.size,
-                imageURL: fileURL.trim(),
-              });
-
-              conversionPromises.push(conversionPromise);
-            }
-          } else {
-            //Throw new error No property images were uploaded
-            throw new Error("No property images were uploaded.");
-          }
-
-          // Get the property details from the request body
-
-          //<============================= Oganizing the data to insert into the DB =============================>
-
-          const DbData = {
-            // Basic Property Details
-            id: propertyID.trim(),
-            title: req.body.title.trim(),
-            type: req.body.type.trim().toLowerCase(),
-            listing: req.body.listing.trim().toLowerCase(),
-            description: req.body.description.trim(),
-            // Basic Property Details
-
-            // Location Details
-            countryDetails: JSON.parse(req.body.countryDetails.trim()),
-            address: JSON.parse(req.body.address.trim()),
-            location:
-              typeof req.body.location === "string"
-                ? JSON.parse(req.body.location.trim())
-                : {},
-            // End Location Details
-
-            // Property Specifications
-            totalArea: Number(req.body.totalArea.trim()),
-            builtInArea: Number(req.body.builtInArea.trim()),
-            livingRooms: Number(req.body.livingRooms.trim()),
-            balconies: Number(req.body.balconies.trim()),
-            kitchen: Number(req.body.kitchen.trim()),
-            bedrooms: Number(req.body.bedrooms.trim()),
-            bathrooms: Number(req.body.bathrooms.trim()),
-            maidrooms: Number(req.body.maidrooms.trim()),
-            driverRooms: Number(req.body.driverRooms.trim()),
-            furnishingStatus: req.body.furnishingStatus.trim(),
-            totalFloors: Number(req.body.totalFloors.trim()),
-            numberOfParking: Number(req.body.numberOfParking.trim()),
-            // End Property Specifications
-
-            // Construction & Age
-            builtYear: Number(req.body.builtYear.trim()),
-            propertyCondition: req.body.propertyCondition.trim().toLowerCase(),
-            developerName: req.body.developerName.trim(),
-            projectName:
-              typeof req.body.projectName === "string"
-                ? req.body.projectName.trim()
-                : "",
-            ownerShipType: req.body.ownerShipType.trim().toLowerCase(),
-            // End Construction & Age
-
-            // Financial Details
-            price: Number(req.body.price.trim()),
-            currency: req.body.currency.trim(),
-            pricePerSqurFeet: Number(req.body.pricePerSqurFeet.trim()),
-            expectedRentYearly:
-              typeof req.body.expectedRentYearly === "string"
-                ? Number(req.body.expectedRentYearly.trim())
-                : 0,
-            expectedRentQuartely:
-              typeof req.body.expectedRentQuartely === "string"
-                ? Number(req.body.expectedRentQuartely.trim())
-                : 0,
-            expectedRentMonthly:
-              typeof req.body.expectedRentMonthly === "string"
-                ? Number(req.body.expectedRentMonthly.trim())
-                : 0,
-            expectedRentDaily:
-              typeof req.body.expectedRentDaily === "string"
-                ? Number(req.body.expectedRentDaily.trim())
-                : 0,
-            maintenanceFees: Number(req.body.maintenanceFees.trim()),
-            serviceCharges: Number(req.body.serviceCharges.trim()),
-            transferFees:
-              typeof req.body.transferFees === "string"
-                ? Number(req.body.transferFees.trim())
-                : 0,
-            availabilityStatus: req.body.availabilityStatus
-              .trim()
-              .toLowerCase(),
-            // End Financial Details
-
-            // Features & Amenities
-            featuresAndAmenities: JSON.parse(req.body.featuresAndAmenities),
-            // End Features & Amenities
-
-            // Media
-            images: Images,
-            documents: Docs,
-            videoTour:
-              typeof req.body.videoTour === "string"
-                ? req.body.videoTour.trim()
-                : "",
-            virtualTour:
-              typeof req.body.virtualTour === "string"
-                ? req.body.virtualTour.trim()
-                : "",
-            // End Media
-
-            // Listing Management
-            listingDate: new Date(req.body.listingDate.trim()).toISOString(),
-            availabilityDate:
-              typeof req.body.availabilityDate === "string"
-                ? new Date(req.body.availabilityDate.trim()).toISOString()
-                : null,
-            listingExpiryDate:
-              typeof req.body.listingExpiryDate === "string"
-                ? new Date(req.body.listingExpiryDate.trim()).toISOString()
-                : null,
-            rentedDate:
-              typeof req.body.rentedDate === "string" &&
-                req.body.rentedDate !== ""
-                ? new Date(req.body.rentedDate.trim()).toISOString()
-                : null,
-            soldDate:
-              typeof req.body.soldDate === "string" && req.body.soldDate !== ""
-                ? new Date(req.body.soldDate.trim()).toISOString()
-                : null,
-            addedBy: JSON.parse(req.body.addedBy.trim()),
-            owner: req.body.owner.trim(),
-            // End Listing Management
-
-            // Administrative & Internal Use
-            referenceCode: req.body.referenceCode.trim(),
-            verificationStatus: req.body.verificationStatus
-              .trim()
-              .toLowerCase(),
-            priority: req.body.priority.trim().toLowerCase(),
-            status: req.body.status.trim().toLowerCase(),
-            internalNote: req.body.internalNote.trim(),
-            // End Administrative & Internal Use
-          };
-
-          const insertToTheDB = new PropertyModel(DbData);
-          const insertedProperty = await insertToTheDB.save();
-
-
-
-          // Check if the property was inserted successfully
-
-          if(insertedProperty) {
-            // Notify all admins about the new property added
-            const notificationService = new NotificationService();
-            // Get the io instance from the app
-            const io = req.app.get('io');
-            await notificationService.createNotification(
-              {
-                title: 'New Property',
-                body: `A new property titled "${insertedProperty.title}" has been added. Please review and verify the listing.`,
-                type: 'create',          // OK (your entity allows custom strings)
-                severity: 'info',
-                audience: {mode: 'role', roles: ['admin', 'agent', 'manager', 'operator']}, // target all admins  
-                channels: ['inapp', 'email'], // keep if you'll email later; harmless otherwise
-                metadata: {newPropertyData: DbData},
-                // DO NOT send createdAt here; NotificationService sets it  
-              },
-              // Real-time emit callback: send to each audience room
-
-
-              (rooms, payload) => {
-                rooms.forEach((room) => {
-                  io.to(room).emit('notification.new', payload);
-                });
-              }
-            );
-
-
-
-            // Send susscess message
-            res.status(200).json({
-              status: "success",
-              message: "Property inserted successfully",
-              data: insertedProperty,
+          // Documents
+          for(const f of docsIn) {
+            documents.push({
+              originalname: f.originalname.trim(),
+              filename: f.filename.trim(),
+              mimetype: f.mimetype.trim(),
+              size: f.size,
+              documentURL: `${req.protocol}://${req.get("host")}/${this.DEFAULT_PROPERTY_URL}/${propertyID}/documents/${f.filename}`,
             });
+          }
 
-            // Wait until all the promise is resolved
-            await Promise.all(conversionPromises);
+          // Images (tempImages -> images/*.webp)
+          const outDir = path.join(this.DEFAULT_UPLOAD_PATH, propertyID, "images");
+          fse.mkdirpSync(outDir);
 
+          for(const f of imagesIn) {
+            const base = path.basename(f.filename, path.extname(f.filename));
+            const out = path.join(outDir, `${base}.webp`);
+            const url = `${req.protocol}://${req.get("host")}/${this.DEFAULT_PROPERTY_URL}/${propertyID}/images/${base}.webp`;
+
+            const p = sharp(f.path)
+              .webp({quality: 90})
+              .resize(1600, 1200, {fit: "inside", withoutEnlargement: true})
+              .toFile(out)
+              .then(() => void 0);
+            conversions.push(p);
+
+            images.push({
+              originalname: f.originalname.trim(),
+              filename: `${base}.webp`,
+              mimetype: "image/webp",
+              size: f.size,
+              imageURL: url,
+            });
+          }
+
+          await Promise.all(conversions);
+
+          // Validate payload strictly against model (insert mode)
+          const {data, errors} = this.buildValidatedPayload(req, {
+            images,
+            documents,
+            isUpdate: false,
+          });
+          data.id = propertyID; // enforce URL id
+
+          if(errors.length) {
             await this.deleteFolderWithRetry(
-              path.join(
-                __dirname,
-                `../../public/propertyUploads/${propertyID}/tempImages/`
-              )
+              path.join(this.DEFAULT_UPLOAD_PATH, propertyID, "tempImages")
             );
-          } else {
-            throw new Error("Property insertion failed.");
+            res
+              .status(400)
+              .json({status: "fail", message: "Validation failed", errors});
+            return;
           }
-        } catch(error) {
-          // Handle any errors that occur during the file upload or property insertion
-          if(error) {
-            console.error("Error occurred: ", error);
-            res.status(500).json({
-              status: "error",
-              message: "Error occured: " + error,
-            });
-          }
-        }
-      }
-    );
-  }
-  //<==================== END OF INSERT PROPERTY ====================>
 
-  //<==================== DRLETE PROPERTY TEMP IMAGES FOLDER ====================>
-  private async deleteFolderWithRetry(
-    folderPath: string,
-    retries: number = 5,
-    delayMs: number = 500
-  ): Promise<void> {
-    for(let attempt = 1; attempt <= retries; attempt++) {
-      try {
-        await fs.promises.rm(folderPath, {recursive: true, force: true});
-        console.log(`Deleted folder on attempt ${attempt}: ${folderPath}`);
-        return;
-      } catch(err: any) {
-        if(err.code === "EBUSY" || err.code === "EPERM") {
-          console.warn(
-            `Attempt ${attempt} failed to delete folder. Retrying in ${delayMs}ms...`
+          const inserted = await new PropertyModel(data as IProperty).save();
+
+          await this.deleteFolderWithRetry(
+            path.join(this.DEFAULT_UPLOAD_PATH, propertyID, "tempImages")
           );
-          await new Promise((res) => setTimeout(res, delayMs));
-        } else {
-          throw err; // Unexpected error, rethrow
+
+          // Notify
+          const notificationService = new NotificationService();
+          const io = req.app.get("io") as import("socket.io").Server;
+          await notificationService.createNotification(
+            {
+              title: "New Property",
+              body: `A new property "${inserted.title}" has been added.`,
+              type: "create",
+              severity: "info",
+              audience: {mode: "role", roles: ["admin", "agent", "manager", "operator"]},
+              channels: ["inapp", "email"],
+              metadata: {property: inserted},
+            },
+            (rooms, payload) => rooms.forEach((r) => io.to(r).emit("notification.new", payload))
+          );
+
+          res
+            .status(201)
+            .json({status: "success", message: "Property inserted successfully", data: inserted});
+        } catch(err: any) {
+          console.error("[insert-property] error:", err);
+          res
+            .status(500)
+            .json({status: "error", message: err?.message || "Internal server error"});
         }
       }
-    }
-
-    throw new Error(
-      `Failed to delete folder after ${retries} attempts: ${folderPath}`
     );
   }
 
-  //<==================== END DRLETE PROPERTY TEMP IMAGES FOLDER ====================>
-
-  //<==================== GET ALL PROPERTIES WITH THE PAGINATION ====================>
+  // --------------------- GET ALL (pagination + filters) ----------------------
   private getAllPropertiesWithPagination(): void {
     this.router.get(
       "/get-all-properties-with-pagination/:start/:end/",
-      async (
-        req: Request<{
-          start: string;
-          end: string;
-        }>,
-        res: Response
-      ) => {
+      async (req: Request<{start: string; end: string}>, res: Response) => {
         try {
-          const {start, end} = req.params;
-          const safeStart = Math.max(0, parseInt(start, 10));
-          const safeEnd = Math.max(1, parseInt(end, 10));
-          const priorityOrder = {high: 1, medium: 2, low: 3};
-
-          const search = req.query.search as string | "";
-          const filter = req.query.filter as string | "";
-
-          const safeSearch =
-            typeof search === "string" && search.trim() !== ""
-              ? search.trim()
-              : "";
-          const safeFilter =
-            typeof filter === "string" && filter.trim() !== ""
-              ? filter.trim()
-              : "";
-
-          if(isNaN(safeStart) || isNaN(safeEnd)) {
+          const start = Math.max(0, parseInt(req.params.start, 10));
+          const end = Math.max(1, parseInt(req.params.end, 10));
+          if(Number.isNaN(start) || Number.isNaN(end))
             throw new Error("Invalid start or end parameters.");
-          }
 
-          const filterDialogData: filterDialogData = safeFilter
-            ? JSON.parse(safeFilter)
+          const rawSearch = this.s(req.query.search);
+          const rawFilter = this.s(req.query.filter);
+
+          const filterData = rawFilter
+            ? this.parseJSON<{
+              minPrice: number;
+              maxPrice: number;
+              beds: string;
+              bathrooms: string;
+              amenities: string[];
+              type: string;
+              status: string;
+            }>(rawFilter, {
+              minPrice: 0,
+              maxPrice: Number.MAX_SAFE_INTEGER,
+              beds: "",
+              bathrooms: "",
+              amenities: [],
+              type: "",
+              status: "",
+            })
             : {
               minPrice: 0,
               maxPrice: Number.MAX_SAFE_INTEGER,
@@ -654,73 +353,56 @@ export default class Property {
               status: "",
             };
 
-          const andFilters: any[] = [];
+          const and: any[] = [];
 
-          // Keyword-based search across multiple fields
-          if(safeSearch) {
-            const searchRegex = new RegExp(safeSearch, "i");
-            andFilters.push({
+          if(rawSearch) {
+            const rx = new RegExp(rawSearch, "i");
+            and.push({
               $or: [
-                {title: {$regex: searchRegex}},
-                {type: {$regex: searchRegex}},
-                {status: {$regex: searchRegex}},
-                {"address.country": {$regex: searchRegex}},
+                {title: {$regex: rx}},
+                {type: {$regex: rx}},
+                {status: {$regex: rx}},
+                {"address.country": {$regex: rx}},
               ],
             });
           }
 
-          // Apply filters if available
-          if(filterDialogData) {
-            andFilters.push({
-              price: {
-                $gte: filterDialogData.minPrice,
-                $lte: filterDialogData.maxPrice,
-              },
+          and.push({
+            price: {
+              $gte: Number(filterData.minPrice) || 0,
+              $lte: Number(filterData.maxPrice) || Number.MAX_SAFE_INTEGER,
+            },
+          });
+
+          if(filterData.beds === "10+") and.push({bedrooms: {$gte: 10}});
+          else if(filterData.beds)
+            and.push({bedrooms: Number.parseInt(filterData.beds, 10) || 0});
+
+          if(filterData.bathrooms === "10+")
+            and.push({bathrooms: {$gte: 10}});
+          else if(filterData.bathrooms)
+            and.push({
+              bathrooms: Number.parseInt(filterData.bathrooms, 10) || 0,
             });
 
-            if(filterDialogData.beds === "10+") {
-              andFilters.push({bedrooms: {$gte: 10}});
-            } else if(filterDialogData.beds) {
-              andFilters.push({
-                bedrooms: parseInt(filterDialogData.beds, 10),
-              });
-            }
-
-            if(filterDialogData.bathrooms === "10+") {
-              andFilters.push({bathrooms: {$gte: 10}});
-            } else if(filterDialogData.bathrooms) {
-              andFilters.push({
-                bathrooms: parseInt(filterDialogData.bathrooms, 10),
-              });
-            }
-
-            if(filterDialogData.type) {
-              andFilters.push({type: filterDialogData.type});
-            }
-
-            if(filterDialogData.status) {
-              andFilters.push({status: filterDialogData.status});
-            }
-
-            if(
-              filterDialogData.amenities &&
-              filterDialogData.amenities.length > 0
-            ) {
-              andFilters.push({
-                featuresAndAmenities: {$all: filterDialogData.amenities},
-              });
-            }
+          if(filterData.type) {
+            const t = filterData.type.toLowerCase();
+            if(this.PROPERTY_TYPES.has(t)) and.push({type: t});
           }
 
-          const filterQuery = andFilters.length > 0 ? {$and: andFilters} : {};
+          if(filterData.status) {
+            const st = filterData.status.toLowerCase();
+            if(this.STATUS.has(st)) and.push({status: st});
+          }
 
-          // const properties = await PropertyModel.find(filterQuery)
-          //   .skip(safeStart)
-          //   .limit(safeEnd - safeStart)
-          //   .sort({ createdAt: -1 });
+          if(Array.isArray(filterData.amenities) && filterData.amenities.length) {
+            and.push({featuresAndAmenities: {$all: filterData.amenities}});
+          }
+
+          const match = and.length ? {$and: and} : {};
 
           const properties = await PropertyModel.aggregate([
-            {$match: filterQuery},
+            {$match: match},
             {
               $addFields: {
                 priorityOrder: {
@@ -736,256 +418,168 @@ export default class Property {
               },
             },
             {$sort: {priorityOrder: 1, updatedAt: -1}},
-            {$skip: safeStart},
-            {$limit: safeEnd - safeStart},
+            {$skip: start},
+            {$limit: end - start},
           ]);
 
-          const totalCount = await PropertyModel.countDocuments(filterQuery);
-
-          const resData = {
-            properties: properties,
-            count: totalCount,
-          };
+          const totalCount = await PropertyModel.countDocuments(match);
 
           res.status(200).json({
             status: "success",
             message: "Properties fetched successfully.",
-            data: resData,
+            data: {properties, count: totalCount},
           });
         } catch(error) {
-          console.error("Error occurred while fetching properties: ", error);
-          res.status(500).json({
-            status: "error",
-            message: "Error occurred while fetching properties: " + error,
-          });
+          console.error("[get-all-properties-with-pagination] error:", error);
+          res
+            .status(500)
+            .json({status: "error", message: "Error occurred while fetching properties."});
         }
       }
     );
   }
-  //<==================== END GET ALL PROPERTIES WITH THE PAGINATION ====================>
 
-  //<==================== GET SINGLE PROPERTY BY ID ====================>
+  // --------------------------- GET SINGLE BY ID ------------------------------
   private getSinglePropertyById(): void {
     this.router.get(
       "/get-single-property-by-id/:id",
       async (req: Request<{id: string}>, res: Response) => {
         try {
-          const {id} = req.params;
-          const safeID = id.trim();
-
-          if(!safeID) {
-            throw new Error("Property ID is required.");
-          }
-
-          const property = await PropertyModel.findOne({id: safeID});
-          if(!property) {
-            throw new Error("Property not found.");
-          }
+          const id = this.s(req.params.id);
+          if(!id) throw new Error("Property ID is required.");
+          const property = await PropertyModel.findOne({id});
+          if(!property) throw new Error("Property not found.");
           res.status(200).json({
             status: "success",
             message: "Property fetched successfully.",
             data: property,
           });
         } catch(error) {
-          console.error("Error occurred while fetching properties: ", error);
-          res.status(500).json({
-            status: "error",
-            message: "Error occurred while fetching properties: " + error,
-          });
+          console.error("[get-single-property] error:", error);
+          res
+            .status(500)
+            .json({status: "error", message: "Error occurred while fetching property."});
         }
       }
     );
   }
-  //<==================== END GET SINGLE PROPERTY BY ID ====================>
 
-  //<==================== DELETE THE PROPERTY BY PROPERTY ID ====================>
-  /**
-   * DELETE /delete-property/:id
-   *
-   * - Validates the UUID in the path.
-   * - Loads the record by persisted string `id` (UUID) — your sample shows this field exists.
-   * - Moves files from /public/propertyUploads/:id to /public/recyclebin/properties/:id (or :id_TIMESTAMP if taken).
-   * - Writes a JSON snapshot of the deleted doc into the recycle bin folder.
-   * - Deletes the record from Mongo.
-   * - Optionally notifies admins via Socket.IO; notification failures do NOT break the delete.
-   */
+  // --------------------------------- DELETE ----------------------------------
   private deleteProperty(): void {
     this.router.delete(
-      '/delete-property/:id/:username',
-      async (req: Request<{id: string; username: string}>, res: Response): Promise<any> => {
+      "/delete-property/:id/:username",
+      async (req: Request<{id: string; username: string}>, res: Response) => {
         try {
-          // 1) Safe params
-          const safeID = (req.params.id ?? '').trim();
-          const urlUsername = (req.params.username ?? '').trim();
-
+          const safeID = this.s(req.params.id);
+          const urlUsername = this.s(req.params.username);
           if(!safeID) {
-            return res.status(400).json({status: 'error', message: 'Property ID is required.'});
+            res.status(400).json({status: "error", message: "Property ID is required."});
+            return;
+          }
+          if(!urlUsername) {
+            res
+              .status(400)
+              .json({status: "error", message: "Property deletor is required."});
+            return;
           }
 
-          // Prefer authenticated user if available; fall back to URL param
-          const actorUsername =
-            // @ts-ignore - if you've augmented Express.Request with user
+          // @ts-ignore optional auth middleware
+          const actorUsername: string =
             (req.user?.username as string | undefined)?.trim() || urlUsername;
 
-          if(!actorUsername) {
-            return res.status(400).json({status: 'error', message: 'Username is required.'});
-          }
-
-          // 2) Lookup property
           const property = await PropertyModel.findOne({id: safeID}).lean();
           if(!property) {
-            return res.status(404).json({status: 'error', message: 'Property not found.'});
+            res.status(404).json({status: "error", message: "Property not found."});
+            return;
           }
 
-          // 3) Paths
-          const root = process.cwd();
-          const uploadsRoot = path.join(root, 'public', 'propertyUploads');
-          const recycleRoot = path.join(root, 'public', 'recyclebin', 'properties');
-
-          const srcDir = path.join(uploadsRoot, safeID);
-          let dstDir = path.join(recycleRoot, safeID);
-
-          await fsp.mkdir(recycleRoot, {recursive: true});
-
-          // 4) Existence checks
-          const srcExists = await fsp.stat(srcDir).then(() => true).catch(() => false);
-          const dstExists = await fsp.stat(dstDir).then(() => true).catch(() => false);
-          if(dstExists) dstDir = path.join(recycleRoot, `${safeID}_${Date.now()}`);
-
-          // 5) Move (rename or cp+rm fallback)
-          if(srcExists) {
-            try {
-              await fsp.rename(srcDir, dstDir);
-            } catch(e: any) {
-              if(e?.code === 'EXDEV') {
-                await fsp.mkdir(dstDir, {recursive: true});
-                // Node 16.7+; if older, replace with a manual directory copy
-                // @ts-ignore
-                await fsp.cp(srcDir, dstDir, {recursive: true});
-                await fsp.rm(srcDir, {recursive: true, force: true});
-              } else {
-                throw e;
-              }
-            }
-          } else {
-            await fsp.mkdir(dstDir, {recursive: true});
+          const srcDir = path.join(this.DEFAULT_UPLOAD_PATH, safeID);
+          let dstDir = path.join(this.DEFAULT_RECYCLE_PATH, safeID);
+          if(await fse.pathExists(dstDir)) {
+            dstDir = path.join(this.DEFAULT_RECYCLE_PATH, `${safeID}_${Date.now()}`);
           }
 
-          // 6) Snapshot the document in recycle bin
-          await fsp.writeFile(
-            path.join(dstDir, 'property.json'),
-            JSON.stringify(property, null, 2),
-            'utf-8'
-          );
+          if(await fse.pathExists(srcDir))
+            await fse.move(srcDir, dstDir, {overwrite: false});
+          else await fse.mkdirp(dstDir);
 
-          // 7) Notify (best-effort, non-blocking)
+          const snapshotPath = path.join(dstDir, "data.json");
+          await fse.writeJson(snapshotPath, property, {spaces: 2});
+
+          const delRes = await PropertyModel.deleteOne({id: safeID});
+          if(delRes.deletedCount !== 1) {
+            res.status(409).json({
+              status: "error",
+              message: "Delete conflict: document was not removed from DB.",
+            });
+            return;
+          }
+
           try {
-            const io = req.app.get('io');
+            const io = req.app.get("io") as import("socket.io").Server | undefined;
             if(io) {
               const notificationService = new NotificationService();
-
-              // Safely pick the target user from the document if present
-              const targetUser =
-                (property as any)?.addedBy?.username ||
-                (property as any)?.addedBy ||
-                actorUsername;
-
               await notificationService.createNotification(
                 {
-                  title: 'Delete Property',
-                  body: `Property with ID ${safeID} has been deleted.`,
-                  type: 'delete',
-                  severity: 'warning',
-                  // Include BOTH: the owner (addedBy) and admin roles
-                  audience: {
-                    mode: 'user', // will still work if you implement "include all provided rooms" logic
-                    usernames: [String(targetUser)],
-                    roles: ['admin', 'agent', 'manager', 'operator'],
-                  },
-                  channels: ['inapp', 'email'],
+                  title: "Delete Property",
+                  body: `Property "${(property as any)?.title ?? safeID}" has been deleted.`,
+                  type: "delete",
+                  severity: "warning",
+                  audience: {mode: "role", roles: ["admin", "agent", "manager", "operator"]},
+                  channels: ["inapp", "email"],
                   metadata: {
                     deletedBy: actorUsername,
                     deletedAt: new Date().toISOString(),
                     propertyId: safeID,
-                    propertyTitle: (property as any)?.title,
-                    recyclePath: dstDir,
+                    recyclebin: {
+                      folder: dstDir,
+                      dataJson: snapshotPath,
+                      base: `${req.protocol}://${req.get("host")}/${this.DEFAULT_RECYCLE_URL}/${path.basename(
+                        dstDir
+                      )}`,
+                    },
                   },
+                  target: {kind: "Property", refId: safeID},
                 },
-                (rooms, payload) => {
-                  rooms.forEach((room) => io.to(room).emit('notification.new', payload));
-                }
+                (rooms, payload) => rooms.forEach((r) => io.to(r).emit("notification.new", payload))
               );
-            } else {
-              console.warn('[delete-property] io is undefined; skipping notifications');
             }
           } catch(notifyErr) {
-            console.warn('[delete-property] notification failed:', notifyErr);
+            console.warn("[delete-property] notification failed:", notifyErr);
           }
 
-          // 8) Delete DB record
-          const del = await PropertyModel.deleteOne({id: safeID});
-          if(del.deletedCount !== 1) {
-            return res
-              .status(409)
-              .json({status: 'error', message: 'Delete conflict: document not removed.'});
-          }
-
-          // 9) Done — return OK with a message (200 is better than 204 if you want a body)
-          return res.status(200).json({
-            status: 'success',
-            message: 'Property deleted.',
-            data: null,
-          });
+          res.status(200).json({status: "success", message: "Property deleted.", data: null});
         } catch(error: any) {
-          console.error('[delete-property] error:', error);
-          return res
+          console.error("[delete-property] error:", error?.message || error);
+          res
             .status(500)
-            .json({status: 'error', message: 'Error occurred while deleting property.'});
+            .json({status: "error", message: "Error occurred while deleting property."});
         }
       }
     );
   }
 
-
-  //<==================== END DELETE THE PROPERTY BY PROPERTY ID ====================>
-
-  //<==================== UPDATE THE PROPERTY BY PROPERTY ID =====================>
+  // --------------------------------- UPDATE ----------------------------------
   private updateProperty(): void {
-    // Define allowed document types
-    // You can add more types as per your requirements
     const allowedDocumentTypes = [
-      // Word Documents
       "application/msword",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
       "application/rtf",
-
-      // Excel Documents
       "application/vnd.ms-excel",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
       "text/csv",
       "text/tab-separated-values",
-
-      // PowerPoint Documents
       "application/vnd.ms-powerpoint",
       "application/vnd.openxmlformats-officedocument.presentationml.presentation",
       "application/vnd.openxmlformats-officedocument.presentationml.template",
-
-      // OpenDocument Formats
       "application/vnd.oasis.opendocument.text",
       "application/vnd.oasis.opendocument.spreadsheet",
       "application/vnd.oasis.opendocument.presentation",
-
-      // PDF
       "application/pdf",
-
-      // Plain Text
       "text/plain",
     ];
-
-    // Define allowed images types
-    // You can add more types as per your requirements
     const allowedImageTypes = [
       "image/jpeg",
       "image/png",
@@ -997,588 +591,610 @@ export default class Property {
     ];
 
     const storage = multer.diskStorage({
-      // Define the destination for the uploaded files
-      // The destination is determined based on the field name
       destination: (req, file, cb) => {
-        // Check if the property ID is provided in the form data
-        // This is used to create a unique folder for each property
-        const propertyID = req.params.id;
-
-        // If property ID is not provided, return an error
-        // This is important to ensure that files are saved in the correct location
-        if(!propertyID) {
-          // If property ID is not provided, return an error
-          // This is important to ensure that files are saved in the correct location
-          return cb(new Error("Property ID is required in form data."), "");
-        }
-
-        // Define the upload path based on the field name
-        // This will create a unique folder for each property
-        let uploadPath = "";
-        // Check the field name to determine the upload path
-        // If the field name is "images", save to the images folder
-        if(file.fieldname === "images") {
-          // Create the upload path for images
-          // This will create a unique folder for each property
-          uploadPath = path.join(
-            __dirname,
-            `../../public/propertyUploads/${propertyID}/tempImages/`
-          );
-          // If the field name is "documents", save to the documents folder
-          // This will create a unique folder for each property
-        } else if(file.fieldname === "documents") {
-          // Create the upload path for documents
-          // This will create a unique folder for each property
-          uploadPath = path.join(
-            __dirname,
-            `../../public/propertyUploads/${propertyID}/documents/`
-          );
-          // If the field name is not recognized, return an error
-          // This is important to ensure that files are saved in the correct location
-        } else {
-          // If the field name is not recognized, return an error
-          // This is important to ensure that files are saved in the correct location
+        const propertyID = this.s(req.params.id);
+        if(!propertyID) return cb(new Error("Property ID is required in URL."), "");
+        const base = path.join(this.DEFAULT_UPLOAD_PATH, propertyID);
+        const uploadPath =
+          file.fieldname === "images"
+            ? path.join(base, "tempImages")
+            : file.fieldname === "documents"
+              ? path.join(base, "documents")
+              : "";
+        if(!uploadPath)
           return cb(new Error("Unexpected field: " + file.fieldname), "");
-        }
-        // Create the upload path if it doesn't exist
-        // This is important to ensure that files are saved in the correct location
-        fs.mkdirSync(uploadPath, {recursive: true});
-        // Return the upload path to multer
-        // This is important to ensure that files are saved in the correct location
+        fse.mkdirpSync(uploadPath);
         cb(null, uploadPath);
       },
-      // Define the filename for the uploaded files
-      // This will create a unique filename for each file
-      filename: (req, file, cb) => {
-        // Create a unique filename using the current timestamp and a random number
-        // This is important to ensure that files are saved in the correct location
-        const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-        // Replace spaces in the original filename with underscores
-        // This is important to ensure that files are saved in the correct location
-        const sanitized = file.originalname.replace(/\s+/g, "_");
-        // Create the final filename using the unique suffix and the sanitized original filename
-        // This is important to ensure that files are saved in the correct location
-        cb(null, `${uniqueSuffix}-${sanitized}`);
+      filename: (_req, file, cb) => {
+        const u = Date.now() + "-" + Math.round(Math.random() * 1e9);
+        cb(null, `${u}-${file.originalname.replace(/\s+/g, "_")}`);
       },
     });
 
-    // Define the file filter for multer
-    // This will check the file type and size before uploading
-    const fileFilter = (req: Request, file: Express.Multer.File, cb: any) => {
-      // Check if the image type is allowed
-      // This is important to ensure that files are saved in the correct location
+    const fileFilter: multer.Options["fileFilter"] = (_req, file, cb) => {
       if(
         file.fieldname === "images" &&
         allowedImageTypes.includes(file.mimetype)
-      ) {
-        // If the image type is allowed, return true
-        // This is important to ensure that files are saved in the correct location
-        cb(null, true);
-        // Check if the document type is allowed
-        // This is important to ensure that files are saved in the correct location
-      } else if(
+      )
+        return cb(null, true);
+      if(
         file.fieldname === "documents" &&
         allowedDocumentTypes.includes(file.mimetype)
-      ) {
-        // If the document type is allowed, return true
-        // This is important to ensure that files are saved in the correct location
-        cb(null, true);
-      } else {
-        // If the file type is not allowed, return an error
-        // This is important to ensure that files are saved in the correct location
-        cb(new Error("File type not allowed: " + file.mimetype));
-      }
+      )
+        return cb(null, true);
+      return cb(new Error("File type not allowed: " + file.mimetype));
     };
 
-    // Create the multer instance with the defined storage and file filter
-    // This will check the file type and size before uploading
     const upload = multer({storage, fileFilter});
-
-    // Define the route for inserting a property
-    // This will handle the file upload and save the property to the database
 
     this.router.put(
       "/update-property/:id",
       upload.fields([{name: "images"}, {name: "documents"}]),
-      async (req: Request<{id: string}>, res: Response): Promise<any> => {
+      async (req: Request<{id: string}>, res: Response): Promise<void> => {
         try {
-          // make the property id more reliable without and empty string
-          const propertyID = (req.params?.id || req.body?.id || "").trim();
-          // Check the property id
-          if(!propertyID)
-            throw new Error("Property ID is required in URL or request body.");
+          const propertyID = this.s(req.params.id || req.body.id);
+          if(!propertyID) {
+            res
+              .status(400)
+              .json({status: "error", message: "Property ID is required in URL or body."});
+            return;
+          }
 
-          const updator = req.body?.updator.trim()
+          const files = req.files as {[k: string]: Express.Multer.File[]} | undefined;
+          const imagesIn = files?.images ?? [];
+          const docsIn = files?.documents ?? [];
 
-          if(!updator) throw new Error("The updator must login to the system before update the prroperty!")
-
-          // define the property files to check whether the files are uploaded
-          const propertyFiles = req.files as
-            | {[fieldname: string]: Express.Multer.File[]}
-            | undefined;
-
-          const uploadedImages = propertyFiles?.["images"];
-          const uploadedDocuments = propertyFiles?.["documents"];
-
-          // Define the property empty images and document arrays
-          const Images: UploadedImage[] = [];
-          const Docs: UploadedDocument[] = [];
-
-          // Exsiting images and documents
-          const existingImages: UploadedImage[] =
-            JSON.parse(req.body.existingImages.trim()) || [];
-
-          if(!Array.isArray(existingImages))
-            throw new Error("Invalid existingImages");
-
-          const existingDocuments: UploadedDocument[] =
-            JSON.parse(req.body.existingDocuments.trim()) || [];
-
-          if(!Array.isArray(existingDocuments))
-            throw new Error("Invalid existingDocuments");
-
-          // Push existing images and documents to the Images and Docs array
-          Images.push(...existingImages);
-          Docs.push(...existingDocuments);
-
-          // Remove Images
-          const removeImages: UploadedImage[] = this.safeJSONPass(
-            req.body.removeImages.trim(),
+          // Start with existing media (kept)
+          const existingImages = this.parseJSON<UploadedImage[]>(
+            req.body.existingImages,
             []
           );
-
-          // Check if the removeImages is an array
-          if(removeImages && removeImages.length > 0) {
-            for(let i = 0; i < removeImages.length; i++) {
-
-              try {
-                // Define the image
-                const image = removeImages[i];
-
-                if(!image) throw new Error("Invalid image" + image);
-
-                // Define the image path
-                const removeImagePath = path.join(
-                  __dirname,
-                  `../../public/propertyUploads/${propertyID}/images/${image.filename}`
-                );
-
-                // Define the recycle bin path for the image
-                const recyclebinForImages = path.join(
-                  __dirname,
-                  `../../public/recyclebin/properties/${propertyID}/removeredImages/`
-                );
-
-                await this.moveToTheRecycleBin(
-                  recyclebinForImages,
-                  removeImagePath
-                );
-              }
-              catch(error) {
-                console.log("Error: ", error)
-              }
-
-
-
-
-            }
-          }
-
-          // Remove Documents
-          const removeDocuments: UploadedDocument[] = this.safeJSONPass(
-            req.body.removeDocuments.trim(),
+          const existingDocs = this.parseJSON<UploadedDocument[]>(
+            req.body.existingDocuments,
             []
           );
-
-          // Check if the removeDocuments is an array
-          if(removeDocuments && removeDocuments.length > 0) {
-            // Loop through the removeDocuments array
-            for(let i = 0; i < removeDocuments.length; i++) {
-              try {
-                //Define the document
-                const document = removeDocuments[i];
-
-                if(!document) throw new Error("Invalid document" + document);
-
-                // Define the document path
-                const removeDocumentPath = path.join(
-                  __dirname,
-                  `../../public/propertyUploads/${propertyID}/documents/${document.filename}`
-                );
-
-                // Define the recyclebin for documents
-                const recyclebinForDocuments = path.join(
-                  __dirname,
-                  `../../public/recyclebin/properties/${propertyID}/removeredDocuments/`
-                );
-
-                await this.moveToTheRecycleBin(
-                  recyclebinForDocuments,
-                  removeDocumentPath
-                );
-              }
-              catch(error) {
-                console.log("Error: ", error)
-              }
-
-
-            }
-          }
-
-          // Array to hold promises
-          const conversionPromises: Promise<void>[] = [];
-
-          // Check if the property new images are provided
-          if(uploadedImages && uploadedImages.length > 0) {
-            const convertDir = path.join(
-              __dirname,
-              `../../public/propertyUploads/${propertyID}/images/`
-            );
-
-            // Make the directory for image uploads
-            fs.mkdirSync(convertDir, {recursive: true});
-
-            // Loop through each image and create a file URL
-            for(const file of uploadedImages) {
-              // Create the file path for the image
-              const ext = path.extname(file.filename);
-              const baseName = path.basename(file.filename, ext);
-
-              const convertedImagePath = path.join(
-                __dirname,
-                `../../public/propertyUploads/${propertyID}/images/${baseName}.webp`
-              );
-              const originalImagePath = file.path;
-
-              // Create the file URL for the image
-              const fileURL = `${req.protocol}://${req.get(
-                "host"
-              )}/propertyUploads/${propertyID}/images/${baseName}.webp`;
-
-              /*
-              All image conversions using sharp finish properly before deleting the temp folder,
-  
-              Avoid the EBUSY error caused by open file handles,
-  
-              Ensure correct .webp file naming and referencing,
-  
-              Should move all conversion tasks into an array of Promises and await them using Promise.all(...) before proceeding to deletion.
-                          
-              */
-
-              // Push the conversion promise into the array and Reshape the image to a specific size
-              const conversionPromise = sharp(originalImagePath)
-                .webp({quality: 100})
-                .resize(800, 600, {
-                  fit: "inside",
-                  withoutEnlargement: true,
-                })
-                .toFile(convertedImagePath)
-                .then(() => {
-                  // console.log("WebP Image saved to:", convertedImagePath);
-                })
-                .catch((error) => {
-                  // console.error("Error converting image to WebP:", error);
-                });
-
-              // Create the image object and push it to the images array
-              Images.push({
-                originalname: file.originalname.trim(),
-                filename: `${baseName}.webp`,
-                mimetype: "image/webp",
-                size: file.size,
-                imageURL: fileURL.trim(),
-              });
-
-              conversionPromises.push(conversionPromise);
-            }
-          }
-
-          // Check if the property new documents are provided
-          if(uploadedDocuments && uploadedDocuments.length > 0) {
-            for(const file of uploadedDocuments) {
-              // Create the file URL for the document
-              const fileURL = `${req.protocol}://${req.get(
-                "host"
-              )}/propertyUploads/${propertyID}/documents/${file.filename}`;
-              // Create the document object and push it to the documents array
-              Docs.push({
-                originalname: file.originalname.trim(),
-                filename: file.filename.trim(),
-                mimetype: file.mimetype.trim(),
-                size: file.size,
-                documentURL: fileURL.trim(),
-              });
-            }
-          }
-
-
-          // --- safe helpers ---
-          const s = (v: any): string => (typeof v === 'string' ? v.trim() : '');
-
-          const num = (v: any): number => {
-            const n = Number(s(v));
-            return Number.isFinite(n) ? n : 0;
-          };
-
-          const parseJSON = <T>(v: any, fallback: T): T => {
-            try {
-              if(v == null) return fallback;
-              if(typeof v === 'string') {
-                const trimmed = v.trim();
-                if(!trimmed) return fallback;
-                return JSON.parse(trimmed);
-              }
-              return v as T; // already object/array
-            } catch {
-              return fallback;
-            }
-          };
-
-          const dateOrNull = (v: any): Date | null => {
-            const str = s(v);
-            if(!str) return null;
-            const d = new Date(str);
-            return isNaN(d.getTime()) ? null : d;
-          };
-
-          const dateOrNow = (v: any): Date => {
-            const d = dateOrNull(v);
-            return d ?? new Date();
-          };
-
-
-          const invalidDateFields: string[] = [];
-          for(const key of ['listingDate', 'availabilityDate', 'listingExpiryDate', 'rentedDate', 'soldDate']) {
-            const v = (req.body as any)[key];
-            if(v && dateOrNull(v) === null) invalidDateFields.push(key);
-          }
-          if(invalidDateFields.length) {
-            return res.status(400).json({
-              status: 'error',
-              message: `Invalid date(s): ${invalidDateFields.join(', ')}`
+          if(!Array.isArray(existingImages) || !Array.isArray(existingDocs)) {
+            res.status(400).json({
+              status: "fail",
+              message: "existingImages / existingDocuments must be arrays",
             });
+            return;
           }
 
+          const Images: UploadedImage[] = [...existingImages];
+          const Documents: UploadedDocument[] = [...existingDocs];
 
-          // Organize the data to update the property
-          const DbData = {
-            // Basic
-            id: s(propertyID),
-            title: s(req.body.title),
-            type: s(req.body.type).toLowerCase(),
-            listing: s(req.body.listing).toLowerCase(),
-            description: s(req.body.description),
+          // Remove images -> move to /deleted
+          const removeImages = this.parseJSON<UploadedImage[]>(
+            req.body.removeImages,
+            []
+          );
+          if(Array.isArray(removeImages) && removeImages.length) {
+            for(const img of removeImages) {
+              if(!img?.filename) continue;
+              const src = path.join(
+                this.DEFAULT_UPLOAD_PATH,
+                propertyID,
+                "images",
+                img.filename
+              );
+              const dst = path.join(
+                this.DEFAULT_UPLOAD_PATH,
+                propertyID,
+                "deleted",
+                "images"
+              );
+              try {
+                await this.moveToTheRecycleBin(dst, src);
+              } catch(e) {
+                console.warn("[update] failed moving image to deleted:", e);
+              }
+              const idx = Images.findIndex((x) => x.filename === img.filename);
+              if(idx >= 0) Images.splice(idx, 1);
+            }
+          }
 
-            // Location
-            countryDetails: parseJSON(req.body.countryDetails, {}),
-            address: parseJSON(req.body.address, {}),
-            location: parseJSON(req.body.location, {}),
+          // Remove docs -> move to /deleted
+          const removeDocs = this.parseJSON<UploadedDocument[]>(
+            req.body.removeDocuments,
+            []
+          );
+          if(Array.isArray(removeDocs) && removeDocs.length) {
+            for(const d of removeDocs) {
+              if(!d?.filename) continue;
+              const src = path.join(
+                this.DEFAULT_UPLOAD_PATH,
+                propertyID,
+                "documents",
+                d.filename
+              );
+              const dst = path.join(
+                this.DEFAULT_UPLOAD_PATH,
+                propertyID,
+                "deleted",
+                "documents"
+              );
+              try {
+                await this.moveToTheRecycleBin(dst, src);
+              } catch(e) {
+                console.warn("[update] failed moving doc to deleted:", e);
+              }
+              const idx = Documents.findIndex((x) => x.filename === d.filename);
+              if(idx >= 0) Documents.splice(idx, 1);
+            }
+          }
 
-            // Specs
-            totalArea: num(req.body.totalArea),
-            builtInArea: num(req.body.builtInArea),
-            livingRooms: num(req.body.livingRooms),
-            balconies: num(req.body.balconies),
-            kitchen: num(req.body.kitchen),
-            bedrooms: num(req.body.bedrooms),
-            bathrooms: num(req.body.bathrooms),
-            maidrooms: num(req.body.maidrooms),
-            driverRooms: num(req.body.driverRooms),
-            furnishingStatus: s(req.body.furnishingStatus),
-            totalFloors: num(req.body.totalFloors),
-            numberOfParking: num(req.body.numberOfParking),
+          // Convert new images
+          const conversions: Promise<void>[] = [];
+          if(imagesIn.length) {
+            const outDir = path.join(this.DEFAULT_UPLOAD_PATH, propertyID, "images");
+            await fse.mkdirp(outDir);
 
-            // Age
-            builtYear: num(req.body.builtYear),
-            propertyCondition: s(req.body.propertyCondition).toLowerCase(),
-            developerName: s(req.body.developerName),
-            projectName: s(req.body.projectName),
-            ownerShipType: s(req.body.ownerShipType).toLowerCase(),
+            for(const f of imagesIn) {
+              const base = path.basename(f.filename, path.extname(f.filename));
+              const out = path.join(outDir, `${base}.webp`);
+              const url = `${req.protocol}://${req.get("host")}/${this.DEFAULT_PROPERTY_URL}/${propertyID}/images/${base}.webp`;
+              const p = sharp(f.path)
+                .webp({quality: 100})
+                .resize(800, 600, {fit: "inside", withoutEnlargement: true})
+                .toFile(out)
+                .then(async () => {
+                  await fse.remove(f.path);
+                })
+                .catch((e) => console.warn("[update] image convert error:", e));
+              conversions.push(p);
+              Images.push({
+                originalname: f.originalname.trim(),
+                filename: `${base}.webp`,
+                mimetype: "image/webp",
+                size: f.size,
+                imageURL: url,
+              });
+            }
+          }
 
-            // Financial
-            price: num(req.body.price),
-            currency: s(req.body.currency),
-            pricePerSqurFeet: num(req.body.pricePerSqurFeet),
-            expectedRentYearly: num(req.body.expectedRentYearly),
-            expectedRentQuartely: num(req.body.expectedRentQuartely),
-            expectedRentMonthly: num(req.body.expectedRentMonthly),
-            expectedRentDaily: num(req.body.expectedRentDaily),
-            maintenanceFees: num(req.body.maintenanceFees),
-            serviceCharges: num(req.body.serviceCharges),
-            transferFees: num(req.body.transferFees),
-            availabilityStatus: s(req.body.availabilityStatus).toLowerCase(),
+          // Accept new docs
+          if(docsIn.length) {
+            for(const f of docsIn) {
+              Documents.push({
+                originalname: f.originalname.trim(),
+                filename: f.filename.trim(),
+                mimetype: f.mimetype.trim(),
+                size: f.size,
+                documentURL: `${req.protocol}://${req.get("host")}/${this.DEFAULT_PROPERTY_URL}/${propertyID}/documents/${f.filename}`,
+              });
+            }
+          }
 
-            // Features & Amenities
-            featuresAndAmenities: parseJSON(req.body.featuresAndAmenities, []),
-
-            // Media
+          // Validate (update mode)
+          const {data, errors} = this.buildValidatedPayload(req, {
             images: Images,
-            documents: Docs,
-            videoTour: s(req.body.videoTour),
-            virtualTour: s(req.body.virtualTour),
+            documents: Documents,
+            isUpdate: true,
+          });
+          data.id = propertyID;
 
-            // Listing dates (store as Date objects; Mongoose will persist correctly)
-            listingDate: dateOrNow(req.body.listingDate),
-            availabilityDate: dateOrNull(req.body.availabilityDate),
-            listingExpiryDate: dateOrNull(req.body.listingExpiryDate),
-            rentedDate: dateOrNull(req.body.rentedDate),
-            soldDate: dateOrNull(req.body.soldDate),
+          if(errors.length) {
+            await this.deleteFolderWithRetry(
+              path.join(this.DEFAULT_UPLOAD_PATH, propertyID, "tempImages")
+            );
+            res
+              .status(400)
+              .json({status: "fail", message: "Validation failed", errors});
+            return;
+          }
 
-            addedBy: parseJSON(req.body.addedBy, {}),
-            owner: s(req.body.owner),
-
-            // Admin
-            referenceCode: s(req.body.referenceCode),
-            verificationStatus: s(req.body.verificationStatus).toLowerCase(),
-            priority: s(req.body.priority).toLowerCase(),
-            status: s(req.body.status).toLowerCase(),
-            internalNote: s(req.body.internalNote),
-          };
-
-
-          const updateThePropertyByID = await PropertyModel.findOneAndUpdate(
+          const updated = await PropertyModel.findOneAndUpdate(
             {id: propertyID},
-            {$set: DbData},
+            {$set: data},
             {new: true}
           );
+          if(!updated) {
+            res
+              .status(404)
+              .json({status: "error", message: "Property not found or update failed."});
+            return;
+          }
 
-          if(!updateThePropertyByID) {
-            throw new Error(
-              "Error occurred while updating property: " + updateThePropertyByID
-            );
-          } else {
-            //Send notification of successful update
-            // inside your update handler (after successful update)
+          // Notify
+          try {
             const notificationService = new NotificationService();
-            const io = req.app.get('io');
-            await notificationService.createNotification(
-              {
-                title: 'Update Property',
-                body: `Property with ID ${propertyID} has been updated.`,
-                type: 'update',
-                severity: 'info',
-                audience: {
-                  mode: 'role',
-                  roles: ['admin', 'operator'], // <- PK username
-                  usernames: [s(req.body.owner)]
+            const io = req.app.get("io") as import("socket.io").Server | undefined;
+            if(io) {
+              await notificationService.createNotification(
+                {
+                  title: "Update Property",
+                  body: `Property with ID ${propertyID} has been updated.`,
+                  type: "update",
+                  severity: "info",
+                  audience: {mode: "role", roles: ["admin", "operator"]},
+                  channels: ["inapp", "email"],
+                  metadata: {property: updated, updatedAt: new Date().toISOString(), propertyID},
+                  target: {kind: "Property", refId: propertyID},
                 },
-                channels: ['inapp', 'email'],
-                metadata: {
-                  updatedProperty: DbData,
-                  updatedAt: new Date().toISOString(),
-                  updatedBy: updator || 'system',
-                  propertyID: propertyID,
-                },
-              },
-              // Socket.IO v4 can take Room | Room[] here:
-              (rooms, payload) => io?.to(rooms).emit('notification.new', payload)
-            );
-
-            // Respond with success
-            res.status(200).json({
-              status: "success",
-              message: "Property updated successfully.",
-              data: updateThePropertyByID,
-            });
-
-            // Wait until all the promise is resolved
-            await Promise.all(conversionPromises);
-
-            await this.deleteFolderWithRetry(
-              path.join(
-                __dirname,
-                `../../public/propertyUploads/${propertyID}/tempImages/`
-              )
-            );
+                (rooms, payload) => rooms.forEach((room) => io.to(room).emit("notification.new", payload))
+              );
+            }
+          } catch(e) {
+            console.warn("[update-property] notification failed:", e);
           }
-        } catch(error) {
-          if(error) {
-            console.log(
-              "Error while updating property:",
-              error instanceof Error ? error.stack : error
-            );
-            res.status(500).json({
-              status: "error",
-              message: "Error occurred while updating property: " + error,
-            });
-          }
+
+          res
+            .status(200)
+            .json({status: "success", message: "Property updated successfully.", data: updated});
+
+          await Promise.all(conversions);
+          await this.deleteFolderWithRetry(
+            path.join(this.DEFAULT_UPLOAD_PATH, propertyID, "tempImages")
+          );
+        } catch(error: any) {
+          console.error("[update-property] error:", error?.stack || error);
+          res
+            .status(500)
+            .json({status: "error", message: "Error occurred while updating property."});
         }
       }
     );
   }
-  //<==================== END UPDATE THE PROPERTY BY PROPERTY ID ====================>
 
-  //<==================== MOVE THE DELETING FILE TO THE RECYCLE BIN ====================>
+  // ------------------------------- GET ALL -----------------------------------
+  private getAllProperties(): void {
+    this.router.get("/get-all-properties/", async (_req, res) => {
+      try {
+        const properties = await PropertyModel.find().sort({createdAt: -1});
+        res.status(200).json({
+          status: "success",
+          message: "Properties fetched successfully.",
+          data: properties,
+        });
+      } catch {
+        res
+          .status(500)
+          .json({status: "error", message: "Error fetching properties."});
+      }
+    });
+  }
+
+  /* ============================ PRIVATE HELPERS ============================= */
+
+  // --- Narrow/convert ---
+  private isStr(v: unknown): v is string {
+    return typeof v === "string";
+  }
+  private s(v: unknown): string {
+    return this.isStr(v) ? v.trim() : "";
+  }
+  private toLower(v: unknown): string {
+    return this.s(v).toLowerCase();
+  }
+  private toNum(v: unknown, def = 0): number {
+    const n = Number(this.s(v));
+    return Number.isFinite(n) ? n : def;
+  }
+  private toNonNeg(v: unknown, def = 0): number {
+    return Math.max(0, this.toNum(v, def));
+  }
+  private parseJSON<T>(v: unknown, fallback: T): T {
+    try {
+      if(v == null) return fallback;
+      if(typeof v === "string") {
+        const t = v.trim();
+        if(!t) return fallback;
+        return JSON.parse(t) as T;
+      }
+      return v as T;
+    } catch {
+      return fallback;
+    }
+  }
+  private toDateOrNull(v: unknown): Date | null {
+    const str = this.s(v);
+    if(!str) return null;
+    const d = new Date(str);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  private toDateOrThrow(v: unknown, field: string): Date {
+    const d = this.toDateOrNull(v);
+    if(!d) throw new Error(`Invalid date for "${field}"`);
+    return d;
+  }
+
+  // --- shape validators ---
+  private validateAddress(raw: unknown): Address {
+    const a = this.parseJSON<Address>(raw, {} as any);
+    return {
+      houseNumber: this.s(a.houseNumber),
+      street: this.s((a as any).street),
+      city: this.s(a.city),
+      stateOrProvince: this.s((a as any).stateOrProvince),
+      postcode: this.s(a.postcode),
+      country: this.s(a.country),
+    };
+  }
+  private validateCountryDetails(raw: unknown): CountryDetails {
+    const c = this.parseJSON<CountryDetails>(raw, {} as any);
+    const out = {...c} as CountryDetails;
+    (out.tld as any) = Array.isArray((c as any).tld) ? (c as any).tld : undefined;
+    (out.capital as any) = Array.isArray((c as any).capital) ? (c as any).capital : undefined;
+    (out.timezones as any) = Array.isArray((c as any).timezones) ? (c as any).timezones : undefined;
+    (out.continents as any) = Array.isArray((c as any).continents) ? (c as any).continents : undefined;
+    (out.latlng as any) = Array.isArray((c as any).latlng) ? (c as any).latlng : undefined;
+    (out.flags as any) = typeof (c as any).flags === "object" ? (c as any).flags : ({} as any);
+    return out;
+  }
+  private validateAddedBy(raw: unknown): AddedBy {
+    const a = this.parseJSON<AddedBy>(raw, {} as any);
+    return {
+      username: this.s(a.username),
+      name: this.s(a.name),
+      email: this.s(a.email),
+      role: this.s(a.role) as any,
+      contactNumber: this.s(a.contactNumber),
+      addedAt: a?.addedAt ? this.toDateOrNull(a.addedAt) || new Date() : new Date(),
+    };
+  }
+  private validateLocation(raw: unknown): GoogleMapLocation | undefined {
+    const loc = this.parseJSON<GoogleMapLocation>(raw, {} as any);
+    const lat = Number((loc as any).lat);
+    const lng = Number((loc as any).lng);
+    const embeddedUrl = this.s((loc as any).embeddedUrl);
+    if(!Number.isFinite(lat) || !Number.isFinite(lng)) return undefined;
+    return {lat, lng, embeddedUrl};
+  }
+
+  // --- payload builder (insert/update) ---
+  private buildValidatedPayload(
+    req: Request,
+    ctx: {images: UploadedImage[]; documents: UploadedDocument[]; isUpdate: boolean}
+  ): {data: Partial<IProperty>; errors: string[]} {
+    const errors: string[] = [];
+    const isUpdate = ctx.isUpdate;
+
+    // Basic
+    const id = this.s((req.params as any).propertyID || (req.params as any).id || req.body.id);
+    if(!isUpdate && !id) errors.push("id (as :propertyID in URL or body.id) is required.");
+
+    const title = this.s(req.body.title);
+    if(!isUpdate && !title) errors.push("title is required.");
+
+    const type = this.toLower(req.body.type);
+    if(!isUpdate && !type) errors.push("type is required.");
+    if(type && !this.PROPERTY_TYPES.has(type))
+      errors.push(`type must be one of: ${Array.from(this.PROPERTY_TYPES).join(", ")}`);
+
+    const listing = this.toLower(req.body.listing);
+    if(!isUpdate && !listing) errors.push("listing is required.");
+    if(listing && !this.LISTINGS.has(listing))
+      errors.push(`listing must be one of: ${Array.from(this.LISTINGS).join(", ")}`);
+
+    const description = this.s(req.body.description);
+    if(!isUpdate && !description) errors.push("description is required.");
+
+    // Location
+    const countryDetails = this.validateCountryDetails(req.body.countryDetails);
+    const address = this.validateAddress(req.body.address);
+    const location = this.validateLocation(req.body.location);
+
+    // Specs
+    const totalArea = this.toNonNeg(req.body.totalArea);
+    const builtInArea = this.toNonNeg(req.body.builtInArea);
+    const livingRooms = this.toNonNeg(req.body.livingRooms);
+    const balconies = this.toNonNeg(req.body.balconies);
+    const kitchen = this.toNonNeg(req.body.kitchen);
+    const bedrooms = this.toNonNeg(req.body.bedrooms);
+    const bathrooms = this.toNonNeg(req.body.bathrooms);
+    const maidrooms = this.toNonNeg(req.body.maidrooms);
+    const driverRooms = this.toNonNeg(req.body.driverRooms);
+    const furnishingStatus = this.toLower(req.body.furnishingStatus);
+    if(!isUpdate && !furnishingStatus) errors.push("furnishingStatus is required.");
+    if(furnishingStatus && !this.FURNISHING.has(furnishingStatus))
+      errors.push(`furnishingStatus must be one of: ${Array.from(this.FURNISHING).join(", ")}`);
+    const totalFloors = this.toNonNeg(req.body.totalFloors);
+    const numberOfParking = this.toNonNeg(req.body.numberOfParking);
+
+    // Construction & Age
+    const builtYear = this.toNonNeg(req.body.builtYear);
+    const propertyCondition = this.toLower(req.body.propertyCondition);
+    if(!isUpdate && !propertyCondition) errors.push("propertyCondition is required.");
+    if(propertyCondition && !this.CONDITIONS.has(propertyCondition))
+      errors.push(`propertyCondition must be one of: ${Array.from(this.CONDITIONS).join(", ")}`);
+    const developerName = this.s(req.body.developerName);
+    const projectName = this.s(req.body.projectName);
+    const ownerShipType = this.toLower(req.body.ownerShipType);
+    if(!isUpdate && !ownerShipType) errors.push("ownerShipType is required.");
+    if(ownerShipType && !this.OWNERSHIP.has(ownerShipType))
+      errors.push(`ownerShipType must be one of: ${Array.from(this.OWNERSHIP).join(", ")}`);
+
+    // Financial
+    const price = this.toNonNeg(req.body.price);
+    const currency = this.s(req.body.currency) || "lkr";
+    const pricePerSqurFeet = this.toNonNeg(
+      req.body.pricePerSqurFeet,
+      totalArea > 0 ? Number((price / totalArea).toFixed(2)) : 0
+    );
+    const expectedRentYearly = this.toNonNeg(req.body.expectedRentYearly);
+    const expectedRentQuartely = this.toNonNeg(req.body.expectedRentQuartely);
+    const expectedRentMonthly = this.toNonNeg(req.body.expectedRentMonthly);
+    const expectedRentDaily = this.toNonNeg(req.body.expectedRentDaily);
+    const maintenanceFees = this.toNonNeg(req.body.maintenanceFees);
+    const serviceCharges = this.toNonNeg(req.body.serviceCharges);
+    const transferFees = this.toNonNeg(req.body.transferFees);
+
+    const availabilityStatus = this.toLower(req.body.availabilityStatus);
+    if(availabilityStatus && !this.AVAILABILITY.has(availabilityStatus))
+      errors.push(
+        `availabilityStatus must be one of: ${Array.from(this.AVAILABILITY).join(", ")}`
+      );
+
+    // Features & Amenities
+    const featuresAndAmenities = this.parseJSON<string[]>(
+      req.body.featuresAndAmenities,
+      []
+    );
+    if(!Array.isArray(featuresAndAmenities))
+      errors.push("featuresAndAmenities must be an array of strings.");
+
+    // Media (require at least one of each on insert)
+    const images = ctx.images || [];
+    const documents = ctx.documents || [];
+    if(!isUpdate) {
+      if(images.length === 0) errors.push("At least one image is required.");
+      if(documents.length === 0) errors.push("At least one document is required.");
+    }
+
+    // Listing Management
+    const listingDate = isUpdate
+      ? this.toDateOrNull(req.body.listingDate) || undefined
+      : this.toDateOrThrow(req.body.listingDate, "listingDate");
+    const availabilityDate = this.toDateOrNull(req.body.availabilityDate);
+    const listingExpiryDate = this.toDateOrNull(req.body.listingExpiryDate);
+    const rentedDate = this.toDateOrNull(req.body.rentedDate);
+    const soldDate = this.toDateOrNull(req.body.soldDate);
+
+    const addedBy = this.validateAddedBy(req.body.addedBy);
+    if(!isUpdate) {
+      if(!addedBy.username) errors.push("addedBy.username is required.");
+      if(!addedBy.email) errors.push("addedBy.email is required.");
+      if(!addedBy.role) errors.push("addedBy.role is required.");
+    }
+    const owner = this.s(req.body.owner);
+    if(!isUpdate && !owner) errors.push("owner is required.");
+
+    // Admin
+    const referenceCode = this.s(req.body.referenceCode);
+    if(!isUpdate && !referenceCode) errors.push("referenceCode is required.");
+    const verificationStatus = this.toLower(req.body.verificationStatus) || "verified";
+    if(verificationStatus && !this.VERIFICATION.has(verificationStatus))
+      errors.push(
+        `verificationStatus must be one of: ${Array.from(this.VERIFICATION).join(", ")}`
+      );
+    const priority = this.toLower(req.body.priority) || "medium";
+    if(priority && !this.PRIORITY.has(priority))
+      errors.push(`priority must be one of: ${Array.from(this.PRIORITY).join(", ")}`);
+    const status = this.toLower(req.body.status) || "published";
+    if(status && !this.STATUS.has(status))
+      errors.push(`status must be one of: ${Array.from(this.STATUS).join(", ")}`);
+    const internalNote = this.s(req.body.internalNote);
+
+    // Build data
+    const data: Partial<IProperty> = {};
+
+    if(id) data.id = id;
+    if(title) data.title = title;
+    if(type) data.type = type as any;
+    if(listing) data.listing = listing as any;
+    if(description || !isUpdate) data.description = description;
+
+    if(Object.keys(countryDetails || {}).length) data.countryDetails = countryDetails;
+    if(Object.keys(address || {}).length) data.address = address;
+    if(location) data.location = location;
+
+    if(!isUpdate || req.body.totalArea != null) data.totalArea = totalArea;
+    if(!isUpdate || req.body.builtInArea != null) data.builtInArea = builtInArea;
+    if(!isUpdate || req.body.livingRooms != null) data.livingRooms = livingRooms;
+    if(!isUpdate || req.body.balconies != null) data.balconies = balconies;
+    if(!isUpdate || req.body.kitchen != null) data.kitchen = kitchen;
+    if(!isUpdate || req.body.bedrooms != null) data.bedrooms = bedrooms;
+    if(!isUpdate || req.body.bathrooms != null) data.bathrooms = bathrooms;
+    if(!isUpdate || req.body.maidrooms != null) data.maidrooms = maidrooms;
+    if(!isUpdate || req.body.driverRooms != null) data.driverRooms = driverRooms;
+    if(furnishingStatus) data.furnishingStatus = furnishingStatus as any;
+    if(!isUpdate || req.body.totalFloors != null) data.totalFloors = totalFloors;
+    if(!isUpdate || req.body.numberOfParking != null)
+      data.numberOfParking = numberOfParking;
+
+    if(!isUpdate || req.body.builtYear != null) data.builtYear = builtYear;
+    if(propertyCondition) data.propertyCondition = propertyCondition as any;
+    if(developerName || !isUpdate) data.developerName = developerName;
+    if(projectName || !isUpdate) data.projectName = projectName;
+    if(ownerShipType) data.ownerShipType = ownerShipType as any;
+
+    if(!isUpdate || req.body.price != null) data.price = price;
+    if(currency || !isUpdate) data.currency = currency;
+    if(!isUpdate || req.body.pricePerSqurFeet != null)
+      data.pricePerSqurFeet = pricePerSqurFeet;
+    if(!isUpdate || req.body.expectedRentYearly != null)
+      data.expectedRentYearly = expectedRentYearly;
+    if(!isUpdate || req.body.expectedRentQuartely != null)
+      data.expectedRentQuartely = expectedRentQuartely;
+    if(!isUpdate || req.body.expectedRentMonthly != null)
+      data.expectedRentMonthly = expectedRentMonthly;
+    if(!isUpdate || req.body.expectedRentDaily != null)
+      data.expectedRentDaily = expectedRentDaily;
+    if(!isUpdate || req.body.maintenanceFees != null)
+      data.maintenanceFees = maintenanceFees;
+    if(!isUpdate || req.body.serviceCharges != null)
+      data.serviceCharges = serviceCharges;
+    if(!isUpdate || req.body.transferFees != null) data.transferFees = transferFees;
+    if(availabilityStatus) data.availabilityStatus = availabilityStatus as any;
+
+    if(Array.isArray(featuresAndAmenities))
+      data.featuresAndAmenities = featuresAndAmenities;
+
+    if(ctx.images?.length) data.images = ctx.images;
+    if(ctx.documents?.length) data.documents = ctx.documents;
+    if(this.isStr(req.body.videoTour)) data.videoTour = this.s(req.body.videoTour);
+    if(this.isStr(req.body.virtualTour))
+      data.virtualTour = this.s(req.body.virtualTour);
+
+    if(listingDate !== undefined) data.listingDate = listingDate as any;
+    if(availabilityDate !== null) data.availabilityDate = availabilityDate as any;
+    if(listingExpiryDate !== null)
+      data.listingExpiryDate = listingExpiryDate as any;
+    if(rentedDate !== null) data.rentedDate = rentedDate as any;
+    if(soldDate !== null) data.soldDate = soldDate as any;
+
+    if(Object.keys(addedBy || {}).length) data.addedBy = addedBy;
+    if(owner || !isUpdate) data.owner = owner;
+    if(referenceCode || !isUpdate) data.referenceCode = referenceCode;
+    if(verificationStatus)
+      data.verificationStatus = verificationStatus as any;
+    if(priority) data.priority = priority as any;
+    if(status) data.status = status as any;
+    if(this.isStr(req.body.internalNote)) data.internalNote = internalNote;
+
+    return {data, errors};
+  }
+
+  // --- fs helpers ---
+  private async deleteFolderWithRetry(
+    folderPath: string,
+    retries = 5,
+    delayMs = 500
+  ): Promise<void> {
+    for(let i = 1; i <= retries; i++) {
+      try {
+        await fs.promises.rm(folderPath, {recursive: true, force: true});
+        return;
+      } catch(e: any) {
+        if(e.code === "EBUSY" || e.code === "EPERM") {
+          await new Promise((r) => setTimeout(r, delayMs));
+        } else {
+          throw e;
+        }
+      }
+    }
+    throw new Error(`Failed to delete folder after ${retries} attempts: ${folderPath}`);
+  }
+
   private async moveToTheRecycleBin(
     recycleBinPath: string,
     filePath: string
   ): Promise<void> {
     try {
-      // Create the recyclebin folder if it doesn't exist
-      if(!fs.existsSync(recycleBinPath)) {
-        await fs.promises.mkdir(recycleBinPath, {recursive: true});
-      }
-
-      //Rename the file and create the new file in the recyclebin folder
+      if(!fs.existsSync(filePath)) return;
+      await fs.promises.mkdir(recycleBinPath, {recursive: true});
       const targetPath = path.join(
         recycleBinPath,
         `${Date.now()}-${path.basename(filePath)}`
       );
-
-      // Move the document to the recyclebin
       await fs.promises.rename(filePath, targetPath);
-
-      console.log(`Moved file to recycle bin: ${targetPath}`);
     } catch(error) {
       console.log(
-        "Error while moving file to recycle bin:",
+        "Error while moving file to deleted:",
         error instanceof Error ? error.stack : error
       );
     }
   }
-  //<==================== END MOVE THE DELETING FILE TO THE RECYCLE BIN ====================>
-
-  //<==================== SAFE JSON PASS ====================>
-  private safeJSONPass<T>(input: string, fallback: T): T {
-    try {
-      return JSON.parse(input);
-    } catch {
-      return fallback;
-    }
-  }
-  //<==================== END SAFE JSON PASS ====================>
-
-  //<==================== GET ALL PROPERTIE ====================>
-  private getAllProperties(): void {
-    this.router.get(
-      "/get-all-properties/",
-      async (req: Request, res: Response) => {
-        try {
-          const properties = await PropertyModel.find().sort({
-            createdAt: -1,
-          });
-          if(!properties) throw new Error("No properties found.");
-          res.status(200).json({
-            status: "success",
-            message: "Properties fetched successfully.",
-            data: properties,
-          });
-        } catch(error) {
-          if(error instanceof Error) {
-            res.status(500).json({
-              status: "error",
-              message: "Error: " + error.message,
-            });
-          } else {
-            res.status(500).json({
-              status: "error",
-              message: "Error: " + error,
-            });
-          }
-        }
-      }
-    );
-  }
-  //<==================== END GET ALL PROPERTIE ====================>
 }

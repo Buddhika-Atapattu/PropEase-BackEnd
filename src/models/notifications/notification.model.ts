@@ -1,8 +1,19 @@
-import {Schema, model, Document} from 'mongoose';
+// src/models/notification.model.ts
+// ─────────────────────────────────────────────────────────────────────────────
+// Notification model (Mongoose)
+// - Fixed TITLE_VALUES (shared with FE / services)
+// - Derive category (domain) + normalized action type (DefinedTypes) from title
+// - Audience, channels, severity, metadata
+// - Optional target pointer { kind, refId } to the affected domain record
+// - Optional delivery tracking per channel
+// - Study-friendly comments throughout
+// ─────────────────────────────────────────────────────────────────────────────
+
+import {Schema, model, type Document} from 'mongoose';
 
 /* ============================================================================
  * 1) FIXED TITLES (single source of truth)
- *    - Keep this list aligned with FE and services.
+ *    Keep this list aligned with FE and services.
  * ==========================================================================*/
 export const TITLE_VALUES = [
   // ── User Management
@@ -56,7 +67,8 @@ export const TITLE_VALUES = [
 export type Title = (typeof TITLE_VALUES)[number];
 
 /* ============================================================================
- * 2) CATEGORY + MAPPING FROM TITLE
+ * 2) DOMAIN CATEGORY + MAPPING FROM TITLE
+ *    Categories describe the domain area, not the user action.
  * ==========================================================================*/
 export type TitleCategory =
   | 'User' | 'Tenant' | 'Property' | 'Lease'
@@ -125,7 +137,7 @@ export const TITLE_CATEGORY_MAP: Record<Title, TitleCategory> = {
   'Assign Team Member': 'Team',
   'Team Task Created': 'Team',
   'Team Task Completed': 'Team',
-  // Registration
+  // Registration / KYC
   'New Registration': 'Registration',
   'Account Verified': 'Registration',
   'KYC Document Uploaded': 'Registration',
@@ -160,12 +172,12 @@ export type AudienceMode = 'user' | 'role' | 'broadcast';
 export const AUDIENCE_MODE_VALUES: AudienceMode[] = ['user', 'role', 'broadcast'];
 
 /* ============================================================================
- * 4) DEFINED ACTION TYPES (real-estate workflows)
- *    - richer than CRUD; used in the `type` field
+ * 4) NORMALIZED ACTION TYPES (richer than CRUD)
+ *    Added: 'permanent_delete' to support hard deletes.
  * ==========================================================================*/
 export type DefinedTypes =
   // Generic lifecycle
-  | 'create' | 'update' | 'delete' | 'archive' | 'restore'
+  | 'create' | 'update' | 'delete' | 'archive' | 'restore' | 'permanent_delete'
   // Assignment / routing
   | 'assign' | 'reassign'
   // Approvals / verification / publishing
@@ -184,7 +196,7 @@ export type DefinedTypes =
   | 'import' | 'export' | 'sync';
 
 export const DEFINED_TYPE_VALUES = [
-  'create', 'update', 'delete', 'archive', 'restore',
+  'create', 'update', 'delete', 'archive', 'restore', 'permanent_delete',
   'assign', 'reassign',
   'approve', 'reject', 'verify', 'publish', 'unpublish',
   'renew', 'terminate', 'expire', 'download',
@@ -193,13 +205,13 @@ export const DEFINED_TYPE_VALUES = [
   'payment_received', 'payment_failed', 'refund_issued', 'invoice_created', 'invoice_overdue',
   'notify', 'reminder', 'escalate', 'broadcast',
   'import', 'export', 'sync',
-] as const satisfies ReadonlyArray<DefinedTypes>;
+] as const;
 
 export const isDefinedType = (v: unknown): v is DefinedTypes =>
-  typeof v === 'string' && (DEFINED_TYPE_VALUES as readonly string[]).includes(v);
+  typeof v === 'string' && (DEFINED_TYPE_VALUES as readonly string[]).includes(v as any);
 
 /* ============================================================================
- * 5) Category → default icon & tags (used as safe defaults)
+ * 5) Category → default icon & tags (safe defaults)
  * ==========================================================================*/
 export const CATEGORY_ICON_MAP: Record<TitleCategory, string> = {
   User: 'person',
@@ -239,43 +251,106 @@ const dedupeTrim = (arr?: unknown[]) =>
   Array.isArray(arr)
     ? Array.from(new Set(arr.map(sanitizeString))).filter(Boolean) as string[]
     : [];
-
 const capTags = (tags: string[], maxTags = 20, maxPerTag = 40) =>
   tags.map((t) => String(t).slice(0, maxPerTag)).slice(0, maxTags);
-
 const isLikelyUrl = (v?: string) => !!v && /^(https?:)?\/\//i.test(v);
 
 /* ============================================================================
- * 7) DOCUMENT INTERFACE
+ * 7) Title → normalized type mapping
+ *    This drives analytics & server logic (restore/permanent delete routing).
  * ==========================================================================*/
+const mapTitleToType = (title: Title): DefinedTypes => {
+  const t = title.toLowerCase();
+
+  // Generic patterns
+  if(t.startsWith('new ')) return 'create';
+  if(t.startsWith('update ')) return 'update';
+  if(t.startsWith('delete ')) return 'delete';
+
+  // Property specific
+  if(t.includes('approved')) return 'approve';
+  if(t.includes('listing expired')) return 'expire';
+  if(t.includes('inspection')) return 'schedule';
+  if(t.includes('maintenance requested')) return 'maintenance_request';
+  if(t.includes('maintenance in progress')) return 'maintenance_in_progress';
+  if(t.includes('maintenance completed')) return 'maintenance_completed';
+
+  // Lease specific
+  if(t.includes('lease renewed')) return 'renew';
+  if(t.includes('lease terminated')) return 'terminate';
+  if(t.includes('payment received')) return 'payment_received';
+  if(t.includes('reminder sent')) return 'reminder';
+  if(t.includes('agreement download')) return 'download';
+
+  // Complaint / team / misc
+  if(t.includes('close complaint')) return 'maintenance_closed'; // reuse closed semantic
+  if(t.includes('task created')) return 'create';
+  if(t.includes('task completed')) return 'complete';
+
+  // Payments
+  if(t.includes('invoice paid')) return 'payment_received';
+  if(t.includes('invoice overdue')) return 'invoice_overdue';
+  if(t.includes('refund issued')) return 'refund_issued';
+  if(t.includes('payment failed')) return 'payment_failed';
+
+  // System/admin/messaging
+  if(t.includes('broadcast')) return 'broadcast';
+  if(t.includes('security alert')) return 'notify';
+
+  // Fallback
+  return 'notify';
+};
+
+/* ============================================================================
+ * 8) DOCUMENT INTERFACES
+ * ==========================================================================*/
+export interface DeliveryStatus {
+  channel: Channel;                // 'inapp' | 'email' | 'sms' | 'push'
+  status: 'pending' | 'sent' | 'failed';
+  detail?: string;                 // optional failure message
+  at?: Date;                       // when last status was recorded
+}
+
 export interface NotificationEntity extends Document {
-  title: Title;                         // fixed title
-  category: TitleCategory;              // derived from title (stored for fast queries)
-  body: string;                         // message body
-  type: DefinedTypes;                   // normalized action type
-  severity: Severity;                   // info/success/warning/error
-  audience: {
-    mode: AudienceMode;                 // 'user' | 'role' | 'broadcast'
-    usernames: string[];                // when mode=user
-    roles: string[];                    // when mode=role
+  // Core
+  title: Title;                    // fixed title
+  category: TitleCategory;         // derived from title (stored)
+  type: DefinedTypes;              // normalized action type (derived or provided)
+  severity: Severity;              // info/success/warning/error
+  body: string;                    // message body (plain text / short markdown)
+
+  // Target of the notification (for restore / permanent delete routing)
+  target?: {
+    kind?: TitleCategory;          // usually same as category; can override if needed
+    refId?: string;                // domain record id (Tenant/Property/Lease/…)
   };
-  channels: Channel[];                  // e.g., ['inapp','email']
+
+  // Audience & delivery
+  audience: {
+    mode: AudienceMode;            // 'user' | 'role' | 'broadcast'
+    usernames: string[];           // when mode=user
+    roles: string[];               // when mode=role
+  };
+  channels: Channel[];             // e.g., ['inapp','email']
+  deliveries?: DeliveryStatus[];   // per-channel status (optional)
+
+  // Extras
+  icon?: string;                   // material icon
+  tags?: string[];                 // search keywords
+  link?: string;                   // CTA link
+  source?: string;                 // who/what emitted
+  metadata?: Record<string, any>;  // arbitrary JSON payload
+
+  // Read tracking
+  readBy?: string[];               // usernames that have read this (master-level)
+
+  // Timestamps
   createdAt: Date;
   expiresAt?: Date;
-  metadata?: Record<string, any>;       // arbitrary JSON payload
-
-  // Optional FE niceties
-  icon?: string;                        // material icon name
-  tags?: string[];                      // keywords
-  link?: string;                        // CTA link
-  source?: string;                      // who/what emitted
-
-  // Read tracking (optional)
-  readBy?: string[];                    // usernames that have read this (master-level)
 }
 
 /* ============================================================================
- * 8) SCHEMAS
+ * 9) SCHEMAS
  * ==========================================================================*/
 const AudienceSchema = new Schema<NotificationEntity['audience']>(
   {
@@ -296,35 +371,49 @@ const AudienceSchema = new Schema<NotificationEntity['audience']>(
   {_id: false}
 );
 
+const DeliverySchema = new Schema<DeliveryStatus>(
+  {
+    channel: {type: String, enum: CHANNEL_VALUES, required: true},
+    status: {type: String, enum: ['pending', 'sent', 'failed'], required: true, default: 'pending'},
+    detail: {type: String, trim: true},
+    at: {type: Date, default: () => new Date()},
+  },
+  {_id: false}
+);
+
 const NotificationSchema = new Schema<NotificationEntity>(
   {
     title: {type: String, enum: TITLE_VALUES, required: true, trim: true},
 
-    // Stored for fast filtering; auto-derived from title
+    // Stored category (fast filter). Derived from title (see hooks).
     category: {
       type: String,
-      enum: [
-        'User', 'Tenant', 'Property', 'Lease',
-        'Agent', 'Developer', 'Maintenance', 'Complaint',
-        'Team', 'Registration', 'Payment', 'System',
-      ],
+      enum: ['User', 'Tenant', 'Property', 'Lease', 'Agent', 'Developer', 'Maintenance', 'Complaint', 'Team', 'Registration', 'Payment', 'System'],
       required: true,
       index: true,
     },
 
-    body: {type: String, required: true, trim: true},
-
-    // NEW: normalized action type
+    // Normalized action type (derived from title unless explicitly set)
     type: {
       type: String,
       enum: DEFINED_TYPE_VALUES,
       required: true,
-      default: 'notify',     // sensible default for generic notifications
+      default: 'notify',
       trim: true,
+      index: true,
     },
 
     severity: {type: String, enum: SEVERITY_VALUES, default: 'info', required: true},
 
+    body: {type: String, required: true, trim: true},
+
+    // Target pointer (helps restore/permanent-delete logic)
+    target: {
+      kind: {type: String, enum: ['User', 'Tenant', 'Property', 'Lease', 'Agent', 'Developer', 'Maintenance', 'Complaint', 'Team', 'Registration', 'Payment', 'System'], trim: true},
+      refId: {type: String, trim: true, index: true},
+    },
+
+    // Audience & delivery
     audience: {type: AudienceSchema, required: true},
 
     channels: {
@@ -333,38 +422,37 @@ const NotificationSchema = new Schema<NotificationEntity>(
       default: ['inapp'],
       set: (v: unknown) => {
         const arr = Array.isArray(v) ? v : ['inapp'];
-        const cleaned = dedupeTrim(arr).filter((c) =>
-          (CHANNEL_VALUES as string[]).includes(String(c))
-        );
+        const cleaned = dedupeTrim(arr).filter((c) => (CHANNEL_VALUES as string[]).includes(String(c)));
         return cleaned.length ? cleaned : ['inapp'];
       },
     },
 
+    deliveries: {type: [DeliverySchema], default: []},
+
+    // Timestamps
     createdAt: {type: Date, default: () => new Date(), index: true},
     expiresAt: {type: Date, index: true},
 
+    // Extras
     metadata: {type: Schema.Types.Mixed},
-
     icon: {type: String, trim: true},
-
     tags: {
       type: [String],
       index: true,
       default: [],
       set: (v: unknown) => capTags(dedupeTrim(Array.isArray(v) ? v : [])),
     },
-
     link: {
       type: String,
       trim: true,
       set: (v: unknown) => {
         const s = typeof v === 'string' ? v.trim() : '';
-        return isLikelyUrl(s) ? s : s; // store as-is; light check
+        return isLikelyUrl(s) ? s : s;
       },
     },
-
     source: {type: String, trim: true},
 
+    // Read tracking
     readBy: {
       type: [String],
       index: true,
@@ -376,7 +464,7 @@ const NotificationSchema = new Schema<NotificationEntity>(
 );
 
 /* ============================================================================
- * 9) Defaults based on category (icon + tags) for NEW docs
+ * 10) Defaults based on category (icon + tags) for NEW docs
  * ==========================================================================*/
 function applyCategoryDefaults(doc: NotificationEntity) {
   // icon default (only if not provided)
@@ -394,26 +482,35 @@ function applyCategoryDefaults(doc: NotificationEntity) {
 }
 
 /* ============================================================================
- * 10) Hooks: derive category from title; apply defaults
+ * 11) Hooks: derive category/type/target.kind from title; apply defaults
  * ==========================================================================*/
 NotificationSchema.pre('validate', function(next) {
   const doc = this as NotificationEntity;
 
-  // Derive & enforce category based on title
+  // Derive category from title
   if(doc.title) {
     const mapped = TITLE_CATEGORY_MAP[doc.title];
     if(!mapped) return next(new Error(`No category mapping for title "${doc.title}"`));
     doc.category = mapped;
+
+    // If target.kind not explicitly set, align with category
+    if(!doc.target) doc.target = {};
+    if(!doc.target.kind) doc.target.kind = mapped;
   }
 
-  // Category-based defaults
+  // Derive normalized action type from title only if not explicitly provided
+  if(!doc.type) {
+    doc.type = mapTitleToType(doc.title);
+  }
+
+  // Category-based defaults (icon/tags)
   applyCategoryDefaults(doc);
 
   return next();
 });
 
-/* Keep category in sync when updating by query */
-function syncCategoryOnQueryUpdate(this: any, next: Function) {
+/* Keep category/type in sync when updating by query */
+function syncOnQueryUpdate(this: any, next: Function) {
   const update: any = this.getUpdate() || {};
   const set = update.$set ?? update;
 
@@ -422,29 +519,37 @@ function syncCategoryOnQueryUpdate(this: any, next: Function) {
     if(!mapped) return next(new Error(`No category mapping for title "${set.title}"`));
     (update.$set ??= {}).category = mapped;
 
-    // We intentionally DO NOT auto-overwrite icon/tags on updates,
-    // to avoid surprising consumers. (Opt-in if desired.)
+    // Keep target.kind aligned if not explicitly overridden
+    if(!update.$set?.['target.kind'] && !set?.target?.kind) {
+      (update.$set ??= {})['target.kind'] = mapped;
+    }
+
+    // If type not explicitly provided in update, derive from new title
+    if(!set.type && !(update.$set && update.$set.type)) {
+      (update.$set ??= {}).type = mapTitleToType(set.title as Title);
+    }
   }
 
   this.setUpdate(update);
   return next();
 }
-NotificationSchema.pre('findOneAndUpdate', syncCategoryOnQueryUpdate);
-NotificationSchema.pre('updateOne', syncCategoryOnQueryUpdate);
+NotificationSchema.pre('findOneAndUpdate', syncOnQueryUpdate);
+NotificationSchema.pre('updateOne', syncOnQueryUpdate);
 
 /* ============================================================================
- * 11) Indexes
+ * 12) Indexes (fast filters & lookups)
  * ==========================================================================*/
 NotificationSchema.index({title: 1, createdAt: -1});
-NotificationSchema.index({category: 1, createdAt: -1});
+NotificationSchema.index({category: 1, type: 1, createdAt: -1});
 NotificationSchema.index({'audience.mode': 1, createdAt: -1});
 NotificationSchema.index({'audience.usernames': 1, createdAt: -1});
 NotificationSchema.index({'audience.roles': 1, createdAt: -1});
 NotificationSchema.index({severity: 1, createdAt: -1});
 NotificationSchema.index({tags: 1, createdAt: -1});
+NotificationSchema.index({'target.refId': 1, createdAt: -1}); // helps restore/permanent-delete
 
 /* ============================================================================
- * 12) TTL (create at collection level)
+ * 13) TTL (create at collection level in migration/init script)
  *     db.notifications.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
  * ==========================================================================*/
 export const NotificationModel = model<NotificationEntity>(
@@ -454,7 +559,7 @@ export const NotificationModel = model<NotificationEntity>(
 );
 
 /* ============================================================================
- * 13) Helpers
+ * 14) Type guards / helpers
  * ==========================================================================*/
 export const isTitle = (v: unknown): v is Title =>
-  typeof v === 'string' && (TITLE_VALUES as readonly string[]).includes(v as string);
+  typeof v === 'string' && (TITLE_VALUES as readonly string[]).includes(v as any);
