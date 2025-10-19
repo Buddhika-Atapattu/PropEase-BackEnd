@@ -1,138 +1,149 @@
 // src/models/tracking.model.ts
-// ============================================================================
-// Tracking Models
-// ----------------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────────────
 // PURPOSE:
 //   1. Track user login sessions (IP + date).
-//   2. Track user activity events performed after login.
+//   2. Track user activity events after login.
 //
 // STRUCTURE:
 //   - LoggedUserTracking: Keeps history of each user’s login IPs and timestamps.
-//   - LoggedUserActivities: Records activity events (actions) for auditing.
+//   - LoggedUserActivities: Records activity events for auditing.
 //
-// DEPENDENCIES:
-//   - mongoose : ODM library to define schemas and interact with MongoDB.
-// ============================================================================
+// PATTERN: Class-based models (schema + model only, no business logic).
+// ─────────────────────────────────────────────────────────────────────────────
 
-import {Schema, model, InferSchemaType} from "mongoose";
+import {Schema, model, type Document, type Model} from 'mongoose';
 
-// ============================================================================
-// 1️⃣ LOGGED USER LOGIN TRACKING
-// ============================================================================
+/* ============================================================================
+ * 1️⃣ LOGGED USER LOGIN TRACKING
+ * ==========================================================================*/
 
-// ------------------------------ Subdocument Schema ------------------------------
-// This defines a single login record for a user.
-// Each record stores:
-//   - ip_address : The IP address from which the user logged in.
-//   - date       : The date/time of the login.
-//
-// _id is disabled ( _id: false ) because each entry is just a small subdocument
-// and we don’t need an ObjectId for every single login record.
-const LoggedUserDataSchema = new Schema(
-  {
-    ip_address: {type: String, required: true},   // The user's IP at login
-    date: {type: Date, required: true, default: Date.now}, // Auto-set login timestamp
-  },
-  {_id: false}
-);
+/** TypeScript interface for login records */
+export interface ILoggedUserData {
+  ip_address: string;
+  date: Date;
+}
 
-// ------------------------------ Main Schema ------------------------------
-// This represents one document per user inside the "LoggedUserTracking" collection.
-// It contains:
-//   - username : The unique username being tracked.
-//   - data     : An array of login records (each from LoggedUserDataSchema).
-//
-// timestamps: true → adds createdAt and updatedAt fields automatically.
-const loggedUserTrackingSchema = new Schema(
-  {
-    username: {type: String, required: true},  // Which user this record belongs to
-    data: {type: [LoggedUserDataSchema], default: []}, // All login entries for that user
-  },
-  {timestamps: true}
-);
+/** TypeScript interface for user login tracking document */
+export interface ILoggedUserTracking extends Document {
+  username: string;
+  data: ILoggedUserData[];
+  createdAt: Date;
+  updatedAt: Date;
+}
 
-// ------------------------------ TypeScript Integration ------------------------------
-// InferSchemaType automatically creates a TypeScript type that matches
-// the shape of the Mongoose schema above.
-export type LoggedUserTracking = InferSchemaType<typeof loggedUserTrackingSchema>;
+/** Class-based builder for LoggedUserTracking schema and model */
+export class LoggedUserTrackingModelBuilder {
+  /** Build the schema for subdocument (login entries). */
+  private static buildSubSchema(): Schema<ILoggedUserData> {
+    return new Schema<ILoggedUserData>(
+      {
+        ip_address: {type: String, required: true, trim: true},
+        date: {type: Date, required: true, default: Date.now},
+      },
+      {_id: false}
+    );
+  }
 
-// ------------------------------ Model Export ------------------------------
-// This creates a Mongoose model called "LoggedUserTracking" which you can use like:
-//
-//   import { TrackingLoggedUserModel } from "../models/tracking.model";
-//   const record = new TrackingLoggedUserModel({ username: "john_doe" });
-//   await record.save();
-//
-export const TrackingLoggedUserModel = model(
-  "LoggedUserTracking",
-  loggedUserTrackingSchema
-);
+  /** Build the main schema for tracking user login sessions. */
+  public static buildSchema(): Schema<ILoggedUserTracking> {
+    const LoggedUserDataSchema = this.buildSubSchema();
 
-// ============================================================================
-// 2️⃣ LOGGED USER ACTIVITY TRACKING
-// ============================================================================
+    const LoggedUserTrackingSchema = new Schema<ILoggedUserTracking>(
+      {
+        username: {type: String, required: true, trim: true, index: true},
+        data: {type: [LoggedUserDataSchema], default: []},
+      },
+      {timestamps: true}
+    );
 
-// ------------------------------ Subdocument Schema ------------------------------
-// This schema defines one user activity event such as:
-//   "Viewed dashboard", "Updated lease agreement", etc.
-//
-// Fields:
-//   - activity  : Short description of the action.
-//   - timestamp : When the activity occurred.
-const activitySchema = new Schema(
-  {
-    activity: {type: String, required: true},     // Description of what the user did
-    timestamp: {type: Date, default: Date.now},   // When it happened
-  },
-  {_id: false}
-);
+    // Compound index for optimized username+date queries
+    LoggedUserTrackingSchema.index({username: 1, 'data.date': -1});
 
-// ------------------------------ Main Schema ------------------------------
-// This represents a log entry for each user with multiple activity records.
-// Fields:
-//   - username   : User performing the actions.
-//   - ip_address : Where the activity came from (helps trace users).
-//   - activities : Array of subdocuments (each one an activity event).
-//
-// timestamps: true → adds createdAt / updatedAt automatically.
-const loggedUserActivitiesSchema = new Schema(
-  {
-    username: {type: String, required: true},     // Which user the record belongs to
-    ip_address: {type: String, required: true},   // User's IP during the session
-    activities: {type: [activitySchema], default: []}, // List of performed actions
-  },
-  {timestamps: true}
-);
+    return LoggedUserTrackingSchema;
+  }
 
-// ------------------------------ TypeScript Integration ------------------------------
-// This type will have the exact shape of the Mongoose schema,
-// allowing you to use autocompletion and strict typing in your code.
-export type LoggedUserActivities = InferSchemaType<typeof loggedUserActivitiesSchema>;
+  /** Create and return the Mongoose model instance. */
+  public static getModel(): Model<ILoggedUserTracking> {
+    const schema = this.buildSchema();
+    // Explicit collection name: 'logged_user_tracking'
+    return model<ILoggedUserTracking>('LoggedUserTracking', schema, 'logged_user_tracking');
+  }
+}
 
-// ------------------------------ Model Export ------------------------------
-// The "LoggedUserActivities" collection holds user action logs.
-// Example usage:
-//
-//   import { LoggedUserActivitiesModel } from "../models/tracking.model";
-//   await LoggedUserActivitiesModel.updateOne(
-//     { username: "john_doe" },
-//     { $push: { activities: { activity: "Opened dashboard" } } },
-//     { upsert: true }
-//   );
-//
-export const LoggedUserActivitiesModel = model(
-  "LoggedUserActivities",
-  loggedUserActivitiesSchema
-);
+/** Ready-to-use model export for LoggedUserTracking */
+export const TrackingLoggedUserModel = LoggedUserTrackingModelBuilder.getModel();
 
-// ============================================================================
-// SUMMARY
-// ----------------------------------------------------------------------------
-// LoggedUserTracking:
-//   Tracks where/when users log in (IP + timestamp).
-//
-// LoggedUserActivities:
-//   Tracks what users do during their session.
-//
-// Combined, these models provide a solid audit trail system for PropEase.
-// ============================================================================
+/* ============================================================================
+ * 2️⃣ LOGGED USER ACTIVITY TRACKING
+ * ==========================================================================*/
+
+/** TypeScript interface for activity event subdocument */
+export interface IUserActivity {
+  activity: string;
+  timestamp: Date;
+}
+
+/** TypeScript interface for user activity document */
+export interface ILoggedUserActivities extends Document {
+  username: string;
+  ip_address: string;
+  activities: IUserActivity[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** Class-based builder for LoggedUserActivities schema and model */
+export class LoggedUserActivitiesModelBuilder {
+  /** Build the sub-schema for individual user activity records. */
+  private static buildSubSchema(): Schema<IUserActivity> {
+    return new Schema<IUserActivity>(
+      {
+        activity: {type: String, required: true, trim: true},
+        timestamp: {type: Date, default: Date.now},
+      },
+      {_id: false}
+    );
+  }
+
+  /** Build the main schema for tracking user activities. */
+  public static buildSchema(): Schema<ILoggedUserActivities> {
+    const ActivitySchema = this.buildSubSchema();
+
+    const LoggedUserActivitiesSchema = new Schema<ILoggedUserActivities>(
+      {
+        username: {type: String, required: true, trim: true, index: true},
+        ip_address: {type: String, required: true, trim: true},
+        activities: {type: [ActivitySchema], default: []},
+      },
+      {timestamps: true}
+    );
+
+    // Index for faster queries by username and IP
+    LoggedUserActivitiesSchema.index({username: 1, ip_address: 1});
+
+    return LoggedUserActivitiesSchema;
+  }
+
+  /** Create and return the Mongoose model instance. */
+  public static getModel(): Model<ILoggedUserActivities> {
+    const schema = this.buildSchema();
+    // Explicit collection name: 'logged_user_activities'
+    return model<ILoggedUserActivities>('LoggedUserActivities', schema, 'logged_user_activities');
+  }
+}
+
+/** Ready-to-use model export for LoggedUserActivities */
+export const LoggedUserActivitiesModel = LoggedUserActivitiesModelBuilder.getModel();
+
+/* ============================================================================
+ * SUMMARY
+ * ============================================================================
+ * LoggedUserTracking:
+ *   - Tracks where and when users log in (IP + timestamp).
+ *
+ * LoggedUserActivities:
+ *   - Tracks what actions users perform during a session.
+ *
+ * Together, these provide a full audit trail for PropEase.
+ * ============================================================================
+ */

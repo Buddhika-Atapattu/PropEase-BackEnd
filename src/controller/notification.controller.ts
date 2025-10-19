@@ -1,298 +1,322 @@
 // src/controller/notification.controller.ts
-
 // ─────────────────────────────────────────────────────────────────────────────
-// Imports
-// ─────────────────────────────────────────────────────────────────────────────
-import {Router, type RequestHandler} from 'express';              // Express router + types
-import path from 'path';                                            // Node core: file path utils (safe joins, etc.)
-import fs from 'fs';                                                // Node core: sync fs (only for quick checks)
-import fsp from 'fs/promises';                                      // Node core: promise-based fs (readFile, stat, etc.)
-
-import NotificationService, {RestoreByCategoryInput} from '../services/notification.service';  // Service with list/create/restore/delete
-import SocketServer from '../socket/socket';                         // Socket.IO wrapper (emit to rooms)
-import {Role} from '../types/roles';                               // Your role type
-
-// IMPORTANT: Use the same type that the model/service use
-import type {TitleCategory} from '../models/notifications/notification.model';
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Types for requests (runtime-only "shape hints")
+// Notification Controller (Express + TypeScript)
+// - Lists + creates notifications
+// - Marks read (one, many, all)
+// - Restores and permanently deletes domain records by category+refId
+// - Emits domain events over sockets
+// - Creates dynamic notifications (title/body computed in the service) for
+//   restore and permanent delete actions.
+// - Aligns to exactOptionalPropertyTypes by conditionally spreading optionals.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Auth-augmented request (runtime cast only).
- * Your auth middleware should inject `req.user = { username, role }`.
- */
+import {Router, type RequestHandler} from "express";
+import path from "path";
+import fs from "fs";
+import fsp from "fs/promises";
+
+import NotificationService, {
+  type RestoreByCategoryInput,
+  // 👇 Import the DTO to type the 'roles' list precisely
+  type NotificationAudienceDTO,
+} from "../services/notification.service";
+import SocketServer from "../socket/socket";
+
+// Import the role type (union of role literals) and AudienceMode
+import {Role, type AudienceMode} from "../types/roles";
+
+// Use the same TitleCategory type as your model/service
+import type {TitleCategory} from "../models/notifications/notification.model";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auth-augmented request shape. Your auth middleware should set req.user.
+// ─────────────────────────────────────────────────────────────────────────────
 type AuthedReq = Express.Request & {user: {username: string; role: Role}};
 
-/**
- * What the FE can send in the /restore (and /permanent-delete) endpoint.
- * - `category`: free-form from FE (we’ll normalize to TitleCategory)
- * - `refId`: preferred when doing DB "soft-undelete"
- * - `snapshot`: optional JSON with the record (used when re-inserting)
- * - `metadata`: optional extra info (e.g., who deleted, why, filePath, etc.)
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Request payloads (accepted by restore/permanent delete).
+// These tolerate either JSON or multipart/form-data with a "notification" field.
+// ─────────────────────────────────────────────────────────────────────────────
 type RestoreNotificationPayload = {
-  _id?: string;                                // Optional notification id (not required for restore itself)
-  category: string;                            // FE may send "tenant" → we'll normalize to "Tenant"
-  refId?: string;                              // Target DB record id
-  snapshot?: Record<string, any>;              // Optional JSON payload with data to re-insert
-  metadata?: Record<string, any>;              // Extra info (we also look for "filePath" here)
+  _id?: string;
+  category?: string; // FE can send free-form, we normalize to TitleCategory
+  refId?: string; // preferred key (e.g., username, property id)
+  snapshot?: Record<string, any>;
+  metadata?: {
+    refId?: string; // if caller sends it here, we accept it
+    data?: Record<string, any>; // may include filePath
+    // legacy tolerance: some old callers might still send filePath at this level
+    filePath?: string;
+  };
 };
 
-/**
- * Same shape for permanent delete (category + refId are the minimum).
- */
 type PermanentDeletePayload = {
   _id?: string;
-  category: string;
-  refId?: string;                              // Hard delete always requires refId
-  metadata?: Record<string, any>;
+  category?: string;
+  refId?: string; // required here (top-level or metadata.refId)
+  metadata?: {
+    refId?: string;
+    data?: Record<string, any>;
+  };
 };
 
-
 // ─────────────────────────────────────────────────────────────────────────────
-// Local disk (snapshot) reading helpers
+// Optional local snapshot loader (only used if a file path is provided).
+// Your service already knows how to read from /public/recyclebin/<cat>/<refId>/.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Base folder for on-disk snapshots/backups.
- * - You can configure via env var RESTORE_ROOT (recommended in prod).
- * - Falls back to "<project root>/backups" if not set.
- */
+/** Configure a base folder for optional file-based snapshots (if ever needed). */
 const BACKUP_ROOT = (() => {
-  const env = (process.env.RESTORE_ROOT || '').trim();
-  return env ? path.resolve(env) : path.join(process.cwd(), 'backups');
+  const env = (process.env.RESTORE_ROOT || "").trim();
+  return env ? path.resolve(env) : path.join(process.cwd(), "backups");
 })();
 
-/**
- * Join paths securely so a malicious "../../.." cannot escape BACKUP_ROOT.
- * - Returns an absolute path inside BACKUP_ROOT or throws an Error.
- */
-function safeJoin(baseDir: string, ...parts: string[]): string {
-  // Build an absolute candidate path
-  const target = path.resolve(baseDir, ...parts);
-  // Ensure target path is inside baseDir (prevents path traversal attacks)
-  if(!target.startsWith(path.resolve(baseDir) + path.sep) && target !== path.resolve(baseDir)) {
-    throw new Error('Unsafe path detected (path traversal blocked).');
-  }
-  return target;
-}
-
-/**
- * Try to read a JSON snapshot safely from disk.
- * - `relPath` should be relative to BACKUP_ROOT (e.g., "tenants/abc.json").
- * - Validates file exists, prevents traversal, parses JSON.
- * - Returns `undefined` if the file can’t be found/read/parsed.
- */
-async function tryReadJsonSnapshot(relPath?: string): Promise<Record<string, any> | undefined> {
-  try {
-    // No path provided → nothing to read
-    if(!relPath || typeof relPath !== 'string' || !relPath.trim()) return undefined;
-
-    // Join safely so user cannot escape BACKUP_ROOT
-    const absolute = safeJoin(BACKUP_ROOT, relPath.trim());
-
-    // Quick existence check (fs.existsSync is ok; could also use fsp.stat)
-    if(!fs.existsSync(absolute)) return undefined;
-
-    // Read the file as text
-    const data = await fsp.readFile(absolute, 'utf8');
-
-    // Parse JSON carefully
-    const parsed = JSON.parse(data);
-
-    // Ensure result is an object (we only accept objects for snapshots)
-    return typeof parsed === 'object' && parsed ? (parsed as Record<string, any>) : undefined;
-  } catch {
-    // Any failure → treat as "no snapshot available"
-    return undefined;
-  }
-}
-
-/**
- * Normalize a free-form string (e.g., "tenant", "Tenant") to a concrete TitleCategory literal.
- * - Returns undefined for unknown input.
- */
-function normalizeCategory(input?: string): TitleCategory | undefined {
-  if(!input) return undefined;
-  const s = input.trim().toLowerCase();
-
-  // Map common lowercase strings to the exact TitleCategory literals your model uses
-  const map: Record<string, TitleCategory> = {
-    user: 'User',
-    tenant: 'Tenant',
-    property: 'Property',
-    lease: 'Lease',
-    agent: 'Agent',
-    developer: 'Developer',
-    maintenance: 'Maintenance',
-    complaint: 'Complaint',
-    team: 'Team',
-    registration: 'Registration',
-    payment: 'Payment',
-    system: 'System',
-  };
-
-  return map[s];
-}
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Controller
-// ─────────────────────────────────────────────────────────────────────────────
-
 export default class NotificationController {
-  // Instance-wide router we will attach handlers to
   public readonly router = Router();
 
   constructor (
-    private readonly service: NotificationService,  // Service with DB logic
-    private readonly sockets: SocketServer          // Socket wrapper for emits
+    private readonly service: NotificationService,
+    private readonly sockets: SocketServer
   ) {
-    // Register routes here for clarity and single source of truth
-    this.router.get('/', this.listMine);                       // GET /api-notification
-    this.router.post('/create', this.create);                  // POST /api-notification/create
-    this.router.post('/:id/read', this.markRead);              // POST /api-notification/:id/read
-    this.router.post('/read-all', this.markAllRead);           // POST /api-notification/read-all
+    // Keep route registration together
+    this.router.get("/", this.listMine); // GET  /api-notification
+    this.router.post("/create", this.create); // POST /api-notification/create
+    this.router.post("/:id/read", this.markRead); // POST /api-notification/:id/read
+    this.router.post("/read-many", this.markManyRead); // POST /api-notification/read-many
+    this.router.post("/read-all", this.markAllRead); // POST /api-notification/read-all
+    this.router.post("/restore", this.restoreDelete); // POST /api-notification/restore
+    this.router.post("/permanent-delete", this.permanentDelete); // POST /api-notification/permanent-delete
+  }
 
-    // Restore and permanent delete entry points (accept JSON or FormData)
-    this.router.post('/restore', this.restoreDelete);          // POST /api-notification/restore
-    this.router.post('/permanent-delete', this.permanentDelete); // POST /api-notification/permanent-delete
+  // ───────────────────────────────────────────────────────────────────────────
+  // Small helpers
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** Prevent path traversal (guarantee target remains inside baseDir). */
+  private safeJoin(baseDir: string, ...parts: string[]): string {
+    const base = path.resolve(baseDir);
+    const target = path.resolve(baseDir, ...parts);
+    if(!target.startsWith(base + path.sep) && target !== base) {
+      throw new Error("Unsafe path detected (path traversal blocked).");
+    }
+    return target;
+  }
+
+  /** Best-effort read of a JSON snapshot from BACKUP_ROOT/<relPath>. */
+  private async tryReadJsonSnapshot(
+    relPath?: string
+  ): Promise<Record<string, any> | undefined> {
+    try {
+      if(!relPath || typeof relPath !== "string" || !relPath.trim())
+        return undefined;
+      const absolute = this.safeJoin(BACKUP_ROOT, relPath.trim());
+      if(!fs.existsSync(absolute)) return undefined;
+      const data = await fsp.readFile(absolute, "utf8");
+      const parsed = JSON.parse(data);
+      return typeof parsed === "object" && parsed
+        ? (parsed as Record<string, any>)
+        : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   // ───────────────────────────────────────────────────────────────────────────
   // GET /api-notification?skip=0&limit=50&unread=true&category=tenant
-  // List all notifications for the logged-in user, optionally filtering by category.
+  // List the current user's notifications (merged with per-user state).
   // ───────────────────────────────────────────────────────────────────────────
   private listMine: RequestHandler = async (req, res) => {
     try {
-      // Auth middleware should inject user details
-      const {username, role} = ((req as unknown) as AuthedReq).user;
+      const {username, role} = (req as unknown as AuthedReq).user;
+      const {skip = "0", limit = "50", unread, category} = req.query as any;
 
-      // Read query params. All are strings in Express, so coerce as needed.
-      const {skip = '0', limit = '50', unread, category} = req.query as any;
+      const normalizedCategory =
+        typeof category === "string"
+          ? this.normalizeCategory(category)
+          : undefined;
 
-      // Normalize category string (free-form) → TitleCategory (exact literal)
-      const normalizedCategory = typeof category === 'string' ? normalizeCategory(category) : undefined;
-
-      // Build filters expected by the service
       const filters = {
-        skip: Number(skip),                          // page offset in items
-        limit: Number(limit),                        // max items to return
-        onlyUnread: unread === 'true',               // optional filter
+        skip: Number(skip),
+        limit: Number(limit),
+        onlyUnread: unread === "true",
         ...(normalizedCategory ? {category: normalizedCategory} : {}),
-      } as const;                                    // "const" so TS preserves literal types
+      } as const;
 
-      // Ask service for results (includes per-user state merging)
       const data = await this.service.listForUser(username, role, filters);
-
-      // Return normalized JSON
-      res.json({success: true, data});
+      res.status(200).json({success: true, data});
     } catch(err: any) {
-      console.error('Error listing notifications:', err);
-      res.status(500).json({success: false, message: err.message});
+      console.error("[notifications:listMine] error:", err);
+      res
+        .status(500)
+        .json({success: false, message: err?.message || "List error"});
     }
   };
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Normalization helpers
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /** Map free-form string from FE (e.g. "tenant") → exact TitleCategory literal. */
+  private normalizeCategory(input?: string): TitleCategory | undefined {
+    if(!input) return undefined;
+    const s = input.trim().toLowerCase();
+    const map: Record<string, TitleCategory> = {
+      user: "User",
+      tenant: "Tenant",
+      property: "Property",
+      lease: "Lease",
+      agent: "Agent",
+      developer: "Developer",
+      maintenance: "Maintenance",
+      complaint: "Complaint",
+      team: "Team",
+      registration: "Registration",
+      payment: "Payment",
+      system: "System",
+    };
+    return map[s];
+  }
+
+  /**
+   * Compute a default recyclebin path. Usually not needed because the service
+   * already loads snapshots from recyclebin, but kept here for advanced cases.
+   */
+  private defaultRecycleSnapshotPath(
+    category: TitleCategory,
+    refId: string
+  ): string {
+    const root = "recyclebin";
+    switch(category) {
+      case "Property":
+        return `${root}/properties/${encodeURIComponent(refId)}/data.json`;
+      case "Tenant":
+        return `${root}/tenants/${encodeURIComponent(refId)}/data.json`;
+      case "User":
+        return `${root}/users/${encodeURIComponent(refId)}/data.json`;
+      default:
+        return `${root}/${category.toLowerCase()}/${encodeURIComponent(
+          refId
+        )}/data.json`;
+    }
+  }
+
   // ───────────────────────────────────────────────────────────────────────────
   // POST /api-notification/create
-  // Create a new notification (admin/operator/manager only).
-  // The service will fan-out per-user state and can emit to Socket.IO rooms.
+  // Create a notification and fan-out per-user states. RBAC guarded.
   // ───────────────────────────────────────────────────────────────────────────
   private create: RequestHandler = async (req, res) => {
     try {
-      // Basic RBAC check
-      const allowedRoles: ReadonlyArray<Role> = ['admin', 'operator', 'manager'];
-      const {role} = ((req as unknown) as AuthedReq).user;
-      if(!allowedRoles.includes(role)) {
-        res.status(403).json({message: 'Permission denied'});
+      const allowed: ReadonlyArray<Role> = ["admin", "operator", "manager"];
+      const {role} = (req as unknown as AuthedReq).user;
+      if(!allowed.includes(role)) {
+        res.status(403).json({message: "Permission denied"});
         return;
       }
 
-      // Create via service; emit to audience rooms on success
       const created = await this.service.createNotification(
         req.body,
-        (rooms, payload) => this.sockets.emitToRooms(rooms, 'notification.new', payload)
+        (rooms, payload) =>
+          this.sockets.emitToRooms(rooms, "notification.new", payload)
       );
 
       res.status(201).json({success: true, data: created});
     } catch(err: any) {
-      console.error('Error creating notification:', err);
-      res.status(500).json({success: false, message: err.message});
+      console.error("[notifications:create] error:", err);
+      res
+        .status(500)
+        .json({success: false, message: err?.message || "Create error"});
     }
   };
 
   // ───────────────────────────────────────────────────────────────────────────
   // POST /api-notification/:id/read
-  // Mark one notification as read for the current user.
+  // Mark a single notification as read for the current user.
   // ───────────────────────────────────────────────────────────────────────────
   private markRead: RequestHandler = async (req, res) => {
     try {
-      const {username} = ((req as unknown) as AuthedReq).user;
+      const {username} = (req as unknown as AuthedReq).user;
       const {id} = req.params;
-
-      // Validate id
-      if(typeof id !== 'string' || !id.trim()) {
-        res.status(400).json({success: false, message: 'Invalid notification ID'});
+      if(typeof id !== "string" || !id.trim()) {
+        res
+          .status(400)
+          .json({success: false, message: "Invalid notification ID"});
         return;
       }
-
       await this.service.markRead(username, id);
-      res.json({success: true});
+      res.status(200).json({success: true});
     } catch(err: any) {
-      console.error('Error marking notification as read:', err);
-      res.status(500).json({success: false, message: err.message});
+      console.error("[notifications:markRead] error:", err);
+      res
+        .status(500)
+        .json({success: false, message: err?.message || "Mark read error"});
+    }
+  };
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // POST /api-notification/read-many
+  // Bulk mark many notifications as read for the current user.
+  // Body: { ids: string[] }
+  // ───────────────────────────────────────────────────────────────────────────
+  private markManyRead: RequestHandler = async (req, res) => {
+    try {
+      const {username} = (req as unknown as AuthedReq).user;
+      const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids : [];
+      if(!ids.length) {
+        res
+          .status(400)
+          .json({success: false, message: "Missing 'ids' array"});
+        return;
+      }
+      await this.service.markManyRead(username, ids);
+      res.status(200).json({success: true});
+    } catch(err: any) {
+      console.error("[notifications:markManyRead] error:", err);
+      res.status(500).json({
+        success: false,
+        message: err?.message || "Bulk mark read error",
+      });
     }
   };
 
   // ───────────────────────────────────────────────────────────────────────────
   // POST /api-notification/read-all
-  // Mark ALL notifications as read for the current user (bulk).
+  // Mark ALL notifications as read for the current user.
   // ───────────────────────────────────────────────────────────────────────────
   private markAllRead: RequestHandler = async (_req, res) => {
     try {
-      const {username} = ((_req as unknown) as AuthedReq).user;
+      const {username} = (_req as unknown as AuthedReq).user;
       await this.service.markAllRead(username);
-      res.json({success: true});
+      res.status(200).json({success: true});
     } catch(err: any) {
-      console.error('Error marking all notifications as read:', err);
-      res.status(500).json({success: false, message: err.message});
+      console.error("[notifications:markAllRead] error:", err);
+      res.status(500).json({
+        success: false,
+        message: err?.message || "Mark all read error",
+      });
     }
   };
 
   // ───────────────────────────────────────────────────────────────────────────
   // POST /api-notification/restore
-  //
-  // Restore a deleted domain record using either:
-  //   - refId (preferred if you soft-delete in DB), OR
-  //   - a snapshot object provided in the request, OR
-  //   - a snapshot path on disk (metadata.filePath) → reads BACKUP_ROOT/<filePath>
-  //
-  // Accepts JSON or FormData (field name "notification").
-  //
-  // Security notes:
-  //   - We normalize category to TitleCategory (strict set).
-  //   - We prevent path traversal on snapshot reads via safeJoin().
-  //   - Only admin/operator/manager roles are allowed.
+  // Restore a domain record by category + refId (or provided snapshot).
+  // Also creates a dynamic notification ("Restore <Category>") to role rooms.
   // ───────────────────────────────────────────────────────────────────────────
   private restoreDelete: RequestHandler = async (req, res) => {
     try {
-      // (1) Extract payload from JSON or FormData
-      //     If Content-Type is multipart/form-data, ensure Multer `.none()` is used where routes are registered.
-      const raw =
-        typeof (req.body as any)?.notification === 'string'
+      // 1) Parse the input (supports JSON or multipart with "notification" part).
+      const envelope =
+        typeof (req.body as any)?.notification === "string"
           ? (req.body as any).notification
           : (req.body as any)?.notification
             ? JSON.stringify((req.body as any).notification)
             : undefined;
 
-      // (2) Support plain JSON body as well (no wrapper)
-      const fallbackJsonBody =
-        raw == null && req.is('application/json') ? JSON.stringify(req.body) : undefined;
+      const fallback =
+        envelope == null && req.is("application/json")
+          ? JSON.stringify(req.body)
+          : undefined;
 
-      const toParse = raw ?? fallbackJsonBody;
+      const toParse = envelope ?? fallback;
       if(!toParse) {
         res.status(400).json({
           success: false,
@@ -302,109 +326,151 @@ export default class NotificationController {
         return;
       }
 
-      // (3) Parse JSON safely
-      let parsed: RestoreNotificationPayload | undefined;
+      let parsed!: RestoreNotificationPayload;
       try {
         parsed = JSON.parse(toParse) as RestoreNotificationPayload;
       } catch {
-        res.status(400).json({success: false, message: 'Invalid JSON in "notification"'});
+        res
+          .status(400)
+          .json({success: false, message: 'Invalid JSON in "notification"'});
         return;
       }
 
-      // (4) Normalize & validate category
-      const category = normalizeCategory(parsed?.category);
+      // 2) Normalize category and refId
+      const category = this.normalizeCategory(parsed?.category);
       if(!category) {
-        res.status(400).json({success: false, message: 'Missing/invalid "category"'});
+        res
+          .status(400)
+          .json({success: false, message: 'Missing/invalid "category"'});
         return;
       }
 
-      // (5) Prefer refId; if missing, try snapshot; if not provided, try reading from disk
-      const refId = typeof parsed?.refId === 'string' ? parsed!.refId!.trim() : undefined;
-      let snapshot = parsed?.snapshot && typeof parsed.snapshot === 'object' ? parsed.snapshot : undefined;
-      const metadata = parsed?.metadata ?? {};
+      const refId =
+        typeof parsed?.refId === "string" && parsed.refId.trim()
+          ? parsed.refId.trim()
+          : typeof parsed?.metadata?.refId === "string" &&
+            parsed.metadata.refId.trim()
+            ? parsed.metadata.refId.trim()
+            : undefined;
 
-      // Optional: allow FE to pass a relative file path for snapshot on disk (e.g., "tenants/123.json")
-      // - We’ll read it ONLY if the request didn’t include a snapshot object.
-      // - Prevent path traversal using `safeJoin`.
-      if(!snapshot) {
-        const filePath = typeof metadata?.filePath === 'string' ? metadata.filePath.trim() : '';
-        if(filePath) {
-          snapshot = await tryReadJsonSnapshot(filePath);
-        }
+      // 3) Optional snapshot (inline or via filePath)
+      let snapshot =
+        parsed?.snapshot && typeof parsed.snapshot === "object"
+          ? parsed.snapshot
+          : undefined;
+
+      const explicitFilePath =
+        typeof parsed?.metadata?.data?.filePath === "string" &&
+          parsed.metadata.data.filePath.trim()
+          ? parsed.metadata.data.filePath.trim()
+          : typeof parsed?.metadata?.filePath === "string" &&
+            parsed.metadata.filePath.trim()
+            ? parsed.metadata.filePath.trim()
+            : "";
+
+      if(!snapshot && explicitFilePath) {
+        snapshot = await this.tryReadJsonSnapshot(explicitFilePath);
       }
 
-      // Must have at least refId or snapshot to proceed
       if(!refId && !snapshot) {
-        res.status(400).json({success: false, message: 'Provide "refId" or a valid "snapshot" (or metadata.filePath).'});
+        res.status(400).json({
+          success: false,
+          message:
+            'Provide "refId" (top-level or metadata.refId) or a valid "snapshot" (or metadata.data.filePath).',
+        });
         return;
       }
 
-      // (6) Authorization policy (adjust as needed)
-      const {role, username} = ((req as unknown) as AuthedReq).user;
-      const mayRestore = role === 'admin' || role === 'operator' || role === 'manager';
-      if(!mayRestore) {
-        res.status(403).json({success: false, message: 'Permission denied'});
+      // 4) RBAC
+      const {role, username} = (req as unknown as AuthedReq).user;
+      if(!(role === "admin" || role === "operator" || role === "manager")) {
+        res.status(403).json({success: false, message: "Permission denied"});
         return;
       }
 
-      // (7) Build input for service, omitting undefined optional fields (works with exactOptionalPropertyTypes)
+      // 5) Build input for service (omit undefined keys → exactOptionalPropertyTypes-safe)
       const restoreInput: RestoreByCategoryInput = {
-        category,                    // TitleCategory
-        metadata,                    // pass-thru metadata (may include filePath, etc.)
-        requestedBy: username,       // actor performing the restore
+        category,
+        requestedBy: username,
         ...(refId ? {refId} : {}),
         ...(snapshot ? {snapshot} : {}),
-      } as const;
+        ...(parsed?.metadata ? {metadata: parsed.metadata} : {}),
+      };
 
-      // (8) Call service to perform the actual DB operation
+      // 6) Execute restore
       const result = await this.service.restoreByCategory(restoreInput);
 
-      // (9) Emit socket update so connected clients can reflect changes in real-time
+      // 7) Emit live event + create dynamic notification
       if(result?.ok) {
-        this.sockets.emitToRooms(
-          result.rooms || [],
-          'notification.restore',
-          {category, refId, by: username}
-        );
+        this.sockets.emitToRooms(result.rooms || [], "notification.restore", {
+          category,
+          refId,
+          by: username,
+        });
 
-        this.filterRestoreData(restoreInput);
+        // 👇 IMPORTANT: Type audience in a narrow way
+        const audienceMode: AudienceMode = "role"; // narrows 'mode' to the union literal
+        const roles: NotificationAudienceDTO["roles"] = [
+          "admin",
+          "operator",
+          "manager",
+        ];
+
+        // Build args for dynamic notification creation.
+        // The service computes title/body for action/category.
+        const notifyArgs = {
+          action: "restore" as const,
+          category, // TitleCategory
+          refId: refId!, // you validated presence above when needed
+          requestedBy: username,
+          ...(snapshot ? {snapshot} : {}), // include only if present
+          audience: {mode: audienceMode, roles},
+          source: "notification.controller:restore",
+          // You may also pass link/icon/tags/channels/severity here if needed:
+          // link: `/admin/${category.toLowerCase()}/${encodeURIComponent(refId!)}`,
+          // severity: "success" as const,
+        };
+
+        await this.service.notifyDomainAction(notifyArgs);
       }
 
-      // (10) Respond with outcome
       res.status(200).json({
         success: !!result?.ok,
-        message: result?.message || (result?.ok ? 'Restored' : 'Restore failed'),
+        message:
+          result?.message || (result?.ok ? "Restored" : "Restore failed"),
         category,
         refId,
         restored: result?.restored ?? undefined,
       });
     } catch(err: any) {
-      console.error('Error restoring by category:', err);
-      res.status(500).json({success: false, message: err?.message || 'Restore error'});
+      console.error("[notifications:restore] error:", err);
+      res
+        .status(500)
+        .json({success: false, message: err?.message || "Restore error"});
     }
   };
 
   // ───────────────────────────────────────────────────────────────────────────
   // POST /api-notification/permanent-delete
-  //
-  // Permanent (hard) delete a domain record by category + refId.
-  // Accepts JSON or FormData (field name "notification"), similar to restore.
-  // Security: same RBAC; no snapshot reading here—refId is required.
+  // Hard delete by category + refId. Also creates a dynamic notification
+  // ("Permanent Delete <Category>") to role rooms.
   // ───────────────────────────────────────────────────────────────────────────
   private permanentDelete: RequestHandler = async (req, res) => {
     try {
-      // Same extraction approach to support both JSON and multipart
-      const raw =
-        typeof (req.body as any)?.notification === 'string'
+      // 1) Parse input
+      const envelope =
+        typeof (req.body as any)?.notification === "string"
           ? (req.body as any).notification
           : (req.body as any)?.notification
             ? JSON.stringify((req.body as any).notification)
             : undefined;
 
-      const fallbackJsonBody =
-        raw == null && req.is('application/json') ? JSON.stringify(req.body) : undefined;
+      const fallback =
+        envelope == null && req.is("application/json")
+          ? JSON.stringify(req.body)
+          : undefined;
 
-      const toParse = raw ?? fallbackJsonBody;
+      const toParse = envelope ?? fallback;
       if(!toParse) {
         res.status(400).json({
           success: false,
@@ -414,73 +480,105 @@ export default class NotificationController {
         return;
       }
 
-      // Parse safely
-      let parsed: PermanentDeletePayload | undefined;
+      let parsed!: PermanentDeletePayload;
       try {
         parsed = JSON.parse(toParse) as PermanentDeletePayload;
       } catch {
-        res.status(400).json({success: false, message: 'Invalid JSON in "notification"'});
+        res
+          .status(400)
+          .json({success: false, message: 'Invalid JSON in "notification"'});
         return;
       }
 
-      // Normalize & validate
-      const category = normalizeCategory(parsed?.category);
+      // 2) Normalize inputs
+      const category = this.normalizeCategory(parsed?.category);
       if(!category) {
-        res.status(400).json({success: false, message: 'Missing/invalid "category"'});
+        res
+          .status(400)
+          .json({success: false, message: 'Missing/invalid "category"'});
         return;
       }
 
-      const refId = typeof parsed?.refId === 'string' ? parsed!.refId!.trim() : '';
+      const refId =
+        typeof parsed?.refId === "string" && parsed.refId.trim()
+          ? parsed.refId.trim()
+          : typeof parsed?.metadata?.refId === "string" &&
+            parsed.metadata.refId.trim()
+            ? parsed.metadata.refId.trim()
+            : "";
+
       if(!refId) {
-        res.status(400).json({success: false, message: 'Missing "refId" for permanent delete'});
+        res.status(400).json({
+          success: false,
+          message: 'Missing "refId" (top-level or metadata.refId).',
+        });
         return;
       }
 
-      const metadata = parsed?.metadata ?? {};
-
-      // RBAC
-      const {role, username} = ((req as unknown) as AuthedReq).user;
-      const mayDelete = role === 'admin' || role === 'operator' || role === 'manager';
-      if(!mayDelete) {
-        res.status(403).json({success: false, message: 'Permission denied'});
+      // 3) RBAC
+      const {role, username} = (req as unknown as AuthedReq).user;
+      if(!(role === "admin")) {
+        res.status(403).json({success: false, message: "Permission denied"});
         return;
       }
 
-      // Service call (no undefined issues here; refId is a definite string)
+      // 4) Execute hard delete
       const result = await this.service.permanentDeleteByCategory({
         category,
-        refId,
-        metadata,
+        refId, // definite string
+        ...(parsed?.metadata ? {metadata: parsed.metadata} : {}),
         requestedBy: username,
       });
 
-      // Socket emit for live updates
+      // 5) Emit live event + dynamic notification
       if(result?.ok) {
         this.sockets.emitToRooms(
           result.rooms || [],
-          'notification.permanent_delete',
-          {category, refId, by: username}
+          "notification.permanent_delete",
+          {
+            category,
+            refId,
+            by: username,
+          }
         );
+
+        // 👇 IMPORTANT: Type audience in a narrow way
+        const audienceMode: AudienceMode = "role";
+        const roles: NotificationAudienceDTO["roles"] = [
+          "admin",
+          "operator",
+          "manager",
+        ];
+
+        const notifyArgs = {
+          action: "permanent_delete" as const,
+          category,
+          refId,
+          requestedBy: username,
+          audience: {mode: audienceMode, roles},
+          source: "notification.controller:permanent_delete",
+          // Optional extras:
+          // severity: "warning" as const,
+          // link: `/admin/${category.toLowerCase()}/${encodeURIComponent(refId)}`,
+        };
+
+        await this.service.notifyDomainAction(notifyArgs);
       }
 
-      // Response
-      res.json({
+      res.status(200).json({
         success: !!result?.ok,
-        message: result?.message || (result?.ok ? 'Permanently deleted' : 'Permanent delete failed'),
+        message:
+          result?.message ||
+          (result?.ok ? "Permanently deleted" : "Permanent delete failed"),
         category,
         refId,
       });
     } catch(err: any) {
-      console.error('Error in permanent delete:', err);
-      res.status(500).json({success: false, message: err?.message || 'Permanent delete error'});
+      console.error("[notifications:permanentDelete] error:", err);
+      res.status(500).json({
+        success: false,
+        message: err?.message || "Permanent delete error",
+      });
     }
   };
-
-  // ───────────────────────────────────────────────────────────────────────────
-  // Restore data into database
-  // ───────────────────────────────────────────────────────────────────────────
-
-  private filterRestoreData(data: RestoreByCategoryInput) {
-    console.log("Restore data into database: ", data)
-  }
 }

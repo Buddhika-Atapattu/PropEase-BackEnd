@@ -196,7 +196,14 @@ export default class Tenant {
             severity: "info",
             audience: {mode: "role", roles: ["admin", "agent", "manager", "operator"], usernames: [tenant.username]},
             channels: ["inapp", "email"],
-            metadata: {tenant: doc, addedDate: new Date().toISOString(), addedBy: tenant.addedBy},
+            metadata: {
+              refId: tenant.username,
+              data: {
+                tenant: doc,
+                addedDate: new Date().toISOString(),
+                addedBy: tenant.addedBy
+              }
+            },
           },
           (rooms, payload) => rooms.forEach((room) => io.to(room).emit("notification.new", payload))
         );
@@ -250,6 +257,8 @@ export default class Tenant {
           if(!username) throw new Error("Username required!");
           if(!deletor) throw new Error("Deletor required!");
 
+
+
           // Check the tenant exists
           const tenantDoc = await TenantModel.findOne({username});
           if(!tenantDoc) throw new Error("Tenant not found!");
@@ -260,6 +269,12 @@ export default class Tenant {
 
           // --------------------- 2) Load all leases for this tenant -----------
           const leases = await LeaseModel.find({"tenantInformation.tenantUsername": username}).lean();
+
+          // Make the snapshot
+          const snapshot = {
+            tenant: tenantDoc,
+            leases: leases
+          }
 
           // Prepare recyclebin structure for this tenant
           const tenantRecycleRoot = this.safeJoin(this.TENANT_RECYCLE_ROOT, username);
@@ -348,7 +363,15 @@ export default class Tenant {
               severity: "warning",
               audience: {mode: "role", roles: ["admin", "agent", "manager", "operator"]},
               channels: ["inapp", "email"],
-              metadata: {tenant: tenantDoc, data: organisedMetadata},
+              metadata: {
+                refId: username,
+                data: {
+                  snapshot,
+                  image: tenantDoc.image,
+                  tenant: tenantDoc,
+                  data: organisedMetadata
+                }
+              },
             },
             (rooms, payload) => rooms.forEach((room) => io.to(room).emit("notification.new", payload))
           );

@@ -644,12 +644,15 @@ export default class Lease {
               audience: {mode: "role", usernames: [tenantUsername], roles: ["admin", "operator", "manager"]},
               channels: ["inapp", "email"],
               metadata: {
-                tenantUsername,
-                lease: INSERT_DOCUMENT_DATA,
-                leaseID,
-                action: "created",
-                performedBy: INSERT_DATA_signatures.userAgent,
-                ipAddress,
+                refId: leaseID,
+                data: {
+                  tenantUsername,
+                  lease: INSERT_DOCUMENT_DATA,
+                  leaseID,
+                  action: "created",
+                  performedBy: INSERT_DATA_signatures.userAgent,
+                  ipAddress,
+                }
               },
             },
             (rooms, payload) => rooms.forEach((room) => io.to(room).emit("notification.new", payload))
@@ -1088,12 +1091,15 @@ export default class Lease {
               audience: {mode: "user", usernames: [tenantUsername], roles: ["admin", "operator"]},
               channels: ["inapp", "email"],
               metadata: {
-                lease: UPDATE_DOCUMENT_DATA,
-                leaseID,
-                tenantUsername,
-                updatedBy: userAgent,
-                ipAddress,
-                updatedAt: new Date().toISOString(),
+                refId: UPDATE_DOCUMENT_DATA.leaseID,
+                data: {
+                  lease: UPDATE_DOCUMENT_DATA,
+                  leaseID,
+                  tenantUsername,
+                  updatedBy: userAgent,
+                  ipAddress,
+                  updatedAt: new Date().toISOString(),
+                }
               },
             },
             (rooms, payload) => rooms.forEach((room) => io.to(room).emit("notification.new", payload))
@@ -1279,11 +1285,14 @@ export default class Lease {
             audience: {mode: "role", usernames: [leaseData.tenantInformation.tenantUsername], roles: ["admin", "operator"]},
             channels: ["inapp", "email"],
             metadata: {
-              lease: leaseData,
-              generatedAt: new Date().toISOString(),
-              generatedBy: generator,
-              ipAddress: req.ip,
-              userAgent: req.headers["user-agent"],
+              refId: leaseID,
+              data: {
+                lease: leaseData,
+                generatedAt: new Date().toISOString(),
+                generatedBy: generator,
+                ipAddress: req.ip,
+                userAgent: req.headers["user-agent"],
+              }
             },
           },
           (rooms, payload) => rooms.forEach((room) => io.to(room).emit("notification.new", payload))

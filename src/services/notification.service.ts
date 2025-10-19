@@ -9,8 +9,8 @@
 // - Comments are beginner-friendly and explain WHY, not just WHAT
 // ─────────────────────────────────────────────────────────────────────────────
 
-import path from 'path';                    // build safe file paths
-import * as fsp from 'fs/promises';         // async fs (rm, mkdir, etc.)
+import path from 'path';
+import * as fsp from 'fs/promises';
 
 import {
     FilterQuery,
@@ -22,7 +22,7 @@ import {
 
 import RecycleBinService from './recyclebin.service';
 import {Role, AudienceMode} from '../types/roles';
-import {UserModel, type IUser} from '../models/user.model';
+import {type IUser} from '../models/user.model';
 
 // Master (notification) + per-user state
 import {
@@ -37,6 +37,12 @@ import {
 
 import {UserNotificationModel} from '../models/notifications/user-notification.model';
 
+// IMPORT UTILITIES MODELS
+import {UserModel} from '../models/user.model';
+import {LeaseModel} from '../models/lease.model';
+import {PropertyModel} from '../models/property.model';
+import {TenantModel} from '../models/tenant.model';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DTOs (kept as-is, used across controller/service)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -47,20 +53,24 @@ export interface NotificationAudienceDTO {
     roles?: Array<'admin' | 'agent' | 'tenant' | 'owner' | 'operator' | 'manager' | 'developer' | 'user'>;
 }
 
+export interface NotificationMetadata {
+    refId: string;
+    data?: Record<string, any>;
+}
+
 export interface CreateNotificationDTO {
-    title: Title;
+    title: Title | string;
     body: string;
     type: DefinedTypes;
     severity?: NotificationSeverity;
     audience: NotificationAudienceDTO;
     channels?: NotificationChannel[];
     expiresAt?: Date;
-    metadata?: Record<string, any>;
+    metadata?: NotificationMetadata;
     icon?: string;
     tags?: string[];
     link?: string;
     source?: string;
-    // optional reference to the domain entity this notification is about
     target?: {kind?: TitleCategory; refId?: string};
 }
 
@@ -85,7 +95,7 @@ export interface NotificationWithStateDTO {
     channels?: NotificationChannel[];
     createdAt: string;
     expiresAt?: string;
-    metadata?: Record<string, any>;
+    metadata?: NotificationMetadata;
     icon?: string;
     tags?: string[];
     link?: string;
@@ -118,40 +128,206 @@ export interface ListOptions {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface RestoreByCategoryInput {
-    category: TitleCategory;                 // which domain collection
-    refId?: string;                          // preferred key to find recyclebin entry
-    snapshot?: Record<string, any>;          // optional fallback JSON from the request
-    metadata?: Record<string, any>;          // free-form audit context
-    requestedBy: string;                     // who triggered the action
-    useTransaction?: boolean;                // wrap DB writes in a transaction
+    category: TitleCategory;
+    refId?: string;
+    snapshot?: Record<string, any>;
+    metadata?: Record<string, any>;
+    requestedBy: string;
+    useTransaction?: boolean;
 }
 
 export interface PermanentDeleteInput {
-    category: TitleCategory;                 // domain collection
-    refId: string;                           // recyclebin entity to destroy
+    category: TitleCategory;
+    refId: string;
     metadata?: Record<string, any>;
     requestedBy: string;
     useTransaction?: boolean;
 }
 
 export interface DispatchResult {
-    ok: boolean;                             // success flag
-    message?: string;                        // human readable result
-    rooms?: string[];                        // Socket.IO rooms to notify
-    restored?: any;                          // restored document (or just its id)
+    ok: boolean;
+    message?: string;
+    rooms?: string[];
+    restored?: any;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dynamic Helper: actions and types
+// ─────────────────────────────────────────────────────────────────────────────
+export const DOMAIN_ACTIONS = ['restore', 'permanent_delete'] as const;
+export type DomainAction = (typeof DOMAIN_ACTIONS)[number];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Service
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default class NotificationService {
-    // Keep one RecycleBinService instance around
     private readonly bin = new RecycleBinService();
+
+    /** Central map for action+category → Title literal used by UI filters. */
+    private readonly ACTION_TITLE_MAP: Record<
+        DomainAction,
+        Record<TitleCategory, Title | string>
+    > = {
+            restore: {
+                User: 'Restore User',
+                Tenant: 'Restore Tenant',
+                Property: 'Restore Property',
+                Lease: 'Restore Lease',
+                Agent: 'Restore Agent',
+                Developer: 'Restore Developer',
+                Maintenance: 'Restore Maintenance',
+                Complaint: 'Restore Complaint',
+                Team: 'Restore Team',
+                Registration: 'Restore Registration',
+                Payment: 'Restore Payment',
+                System: 'Restore System',
+            },
+            permanent_delete: {
+                User: 'Permanent Delete User',
+                Tenant: 'Permanent Delete Tenant',
+                Property: 'Permanent Delete Property',
+                Lease: 'Permanent Delete Lease',
+                Agent: 'Permanent Delete Agent',
+                Developer: 'Permanent Delete Developer',
+                Maintenance: 'Permanent Delete Maintenance',
+                Complaint: 'Permanent Delete Complaint',
+                Team: 'Permanent Delete Team',
+                Registration: 'Permanent Delete Registration',
+                Payment: 'Permanent Delete Payment',
+                System: 'Permanent Delete System',
+            },
+        };
 
     constructor () {}
 
-    // ========== Small helper builders (bulk options, guards, etc.) =============
+    // ───────────────────────────────────────────────────────────────────────────
+    // Dynamic helpers (titles, bodies, default audience)
+    // ───────────────────────────────────────────────────────────────────────────
+
+    private titleFor(action: DomainAction, category: TitleCategory): Title {
+        const t = this.ACTION_TITLE_MAP[action]?.[category];
+        if(!t) throw new Error(`Missing Title mapping for action=${action} category=${category}`);
+        return t as Title;
+    }
+
+    /**
+     * Build a human label for the entity from the snapshot (or fallback to refId).
+     * We try the most meaningful fields per category first, then generic fallbacks.
+     */
+    private displayLabelFromSnapshot(
+        category: TitleCategory,
+        refId: string,
+        snapshot?: Record<string, any>
+    ): string {
+        const safe = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+        const pick = (obj: any, keys: string[]) => {
+            for(const k of keys) {
+                const v = safe(obj?.[k]);
+                if(v) return v;
+            }
+            return '';
+        };
+
+        if(!snapshot || typeof snapshot !== 'object') return `(${refId})`;
+
+        switch(category) {
+            case 'User':
+                return pick(snapshot, ['name', 'username', 'email', '_id', 'id']) || `(${refId})`;
+            case 'Tenant':
+                return (
+                    pick(snapshot?.tenantInformation, ['fullName', 'tenantUsername', 'email']) ||
+                    pick(snapshot, ['name', 'tenantUsername', 'email', '_id', 'id']) ||
+                    `(${refId})`
+                );
+            case 'Property':
+                return pick(snapshot, ['title', 'referenceCode', 'id', '_id']) || `(${refId})`;
+            case 'Lease':
+                return (
+                    pick(snapshot, ['leaseID', 'id', '_id']) ||
+                    pick(snapshot?.tenantInformation, ['fullName', 'tenantUsername', 'email']) ||
+                    `(${refId})`
+                );
+            default:
+                return (
+                    pick(snapshot, ['title', 'name', 'code', 'label', 'reference', 'ref', 'id', '_id']) ||
+                    pick(snapshot?.metadata, ['title', 'name', 'code', 'label']) ||
+                    `(${refId})`
+                );
+        }
+    }
+
+    private bodyFor(
+        action: DomainAction,
+        category: TitleCategory,
+        refId: string,
+        requestedBy: string,
+        snapshot?: Record<string, any>
+    ): string {
+        const label = this.displayLabelFromSnapshot(category, refId, snapshot);
+        return action === 'restore'
+            ? `${category} ${label} restored by ${requestedBy}.`
+            : `${category} ${label} permanently deleted by ${requestedBy}.`;
+    }
+
+    /** Default audience for domain actions: admin/operator/manager. */
+    private defaultAudience(_category: TitleCategory): NotificationAudienceDTO {
+        return {mode: 'role', roles: ['admin', 'operator', 'manager']};
+    }
+
+    /**
+     * Public helper to create a notification for a domain action.
+     * Returns a **plain** NotificationEntity (not a Mongoose document).
+     */
+    public async notifyDomainAction(input: {
+        action: DomainAction;
+        category: TitleCategory;
+        refId: string;
+        requestedBy: string;
+        snapshot?: Record<string, any>;
+        audience?: NotificationAudienceDTO;
+        channels?: NotificationChannel[];
+        severity?: NotificationSeverity;
+        icon?: string;
+        tags?: string[];
+        link?: string;
+        source?: string;
+    }): Promise<NotificationEntity> {
+        const {
+            action, category, refId, requestedBy,
+            snapshot, audience, channels, severity, icon, tags, link, source,
+        } = input;
+
+        const title = this.titleFor(action, category);
+        const type: DefinedTypes = action; // 'restore' | 'permanent_delete'
+        const body = this.bodyFor(action, category, refId, requestedBy, snapshot);
+        const finalAudience = audience ?? this.defaultAudience(category);
+        const metadata = {refId, data: {byUser: requestedBy, action, category}};
+
+        const dto: CreateNotificationDTO = {
+            title,
+            body,
+            type,
+            severity: severity ?? (action === 'restore' ? 'success' : 'warning'),
+            audience: finalAudience,
+            ...(channels ? {channels} : {}),
+            metadata,
+            ...(icon ? {icon} : {}),
+            ...(tags ? {tags} : {}),
+            ...(link ? {link} : {}),
+            ...(source ? {source} : {}),
+            target: {kind: category, refId},
+        };
+
+        // IMPORTANT: createNotification now returns a *plain* NotificationEntity
+        return this.createNotification(dto, (/* rooms, payload */) => {
+            // optional socket emission hook if you injected an emitter elsewhere
+        });
+    }
+
+    // ───────────────────────────────────────────────────────────────────────────
+    // Bulk/guard helpers
+    // ───────────────────────────────────────────────────────────────────────────
 
     private bulkOpts(session?: ClientSession) {
         return session ? {ordered: false as const, session} : {ordered: false as const};
@@ -167,14 +343,12 @@ export default class NotificationService {
         return session ? {session} : {};
     }
 
-    /** Validate audience input early so we fail fast with a clear message. */
     private validateAudience(a: NotificationAudienceDTO) {
         if(!a?.mode) throw new Error('Audience mode is required');
         if(a.mode === 'user' && !a.usernames?.length) throw new Error('Audience usernames are required for mode=user');
         if(a.mode === 'role' && !a.roles?.length) throw new Error('Audience roles are required for mode=role');
     }
 
-    /** Compute Socket.IO rooms for broadcast/user/role. */
     private roomsForAudience(a: NotificationAudienceDTO): string[] {
         const rooms = new Set<string>();
         if(a.mode === 'broadcast') rooms.add('broadcast');
@@ -183,17 +357,19 @@ export default class NotificationService {
         return Array.from(rooms);
     }
 
-    /** Turn the audience into a Mongoose query for users. */
     private userQueryForAudience(a: NotificationAudienceDTO): FilterQuery<IUser> {
         if(a.mode === 'broadcast') return {isActive: true};
         if(a.mode === 'user') return {isActive: true, username: {$in: a.usernames ?? []}};
         return {isActive: true, role: {$in: a.roles ?? []}};
     }
 
-    /** Create/Upsert per-user states for the given notification. */
+    /**
+     * Deliver a master notification to all users in the audience by upserting
+     * per-user state rows. Accepts a **plain** NotificationEntity.
+     */
     private async deliverToAudience(notification: NotificationEntity, session?: ClientSession) {
         const q = this.userQueryForAudience(notification.audience as NotificationAudienceDTO);
-        const cursor = UserModel.find(q).select({username: 1}).lean().cursor();   // stream users to avoid huge memory
+        const cursor = UserModel.find(q).select({username: 1}).lean().cursor();
 
         const ops: any[] = [];
         const notifId = String(notification._id);
@@ -210,7 +386,6 @@ export default class NotificationService {
                 },
             });
 
-            // flush in chunks to keep memory steady
             if(ops.length >= 1000) {
                 await UserNotificationModel.bulkWrite(ops, this.bulkOpts(session));
                 ops.length = 0;
@@ -220,40 +395,44 @@ export default class NotificationService {
         if(ops.length) await UserNotificationModel.bulkWrite(ops, this.bulkOpts(session));
     }
 
-    // ============================ Creation =====================================
+    // ───────────────────────────────────────────────────────────────────────────
+    // Creation (FIXED: always return a plain NotificationEntity, not a doc)
+    // ───────────────────────────────────────────────────────────────────────────
 
     /**
      * Create a master notification and fan-out per-user states.
-     * FE benefits because reads can include `userState` immediately.
+     * RETURNS: a **plain** NotificationEntity (safe for sockets/UI).
+     *
+     * Why not `Model.create([doc])`? Its typing allows `undefined` for `[0]`
+     * in strict mode. Using `new Model(doc).save()` guarantees a single doc.
      */
-    async createNotification(
+    public async createNotification(
         doc: CreateNotificationDTO,
         emit?: (rooms: string[], payload: NotificationEntity) => void,
         session?: ClientSession
-    ) {
+    ): Promise<NotificationEntity> {
         this.validateAudience(doc.audience);
 
-        // create returns an array when we pass array payloads
-        const [persisted] = await NotificationModel.create(
-            [{...doc, createdAt: new Date()}],
-            session ? {session} : undefined
-        );
+        const m = new NotificationModel({...doc, createdAt: new Date()});
+        const persistedDoc = await m.save(session ? {session} : undefined);
 
-        // convert to POJO to avoid Mongoose docs leaking into sockets
-        const plain = typeof (persisted as any).toObject === 'function'
-            ? (persisted as any).toObject()
-            : (persisted as any);
+        // Convert to a plain object (no Mongoose getters/methods)
+        const plain = (typeof (persistedDoc as any).toObject === 'function'
+            ? (persistedDoc as any).toObject()
+            : (persistedDoc as any)) as NotificationEntity;
 
-        // ensure per-user states exist
+        // Create per-user states now that we have the final _id
         await this.deliverToAudience(plain, session);
 
-        // optional socket emission
+        // Optional socket emission
         emit?.(this.roomsForAudience(doc.audience), plain);
 
-        return persisted;
+        return plain; // <— guarantees a NotificationEntity (not undefined)
     }
 
-    // ============================ Listing ======================================
+    // ───────────────────────────────────────────────────────────────────────────
+    // Listing
+    // ───────────────────────────────────────────────────────────────────────────
 
     private buildAudienceFilter(username: string, role: Role) {
         if(role === 'admin') return {} as FilterQuery<NotificationEntity>;
@@ -380,7 +559,7 @@ export default class NotificationService {
             .filter((x): x is NotificationWithStateDTO => Boolean(x));
     }
 
-    async listForUser(username: string, role: Role, opts: ListOptions = {}) {
+    public async listForUser(username: string, role: Role, opts: ListOptions = {}) {
         const limit = Math.max(1, opts.limit ?? 20);
         const page = Number.isFinite(opts.skip) ? Math.floor((opts.skip as number) / (opts.limit ?? 20)) : Math.max(0, opts.page ?? 0);
         const onlyUnread = !!opts.onlyUnread;
@@ -403,16 +582,18 @@ export default class NotificationService {
         return this.mergeToDTO(masters, stateById, onlyUnread);
     }
 
-    async countForUser(username: string, role: Role, opts: ListOptions = {}) {
+    public async countForUser(username: string, role: Role, opts: ListOptions = {}) {
         const audienceFilter = this.buildAudienceFilter(username, role);
         const extraFilters = this.buildListFilters(opts);
         const masterFilter: FilterQuery<NotificationEntity> = {...audienceFilter, ...extraFilters};
         return NotificationModel.countDocuments(masterFilter).exec();
     }
 
-    // ========================== Per-user state ops ==============================
+    // ───────────────────────────────────────────────────────────────────────────
+    // Per-user state ops
+    // ───────────────────────────────────────────────────────────────────────────
 
-    markRead(username: string, notificationId: string) {
+    public markRead(username: string, notificationId: string) {
         return UserNotificationModel.updateOne(
             {username, notificationId: String(notificationId)},
             {$set: {isRead: true, readAt: new Date()}},
@@ -420,7 +601,7 @@ export default class NotificationService {
         );
     }
 
-    markManyRead(username: string, notificationIds: Array<string | Types.ObjectId>) {
+    public markManyRead(username: string, notificationIds: Array<string | Types.ObjectId>) {
         const ids = notificationIds.map(String);
         return UserNotificationModel.updateMany(
             {username, notificationId: {$in: ids}, isRead: false},
@@ -428,30 +609,30 @@ export default class NotificationService {
         );
     }
 
-    markAllRead(username: string) {
+    public markAllRead(username: string) {
         return UserNotificationModel.updateMany(
             {username, isRead: false},
             {$set: {isRead: true, readAt: new Date()}}
         );
     }
 
-    archiveAll(username: string) {
+    public archiveAll(username: string) {
         return UserNotificationModel.updateMany(
             {username, isArchived: false},
             {$set: {isArchived: true}}
         );
     }
 
-    deleteAllStatesForUser(username: string, session?: ClientSession) {
+    public deleteAllStatesForUser(username: string, session?: ClientSession) {
         return UserNotificationModel.deleteMany({username}, this.deleteOpts(session));
     }
 
-    deleteStatesForUser(username: string, notificationIds: Array<string | Types.ObjectId>, session?: ClientSession) {
+    public deleteStatesForUser(username: string, notificationIds: Array<string | Types.ObjectId>, session?: ClientSession) {
         const ids = notificationIds.map(String);
         return UserNotificationModel.deleteMany({username, notificationId: {$in: ids}}, this.deleteOpts(session));
     }
 
-    async pruneOrphanStates(session?: ClientSession) {
+    public async pruneOrphanStates(session?: ClientSession) {
         const orphans = await (UserNotificationModel as any)
             .aggregate([
                 {$lookup: {from: 'notifications', localField: 'notificationId', foreignField: '_id', as: 'n'}},
@@ -466,28 +647,21 @@ export default class NotificationService {
         return res.deletedCount || 0;
     }
 
-    // ========================= Restore / Hard Delete ============================
+    // ───────────────────────────────────────────────────────────────────────────
+    // Restore / Hard Delete
+    // ───────────────────────────────────────────────────────────────────────────
 
-    /**
-     * RESTORE public API (controller calls this).
-     * - Reads snapshot JSON from /public/recyclebin/<category>/<refId>/data.json
-     * - Recreates the DB row (with deleted flags cleared)
-     * - Moves media folder from recyclebin back to its original dest
-     * - Optionally runs inside a transaction
-     */
-    async restoreByCategory(input: RestoreByCategoryInput): Promise<DispatchResult> {
+    public async restoreByCategory(input: RestoreByCategoryInput): Promise<DispatchResult> {
         const {category, refId, snapshot, requestedBy} = input;
         const metadata = input.metadata ?? {};
         const useTransaction = !!input.useTransaction;
 
-        // Pick a session if the caller wants a transaction
         if(useTransaction) {
             const conn: Connection = NotificationModel.db;
             const session = await conn.startSession();
             try {
                 session.startTransaction();
 
-                // Only include properties that exist; avoids {refId: undefined}
                 const payload = {
                     category,
                     metadata,
@@ -507,7 +681,6 @@ export default class NotificationService {
             }
         }
 
-        // Non-transaction path
         const payload = {
             category,
             metadata,
@@ -519,12 +692,7 @@ export default class NotificationService {
         return this._restoreDispatcher(payload);
     }
 
-    /**
-     * PERMANENT DELETE public API (controller calls this).
-     * - Purges recyclebin copy for that entity
-     * - Also tries to remove any leftover original public folder (defense-in-depth)
-     */
-    async permanentDeleteByCategory(input: PermanentDeleteInput): Promise<DispatchResult> {
+    public async permanentDeleteByCategory(input: PermanentDeleteInput): Promise<DispatchResult> {
         const {category} = input;
         const metadata = input.metadata ?? {};
         const requestedBy = input.requestedBy;
@@ -552,15 +720,11 @@ export default class NotificationService {
         return this._permanentDeleteDispatcher({category, refId, metadata, requestedBy});
     }
 
-    // ----------------------- Dispatchers (internal) ----------------------------
-
     private async _restoreDispatcher(
         input: {category: TitleCategory; refId?: string; snapshot?: Record<string, any>; metadata: any; requestedBy: string},
         session?: ClientSession
     ): Promise<DispatchResult> {
         const {category} = input;
-
-        // We keep small category methods to stay class-based and future-extensible
         switch(category) {
             case 'User': return this.restoreUser(input, session);
             case 'Tenant': return this.restoreTenant(input, session);
@@ -584,7 +748,6 @@ export default class NotificationService {
         _session?: ClientSession
     ): Promise<DispatchResult> {
         const {category} = input;
-
         switch(category) {
             case 'User': return this.hardDeleteUser(input);
             case 'Tenant': return this.hardDeleteTenant(input);
@@ -603,34 +766,21 @@ export default class NotificationService {
         }
     }
 
-    // --------------------- Generic helpers (core logic) ------------------------
+    // ───────────────────────────────────────────────────────────────────────────
+    // Generic restore/hard-delete helpers
+    // ───────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Get the Mongoose model for a TitleCategory without importing it directly.
-     * This avoids circular imports. Update names if your model names differ.
-     */
     private getModelFor(category: TitleCategory) {
         switch(category) {
-            case 'User': return NotificationModel.db.model('User');
-            case 'Tenant': return NotificationModel.db.model('Tenant');
-            case 'Property': return NotificationModel.db.model('Property');
-            case 'Lease': return NotificationModel.db.model('Lease');
-            case 'Agent': return NotificationModel.db.model('Agent');
-            case 'Developer': return NotificationModel.db.model('Developer');
-            case 'Maintenance': return NotificationModel.db.model('Maintenance');
-            case 'Complaint': return NotificationModel.db.model('Complaint');
-            case 'Team': return NotificationModel.db.model('Team');
-            case 'Registration': return NotificationModel.db.model('Registration');
-            case 'Payment': return NotificationModel.db.model('Payment');
-            case 'System': return NotificationModel.db.model('SystemEvent');
+            case 'User': return UserModel;
+            case 'Tenant': return TenantModel;
+            case 'Property': return PropertyModel;
+            case 'Lease': return LeaseModel;
+            // Add more here when you wire those models
             default: return null;
         }
     }
 
-    /**
-     * Compute where original files live by category (relative to /public).
-     * Prefer snapshot.__filesRoot if your deletion step saved it.
-     */
     private resolveDestFolder(category: TitleCategory, refId: string, snapshot?: Record<string, any>): string {
         if(snapshot && typeof snapshot.__filesRoot === 'string' && snapshot.__filesRoot.trim()) {
             return snapshot.__filesRoot.trim();
@@ -653,13 +803,6 @@ export default class NotificationService {
         }
     }
 
-    /**
-     * Generic RESTORE:
-     * 1) read JSON from recyclebin
-     * 2) insert into DB with deleted flags cleared
-     * 3) move media folder back under /public/<dest>
-     * 4) purge recyclebin copy
-     */
     private async restoreGeneric(
         category: TitleCategory,
         refId: string,
@@ -667,28 +810,19 @@ export default class NotificationService {
         session?: ClientSession,
         incomingSnapshot?: Record<string, any>
     ): Promise<DispatchResult> {
-        // 1) model lookup
         const Model = this.getModelFor(category);
         if(!Model) return {ok: false, message: `${category} model unavailable`};
 
-        // 2) prefer recyclebin copy; fallback to payload snapshot
         const fileSnap = await this.bin.readSnapshot(category, refId);
         const payload = (fileSnap.ok && fileSnap.data) ? fileSnap.data : (incomingSnapshot ?? null);
         if(!payload) return {ok: false, message: `No snapshot found in recyclebin for ${category}/${refId}`};
 
-        // 3) clear deletion flags and (optionally) _id strategy
         const {_id, ...rest} = payload;
-        const toInsert = {
-            ...rest,
-            deleted: false,
-            deletedAt: null,
-            deletedBy: null,
-        };
+        const toInsert = {...rest, deleted: false, deletedAt: null, deletedBy: null};
 
-        // If you want to keep the same _id, replace with: const [doc] = await Model.create([{ _id, ...toInsert }], ...)
+        // Insert new doc (or switch to {_id, ...toInsert} if you want to keep the same id)
         const [doc] = await (Model as any).create([toInsert], session ? {session} : undefined);
 
-        // 4) move media back
         try {
             const destRel = this.resolveDestFolder(category, String(doc._id), payload);
             await this.bin.restoreFolder(category, refId, destRel);
@@ -696,7 +830,6 @@ export default class NotificationService {
             console.warn(`[restore:${category}] Media move warning:`, e);
         }
 
-        // 5) purge recyclebin copy
         try {await this.bin.purge(category, refId);} catch {}
 
         return {
@@ -707,20 +840,13 @@ export default class NotificationService {
         };
     }
 
-    /**
-     * Generic HARD DELETE:
-     * - purge recyclebin copy
-     * - remove original dest folder under /public if it exists (safe + force)
-     */
     private async hardDeleteGeneric(
         category: TitleCategory,
         refId: string,
         metadata: Record<string, any>
     ): Promise<DispatchResult> {
-        // remove recyclebin copy
         await this.bin.purge(category, refId);
 
-        // attempt to cleanup original dest folder too
         try {
             const destRel = this.resolveDestFolder(category, refId);
             const abs = path.resolve(process.cwd(), 'public', destRel);
@@ -732,19 +858,42 @@ export default class NotificationService {
         return {ok: true, message: `${category} permanently deleted`, rooms: this.roomsOnDelete(category.toLowerCase(), metadata)};
     }
 
-    // ---------------------- Category restore (thin wrappers) --------------------
-
-    private async restoreUser({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {if(!refId) return {ok: false, message: 'refId required for restore'}; return this.restoreGeneric('User', refId, metadata, s, snapshot);}
-    private async restoreTenant({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {if(!refId) return {ok: false, message: 'refId required for restore'}; return this.restoreGeneric('Tenant', refId, metadata, s, snapshot);}
-    private async restoreProperty({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {if(!refId) return {ok: false, message: 'refId required for restore'}; return this.restoreGeneric('Property', refId, metadata, s, snapshot);}
-    private async restoreLease({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {if(!refId) return {ok: false, message: 'refId required for restore'}; return this.restoreGeneric('Lease', refId, metadata, s, snapshot);}
-    private async restoreAgent({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {if(!refId) return {ok: false, message: 'refId required for restore'}; return this.restoreGeneric('Agent', refId, metadata, s, snapshot);}
-    private async restoreDeveloper({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {if(!refId) return {ok: false, message: 'refId required for restore'}; return this.restoreGeneric('Developer', refId, metadata, s, snapshot);}
-    private async restoreMaintenance({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {if(!refId) return {ok: false, message: 'refId required for restore'}; return this.restoreGeneric('Maintenance', refId, metadata, s, snapshot);}
-    private async restoreComplaint({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {if(!refId) return {ok: false, message: 'refId required for restore'}; return this.restoreGeneric('Complaint', refId, metadata, s, snapshot);}
-    private async restoreTeam({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {if(!refId) return {ok: false, message: 'refId required for restore'}; return this.restoreGeneric('Team', refId, metadata, s, snapshot);}
-
-    // ---------------------- Category hard delete (thin wrappers) ----------------
+    private async restoreUser({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {
+        if(!refId) return {ok: false, message: 'refId required for restore'};
+        return this.restoreGeneric('User', refId, metadata, s, snapshot);
+    }
+    private async restoreTenant({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {
+        if(!refId) return {ok: false, message: 'refId required for restore'};
+        return this.restoreGeneric('Tenant', refId, metadata, s, snapshot);
+    }
+    private async restoreProperty({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {
+        if(!refId) return {ok: false, message: 'refId required for restore'};
+        return this.restoreGeneric('Property', refId, metadata, s, snapshot);
+    }
+    private async restoreLease({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {
+        if(!refId) return {ok: false, message: 'refId required for restore'};
+        return this.restoreGeneric('Lease', refId, metadata, s, snapshot);
+    }
+    private async restoreAgent({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {
+        if(!refId) return {ok: false, message: 'refId required for restore'};
+        return this.restoreGeneric('Agent', refId, metadata, s, snapshot);
+    }
+    private async restoreDeveloper({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {
+        if(!refId) return {ok: false, message: 'refId required for restore'};
+        return this.restoreGeneric('Developer', refId, metadata, s, snapshot);
+    }
+    private async restoreMaintenance({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {
+        if(!refId) return {ok: false, message: 'refId required for restore'};
+        return this.restoreGeneric('Maintenance', refId, metadata, s, snapshot);
+    }
+    private async restoreComplaint({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {
+        if(!refId) return {ok: false, message: 'refId required for restore'};
+        return this.restoreGeneric('Complaint', refId, metadata, s, snapshot);
+    }
+    private async restoreTeam({refId, metadata, snapshot}: {refId?: string; metadata: any; snapshot?: Record<string, any>}, s?: ClientSession) {
+        if(!refId) return {ok: false, message: 'refId required for restore'};
+        return this.restoreGeneric('Team', refId, metadata, s, snapshot);
+    }
 
     private async hardDeleteUser({refId, metadata}: {refId: string; metadata: any}) {return this.hardDeleteGeneric('User', refId, metadata);}
     private async hardDeleteTenant({refId, metadata}: {refId: string; metadata: any}) {return this.hardDeleteGeneric('Tenant', refId, metadata);}
@@ -756,7 +905,9 @@ export default class NotificationService {
     private async hardDeleteComplaint({refId, metadata}: {refId: string; metadata: any}) {return this.hardDeleteGeneric('Complaint', refId, metadata);}
     private async hardDeleteTeam({refId, metadata}: {refId: string; metadata: any}) {return this.hardDeleteGeneric('Team', refId, metadata);}
 
-    // ===================== Room helpers for live updates ========================
+    // ───────────────────────────────────────────────────────────────────────────
+    // Live update rooms
+    // ───────────────────────────────────────────────────────────────────────────
 
     private roomsOnRestore(kind: string, meta: Record<string, any> = {}): string[] {
         const rooms: string[] = [];
@@ -774,10 +925,11 @@ export default class NotificationService {
         return rooms;
     }
 
-    // ====================== Change streams (optional) ===========================
+    // ───────────────────────────────────────────────────────────────────────────
+    // Change streams (optional)
+    // ───────────────────────────────────────────────────────────────────────────
 
-    watchChanges(io?: import('socket.io').Namespace) {
-        // Watch Notification inserts and fan-out automatically
+    public watchChanges(io?: import('socket.io').Namespace) {
         try {
             const notifStream = NotificationModel.watch([], {fullDocument: 'updateLookup'});
             notifStream.on('change', async (ev: any) => {
@@ -794,7 +946,6 @@ export default class NotificationService {
             /* change streams unavailable — ok */
         }
 
-        // Example: on user changes, backfill notification states as needed
         try {
             const userStream = UserModel.watch([], {fullDocument: 'updateLookup'});
             userStream.on('change', async (ev: any) => {
@@ -816,9 +967,11 @@ export default class NotificationService {
         }
     }
 
-    // ============================= Backfill helpers =============================
+    // ───────────────────────────────────────────────────────────────────────────
+    // Backfill helpers
+    // ───────────────────────────────────────────────────────────────────────────
 
-    async backfillForUser(username: string, role: Role, session?: ClientSession) {
+    public async backfillForUser(username: string, role: Role, session?: ClientSession) {
         const audienceFilter = this.buildAudienceFilter(username, role);
         const masters = await NotificationModel.find(audienceFilter, {_id: 1}).lean<{_id: Types.ObjectId}[]>();
         if(!masters.length) return 0;
@@ -836,14 +989,14 @@ export default class NotificationService {
         return (res.upsertedCount ?? 0) + (res.modifiedCount ?? 0);
     }
 
-    async backfillForAllUsersForNotification(notificationId: string, session?: ClientSession) {
+    public async backfillForAllUsersForNotification(notificationId: string, session?: ClientSession) {
         const n = await NotificationModel.findById(notificationId).lean<NotificationEntity | null>();
         if(!n) return 0;
         await this.deliverToAudience(n, session);
         return 1;
     }
 
-    async syncForUserRoleChange(
+    public async syncForUserRoleChange(
         username: string,
         _oldRole: Role,
         newRole: Role,

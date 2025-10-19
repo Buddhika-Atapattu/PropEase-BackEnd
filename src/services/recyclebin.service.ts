@@ -100,29 +100,77 @@ export default class RecycleBinService {
         return norm;
     }
 
-    /** Read JSON snapshot `/public/recyclebin/<cat>/<id>/data.json` */
+    // recyclebin.service.ts (only the readSnapshot method)
+    // Assumes you already have: import fs from 'fs'; import * as fsp from 'fs/promises'; import path from 'path';
+    // and a helper this.entityBinDir(category, refId) that returns '<...>/recyclebin/<categoryPlural>/<refId>'
+
     async readSnapshot<T = any>(category: TitleCategory, refId: string): Promise<ReadSnapshotResult<T>> {
-        // 1) Compute absolute folder + json path
-        const dir = this.entityBinDir(category, refId);
-        const json = path.join(dir, 'data.json');
-
-        // 2) Check if json exists first (avoid read errors)
-        if(!fs.existsSync(json)) {
-            return {ok: false, message: 'data.json not found in recyclebin', dir, jsonPath: json};
-        }
-
         try {
-            // 3) Read the file
-            const raw = await fsp.readFile(json, 'utf8');
+            // 1) Where this refId would normally live
+            const exactDir = this.entityBinDir(category, refId); // e.g. .../recyclebin/properties/<refId>
+            const categoryDir = path.dirname(exactDir);          // e.g. .../recyclebin/properties
+            const baseName = path.basename(exactDir);            // refId (no timestamp)
 
-            // 4) Parse JSON
+            // 2) List sibling dirs that match <refId> or <refId>_<timestamp>
+            //    We filter to directories that contain a data.json file.
+            const dirents = await fsp.readdir(categoryDir, {withFileTypes: true}).catch(() => []);
+            const candidates: Array<{dir: string; json: string; tsScore: number; mtimeMs: number}> = [];
+
+            const tsRegex = new RegExp(`^${baseName.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}(?:_(\\d+))?$`); // escape refId safely
+
+            for(const d of dirents) {
+                if(!d.isDirectory()) continue;
+                const m = d.name.match(tsRegex);
+                if(!m) continue;
+
+                const candidateDir = path.join(categoryDir, d.name);
+                const json = path.join(candidateDir, 'data.json');
+                if(!fs.existsSync(json)) continue;
+
+                // Timestamp score: prefer highest numeric suffix; if absent, treat as 0.
+                const tsScore = m[1] ? Number(m[1]) : 0;
+
+                // Fallback tie-breaker: most recent data.json mtime
+                let mtimeMs = 0;
+                try {
+                    const st = await fsp.stat(json);
+                    mtimeMs = st.mtimeMs || 0;
+                } catch {
+                    // ignore stat errors; leave mtimeMs = 0
+                }
+
+                candidates.push({dir: candidateDir, json, tsScore, mtimeMs});
+            }
+
+            // 3) No matching folders at all?
+            if(candidates.length === 0) {
+                const jsonPath = path.join(exactDir, 'data.json'); // what we would have used
+                return {ok: false, message: 'data.json not found in recyclebin (no matching folders)', dir: exactDir, jsonPath};
+            }
+
+            // 4) Pick the most recent:
+            //    - primarily by highest tsScore
+            //    - if equal, by latest mtimeMs
+            candidates.sort((a, b) => {
+                if(a.tsScore !== b.tsScore) return b.tsScore - a.tsScore;
+                return b.mtimeMs - a.mtimeMs;
+            });
+
+            const chosen = candidates[0]!;
+
+            // 5) Read + parse JSON
+            const raw = await fsp.readFile(chosen.json, 'utf8');
             const data = JSON.parse(raw) as T;
 
-            return {ok: true, data, dir, jsonPath: json};
+            return {ok: true, data, dir: chosen.dir, jsonPath: chosen.json};
         } catch(e: any) {
-            return {ok: false, message: e?.message || 'Failed to read/parse data.json', dir, jsonPath: json};
+            // Final defensive catch
+            const dir = this.entityBinDir(category, refId);
+            const jsonPath = path.join(dir, 'data.json');
+            return {ok: false, message: e?.message || 'Failed to read/parse data.json', dir, jsonPath};
         }
     }
+
 
     /**
      * Move the entire folder out of recyclebin back to a destination under /public.

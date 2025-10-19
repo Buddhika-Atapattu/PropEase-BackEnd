@@ -293,7 +293,12 @@ export default class Property {
               severity: "info",
               audience: {mode: "role", roles: ["admin", "agent", "manager", "operator"]},
               channels: ["inapp", "email"],
-              metadata: {property: inserted},
+              metadata: {
+                refId: propertyID,
+                data: {
+                  property: inserted
+                }
+              },
             },
             (rooms, payload) => rooms.forEach((r) => io.to(r).emit("notification.new", payload))
           );
@@ -506,15 +511,6 @@ export default class Property {
           const snapshotPath = path.join(dstDir, "data.json");
           await fse.writeJson(snapshotPath, property, {spaces: 2});
 
-          const delRes = await PropertyModel.deleteOne({id: safeID});
-          if(delRes.deletedCount !== 1) {
-            res.status(409).json({
-              status: "error",
-              message: "Delete conflict: document was not removed from DB.",
-            });
-            return;
-          }
-
           try {
             const io = req.app.get("io") as import("socket.io").Server | undefined;
             if(io) {
@@ -528,16 +524,20 @@ export default class Property {
                   audience: {mode: "role", roles: ["admin", "agent", "manager", "operator"]},
                   channels: ["inapp", "email"],
                   metadata: {
-                    deletedBy: actorUsername,
-                    deletedAt: new Date().toISOString(),
-                    propertyId: safeID,
-                    recyclebin: {
-                      folder: dstDir,
-                      dataJson: snapshotPath,
-                      base: `${req.protocol}://${req.get("host")}/${this.DEFAULT_RECYCLE_URL}/${path.basename(
-                        dstDir
-                      )}`,
-                    },
+                    refId: safeID,
+                    data: {
+                      deletedBy: actorUsername,
+                      deletedAt: new Date().toISOString(),
+                      propertyId: safeID,
+                      snapshot: property,
+                      recyclebin: {
+                        folder: dstDir,
+                        dataJson: snapshotPath,
+                        base: `${req.protocol}://${req.get("host")}/${this.DEFAULT_RECYCLE_URL}/${path.basename(
+                          dstDir
+                        )}`,
+                      },
+                    }
                   },
                   target: {kind: "Property", refId: safeID},
                 },
@@ -546,6 +546,15 @@ export default class Property {
             }
           } catch(notifyErr) {
             console.warn("[delete-property] notification failed:", notifyErr);
+          }
+
+          const delRes = await PropertyModel.deleteOne({id: safeID});
+          if(delRes.deletedCount !== 1) {
+            res.status(409).json({
+              status: "error",
+              message: "Delete conflict: document was not removed from DB.",
+            });
+            return;
           }
 
           res.status(200).json({status: "success", message: "Property deleted.", data: null});
@@ -810,7 +819,12 @@ export default class Property {
                   severity: "info",
                   audience: {mode: "role", roles: ["admin", "operator"]},
                   channels: ["inapp", "email"],
-                  metadata: {property: updated, updatedAt: new Date().toISOString(), propertyID},
+                  metadata: {
+                    refId: propertyID,
+                    data: {
+                      property: updated, updatedAt: new Date().toISOString(), propertyID
+                    }
+                  },
                   target: {kind: "Property", refId: propertyID},
                 },
                 (rooms, payload) => rooms.forEach((room) => io.to(room).emit("notification.new", payload))

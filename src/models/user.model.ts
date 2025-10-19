@@ -1,33 +1,27 @@
-// ==========================================================
-// File: src/models/user.model.ts
-// Description: Mongoose schema and TypeScript model definition
-//              for system users (admins, agents, tenants, etc.)
-// ==========================================================
+// src/models/user.model.ts
+// ─────────────────────────────────────────────────────────────────────────────
+// PURPOSE: User model (types + DB schema) in a class-based pattern.
+// NOTE: No business logic here — controllers/services handle operations.
+// ─────────────────────────────────────────────────────────────────────────────
 
-import {Schema, model, Document} from "mongoose";
+import {Schema, model, type Document, type Model} from 'mongoose';
 
-/* ==========================================================
-   📘 TYPES & INTERFACES
-   ========================================================== */
+/* ============================================================================
+ * TYPES & INTERFACES
+ * ==========================================================================*/
 
-/**
- * Defines all valid user roles within the system.
- * Extend this list as the application introduces new user categories.
- */
+/** Valid user roles within the system. */
 export type Role =
-  | "admin"
-  | "agent"
-  | "tenant"
-  | "owner"
-  | "operator"
-  | "manager"
-  | "developer"
-  | "user";
+  | 'admin'
+  | 'agent'
+  | 'tenant'
+  | 'owner'
+  | 'operator'
+  | 'manager'
+  | 'developer'
+  | 'user';
 
-/**
- * Represents a standard address structure used by users.
- * This structure may later be reused by other entities (e.g., Property).
- */
+/** Standard address structure. */
 export interface Address {
   street: string;
   houseNumber: string;
@@ -37,36 +31,26 @@ export interface Address {
   stateOrProvince?: string;
 }
 
-/**
- * Defines a single permission entry per module.
- * Example: { module: "property", actions: ["create", "edit", "delete"] }
- */
+/** One permission entry for a given module. */
 export interface PermissionEntry {
   module: string;
   actions: string[];
 }
 
-/**
- * Represents the access control map for a given role,
- * including all permission entries for the modules accessible by that role.
- */
+/** Role → list of permission entries. */
 export interface ROLE_ACCESS_MAP {
   role: string;
   permissions: PermissionEntry[];
 }
 
-/**
- * Basic structure for user authentication credentials.
- */
+/** Simple credential DTO (not stored directly here). */
 export interface UserCredentials {
   username: string;
   password: string;
   rememberMe?: boolean;
 }
 
-/**
- * Country representation (used for UI data or external API responses).
- */
+/** Country DTO used elsewhere in the app (kept here for completeness). */
 export interface Country {
   name: string;
   code: string;
@@ -75,11 +59,9 @@ export interface Country {
   image: string;
 }
 
-/**
- * Full Mongoose document representation for a User.
- * Includes timestamps and OTP/email verification fields.
- */
+/** Full Mongoose document representation for a User. */
 export interface IUser extends Document {
+  // Basic
   name: string;
   username: string;
   email: string;
@@ -90,129 +72,142 @@ export interface IUser extends Document {
   image?: string;
   phoneNumber?: string;
   bio: string;
+
+  // Role & access
   role: Role;
   address: Address;
   isActive: boolean;
   access: ROLE_ACCESS_MAP;
-  otpVerifycation: boolean; // Whether user verified via OTP
+
+  // Verification
+  otpVerifycation: boolean;
   otpToken: string;
   otpTokenExpires: Date;
   emailVerified: boolean;
   emailVerificationToken?: string;
   emailVerificationTokenExpires?: Date;
-  autoDelete: boolean; // If true, user will be soft-deleted after inactivity
-  creator: string; // Created by (username or system)
-  updator?: string; // Last updated by
+
+  // Admin controls
+  autoDelete: boolean;
+  creator: string;
+  updator?: string;
+
+  // Timestamps
   createdAt: Date;
   updatedAt: Date;
 }
 
-/**
- * Token mapping model (e.g., for password reset, session, or email verification).
- */
+/** Optional: token map type (declared here if referenced externally). */
 interface ITokenMap extends Document {
   token: string;
   username: string;
-  type: "view" | "email" | "session" | string;
+  type: 'view' | 'email' | 'session' | string;
   expiresAt: Date;
 }
 
-/* ==========================================================
-   🧩 SCHEMAS
-   ========================================================== */
+/* ============================================================================
+ * CLASS-BASED BUILDER
+ * ==========================================================================*/
 
-/**
- * Sub-schema for Address.
- * Embedded directly inside User documents.
- */
-const AddressSchema = new Schema<Address>({
-  street: {type: String, required: true},
-  houseNumber: {type: String, required: true},
-  city: {type: String, required: true},
-  postcode: {type: String, required: true},
-  country: {type: String},
-  stateOrProvince: {type: String},
-});
+export class UserModelBuilder {
+  /** Build sub-schemas (kept private and class-based). */
+  private static buildSubSchemas() {
+    const AddressSchema = new Schema<Address>(
+      {
+        street: {type: String, required: true, trim: true},
+        houseNumber: {type: String, required: true, trim: true},
+        city: {type: String, required: true, trim: true},
+        postcode: {type: String, required: true, trim: true},
+        country: {type: String, trim: true},
+        stateOrProvince: {type: String, trim: true},
+      },
+      {_id: false}
+    );
 
-/**
- * Sub-schema for PermissionEntry.
- * Defines permissions for individual modules.
- */
-const PermissionEntrySchema = new Schema<PermissionEntry>({
-  module: {type: String, required: true},
-  actions: {type: [String], required: true},
-});
+    const PermissionEntrySchema = new Schema<PermissionEntry>(
+      {
+        module: {type: String, required: true, trim: true},
+        actions: {type: [String], required: true, default: []},
+      },
+      {_id: false}
+    );
 
-/**
- * Sub-schema for Access Map.
- * Each user holds one access role mapping that lists all permissions.
- */
-const AccessSchema = new Schema<ROLE_ACCESS_MAP>({
-  role: {type: String, required: true},
-  permissions: {type: [PermissionEntrySchema], required: true},
-});
+    const AccessSchema = new Schema<ROLE_ACCESS_MAP>(
+      {
+        role: {type: String, required: true, trim: true},
+        permissions: {type: [PermissionEntrySchema], required: true, default: []},
+      },
+      {_id: false}
+    );
 
-/**
- * Main User Schema defining all fields and relationships.
- * Includes validation, enum constraints, and timestamp metadata.
- */
-export const UserSchema = new Schema<IUser>(
-  {
-    // ─────────────── Basic Info ───────────────
-    name: {type: String, required: true},
-    username: {type: String, required: true, unique: true},
-    email: {type: String, required: true, unique: true},
-    password: {type: String, required: true},
-    dateOfBirth: {type: Date, required: true},
-    age: {type: Number, required: true},
-    gender: {type: String, required: true},
-    image: {type: String},
-    bio: {type: String},
-    phoneNumber: {type: String},
-
-    // ─────────────── Role & Access ───────────────
-    role: {
-      type: String,
-      enum: [
-        "admin",
-        "agent",
-        "tenant",
-        "owner",
-        "operator",
-        "manager",
-        "developer",
-        "user",
-      ],
-      required: true,
-    },
-    address: {type: AddressSchema, required: true},
-    isActive: {type: Boolean, default: true},
-    access: {type: AccessSchema, required: true},
-
-    // ─────────────── Verification & OTP ───────────────
-    otpVerifycation: {type: Boolean, default: false},
-    otpToken: {type: String},
-    otpTokenExpires: {type: Date},
-    emailVerified: {type: Boolean, default: false},
-    emailVerificationToken: {type: String},
-    emailVerificationTokenExpires: {type: Date},
-
-    // ─────────────── Admin Controls ───────────────
-    autoDelete: {type: Boolean, default: true},
-    creator: {type: String, required: true},
-    updator: {type: String, required: false},
-  },
-  {
-    timestamps: true, // Automatically adds createdAt & updatedAt
+    return {AddressSchema, PermissionEntrySchema, AccessSchema};
   }
-);
 
-/* ==========================================================
-   📤 EXPORT MODEL
-   ========================================================== */
+  /** Build the main User schema. */
+  public static buildSchema(): Schema<IUser> {
+    const {AddressSchema, AccessSchema} = this.buildSubSchemas();
 
-/**
- * The exported Mongoose model for user documents.
- * Used across controllers, middleware, and services.
- */
-export const UserModel = model<IUser>("User", UserSchema);
+    const UserSchema = new Schema<IUser>(
+      {
+        // ── Basic Info
+        name: {type: String, required: true, trim: true},
+        username: {type: String, required: true, unique: true, trim: true, index: true},
+        email: {type: String, required: true, unique: true, trim: true, index: true},
+        password: {type: String, required: true}, // hashed in services
+        dateOfBirth: {type: Date, required: true},
+        age: {type: Number, required: true, min: 0},
+        gender: {type: String, required: true, trim: true},
+        image: {type: String, trim: true},
+        bio: {type: String, default: '', trim: true},
+        phoneNumber: {type: String, trim: true},
+
+        // ── Role & Access
+        role: {
+          type: String,
+          enum: ['admin', 'agent', 'tenant', 'owner', 'operator', 'manager', 'developer', 'user'],
+          required: true,
+          index: true,
+        },
+        address: {type: AddressSchema, required: true, default: {}},
+        isActive: {type: Boolean, default: true, index: true},
+        access: {type: AccessSchema, required: true, default: {}},
+
+        // ── Verification & OTP
+        otpVerifycation: {type: Boolean, default: false},
+        otpToken: {type: String, default: ''},
+        otpTokenExpires: {type: Date},
+        emailVerified: {type: Boolean, default: false, index: true},
+        emailVerificationToken: {type: String},
+        emailVerificationTokenExpires: {type: Date},
+
+        // ── Admin Controls
+        autoDelete: {type: Boolean, default: true},
+        creator: {type: String, required: true, trim: true},
+        updator: {type: String, trim: true},
+      },
+      {
+        timestamps: true, // createdAt, updatedAt
+        versionKey: false,
+        minimize: true,
+      }
+    );
+
+    // Helpful compound/text indexes for search & filtering
+    UserSchema.index({name: 'text', email: 'text', username: 'text'});
+
+    return UserSchema;
+  }
+
+  /** Create and return the Mongoose model instance. */
+  public static getModel(): Model<IUser> {
+    const schema = this.buildSchema();
+    // Explicit collection name for consistency: 'users'
+    return model<IUser>('User', schema, 'users');
+  }
+}
+
+/* ============================================================================
+ * MODEL EXPORT
+ * ==========================================================================*/
+
+export const UserModel = UserModelBuilder.getModel();

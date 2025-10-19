@@ -30,7 +30,7 @@ import {
 } from "../models/tracking.model";
 import crypto from "crypto";
 import dotenv from "dotenv";
-import {UserDocument} from "../models/file-upload.model"; // used in file activity aggregation
+import {UserDocumentModel} from "../models/file-upload.model"; // used in file activity aggregation
 import {UserModel} from "../models/user.model";
 import fs from "fs";
 import path from "path";
@@ -326,7 +326,7 @@ export default class Tracking {
           }
 
           // Aggregation using $facet for count + page
-          const results = await UserDocument.aggregate([
+          const results = await UserDocumentModel.aggregate([
             {$unwind: "$files"},
             {$match: matchStage},
             {

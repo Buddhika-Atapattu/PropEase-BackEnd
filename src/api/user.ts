@@ -22,7 +22,7 @@ import jwt from "jsonwebtoken";
 
 import {UserModel, IUser} from "../models/user.model";
 import {TokenMap} from "../models/token.model";
-import {UserDocument} from "../models/file-upload.model";
+import {UserDocumentModel} from "../models/file-upload.model";
 import {PropertyModel} from "../models/property.model";
 import NotificationService from "../services/notification.service";
 
@@ -261,7 +261,7 @@ export default class UserRoute {
 
     const upload = multer({
       storage,
-      limits: {fileSize: 5 * 1024 * 1024}, // 5MB
+      limits: {fileSize: 20 * 1024 * 1024}, // 20MB
       fileFilter: (_req, file, cb) => {
         if(allowedTypes.has(file.mimetype)) cb(null, true);
         else cb(new Error("Only image files are allowed"));
@@ -460,11 +460,14 @@ export default class UserRoute {
               audience: {mode: "role", roles: ["admin", "manager", "operator"]},
               channels: ["inapp", "email"],
               metadata: {
-                username: newUser.username,
-                email: newUser.email,
-                role: newUser.role,
-                createdAt: newUser.createdAt,
-                creator: newUser.creator,
+                refId: newUser.username,
+                data: {
+                  email: newUser.email,
+                  role: newUser.role,
+                  createdAt: newUser.createdAt,
+                  creator: newUser.creator,
+                }
+
               },
             },
             (rooms, payload) =>
@@ -678,14 +681,16 @@ export default class UserRoute {
               audience: {mode: "role", roles: ["admin", "manager", "operator"]},
               channels: ["inapp", "email"],
               metadata: {
-                username: updatedUser.username,
-                email: updatedUser.email,
-                role: updatedUser.role,
-                updatedAt: new Date(),
-                updatedBy:
-                  (typeof body.updator === "string"
-                    ? body.updator.trim()
-                    : undefined) || "system",
+                refId: updatedUser.username,
+                data: {
+                  email: updatedUser.email,
+                  role: updatedUser.role,
+                  updatedAt: new Date(),
+                  updatedBy:
+                    (typeof body.updator === "string"
+                      ? body.updator.trim()
+                      : undefined) || "system",
+                }
               },
             },
             (rooms, payload) =>
@@ -1106,7 +1111,7 @@ export default class UserRoute {
             uploadDate: new Date(),
           }));
 
-          const doc = await UserDocument.findOneAndUpdate(
+          const doc = await UserDocumentModel.findOneAndUpdate(
             {username},
             {$push: {files: {$each: savedFiles}}},
             {upsert: true, new: true}
@@ -1150,7 +1155,7 @@ export default class UserRoute {
         try {
           const username = String(req.params.username || "").trim();
           if(!username) throw new Error("Username is required");
-          const user = await UserDocument.findOne({username}).sort({
+          const user = await UserDocumentModel.findOne({username}).sort({
             updatedAt: -1,
           });
           if(!user) throw new Error("User not found");
@@ -1232,6 +1237,7 @@ export default class UserRoute {
             username,
             "image.webp"
           );
+          const snapshot = userDoc;
           const userDocsPath = path.join(this.DEFAULT_PATH, username, "documents");
           const deletedCopyDir = path.join(this.DEFAULT_PATH, "deleted", username);
           const deletedCopyImage = path.join(deletedCopyDir, "image.webp");
@@ -1291,14 +1297,17 @@ export default class UserRoute {
                 audience: {mode: "role", roles: ["admin", "manager", "operator"]},
                 channels: ["inapp", "email"],
                 metadata: {
-                  username,
-                  userId: String(userDoc._id ?? ""),
-                  deletedBy,
-                  deletedAt: new Date().toISOString(),
-                  recyclebinUrl: `${this.RECYCLE_URL}/${encodeURIComponent(
-                    username
-                  )}/`,
-                  deletedImageURL,
+                  refId: username,
+                  data: {
+                    snapshot,
+                    image: deletedImageURL,
+                    userId: String(userDoc._id ?? ""),
+                    deletedBy,
+                    deletedAt: new Date().toISOString(),
+                    recyclebinUrl: `${this.RECYCLE_URL}/${encodeURIComponent(
+                      username
+                    )}/`
+                  }
                 },
               },
               (rooms, payload) =>
