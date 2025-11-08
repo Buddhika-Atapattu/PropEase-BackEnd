@@ -2,6 +2,7 @@
 // Class-based Property API with all helpers encapsulated as private methods/fields
 
 import express, {Request, Response, Router} from "express";
+import type {PipelineStage} from "mongoose";
 import dotenv from "dotenv";
 import multer from "multer";
 import sharp from "sharp";
@@ -98,6 +99,7 @@ export default class Property {
   constructor () {
     this.router = express.Router();
 
+    // Base CRUD routes (existing)
     this.test();
     this.insertProperty();
     this.getAllPropertiesWithPagination();
@@ -105,6 +107,15 @@ export default class Property {
     this.deleteProperty();
     this.updateProperty();
     this.getAllProperties();
+
+    // Dashboard routes (NEW)
+    this.dashboardPortfolioSummary();
+    this.dashboardCountryDistribution();
+    this.dashboardMaintenanceSummary();
+    this.dashboardPropertyTrends();
+    this.dashboardStatusCounts();
+    this.dashboardTopCities();
+    this.dashboardPriceHistogram();
   }
 
   get route(): Router {
@@ -174,19 +185,11 @@ export default class Property {
     });
 
     const fileFilter: multer.Options["fileFilter"] = (_req, file, cb) => {
-      if(
-        file.fieldname === "images" &&
-        allowedImageTypes.includes(file.mimetype)
-      )
+      if(file.fieldname === "images" && allowedImageTypes.includes(file.mimetype))
         return cb(null, true);
-      if(
-        file.fieldname === "documents" &&
-        allowedDocumentTypes.includes(file.mimetype)
-      )
+      if(file.fieldname === "documents" && allowedDocumentTypes.includes(file.mimetype))
         return cb(null, true);
-      return cb(
-        new Error(`File type not allowed for ${file.fieldname}: ${file.mimetype}`)
-      );
+      return cb(new Error(`File type not allowed for ${file.fieldname}: ${file.mimetype}`));
     };
 
     const upload = multer({
@@ -205,9 +208,7 @@ export default class Property {
         try {
           const propertyID = this.s(req.params.propertyID);
           if(!propertyID) {
-            res
-              .status(400)
-              .json({status: "error", message: "Property ID missing in URL."});
+            res.status(400).json({status: "error", message: "Property ID missing in URL."});
             return;
           }
 
@@ -270,9 +271,7 @@ export default class Property {
             await this.deleteFolderWithRetry(
               path.join(this.DEFAULT_UPLOAD_PATH, propertyID, "tempImages")
             );
-            res
-              .status(400)
-              .json({status: "fail", message: "Validation failed", errors});
+            res.status(400).json({status: "fail", message: "Validation failed", errors});
             return;
           }
 
@@ -295,22 +294,16 @@ export default class Property {
               channels: ["inapp", "email"],
               metadata: {
                 refId: propertyID,
-                data: {
-                  property: inserted
-                }
+                data: {property: inserted}
               },
             },
             (rooms, payload) => rooms.forEach((r) => io.to(r).emit("notification.new", payload))
           );
 
-          res
-            .status(201)
-            .json({status: "success", message: "Property inserted successfully", data: inserted});
+          res.status(201).json({status: "success", message: "Property inserted successfully", data: inserted});
         } catch(err: any) {
           console.error("[insert-property] error:", err);
-          res
-            .status(500)
-            .json({status: "error", message: err?.message || "Internal server error"});
+          res.status(500).json({status: "error", message: err?.message || "Internal server error"});
         }
       }
     );
@@ -383,8 +376,7 @@ export default class Property {
           else if(filterData.beds)
             and.push({bedrooms: Number.parseInt(filterData.beds, 10) || 0});
 
-          if(filterData.bathrooms === "10+")
-            and.push({bathrooms: {$gte: 10}});
+          if(filterData.bathrooms === "10+") and.push({bathrooms: {$gte: 10}});
           else if(filterData.bathrooms)
             and.push({
               bathrooms: Number.parseInt(filterData.bathrooms, 10) || 0,
@@ -436,9 +428,7 @@ export default class Property {
           });
         } catch(error) {
           console.error("[get-all-properties-with-pagination] error:", error);
-          res
-            .status(500)
-            .json({status: "error", message: "Error occurred while fetching properties."});
+          res.status(500).json({status: "error", message: "Error occurred while fetching properties."});
         }
       }
     );
@@ -461,9 +451,7 @@ export default class Property {
           });
         } catch(error) {
           console.error("[get-single-property] error:", error);
-          res
-            .status(500)
-            .json({status: "error", message: "Error occurred while fetching property."});
+          res.status(500).json({status: "error", message: "Error occurred while fetching property."});
         }
       }
     );
@@ -482,9 +470,7 @@ export default class Property {
             return;
           }
           if(!urlUsername) {
-            res
-              .status(400)
-              .json({status: "error", message: "Property deletor is required."});
+            res.status(400).json({status: "error", message: "Property deletor is required."});
             return;
           }
 
@@ -504,8 +490,7 @@ export default class Property {
             dstDir = path.join(this.DEFAULT_RECYCLE_PATH, `${safeID}_${Date.now()}`);
           }
 
-          if(await fse.pathExists(srcDir))
-            await fse.move(srcDir, dstDir, {overwrite: false});
+          if(await fse.pathExists(srcDir)) await fse.move(srcDir, dstDir, {overwrite: false});
           else await fse.mkdirp(dstDir);
 
           const snapshotPath = path.join(dstDir, "data.json");
@@ -537,7 +522,7 @@ export default class Property {
                           dstDir
                         )}`,
                       },
-                    }
+                    },
                   },
                   target: {kind: "Property", refId: safeID},
                 },
@@ -560,9 +545,7 @@ export default class Property {
           res.status(200).json({status: "success", message: "Property deleted.", data: null});
         } catch(error: any) {
           console.error("[delete-property] error:", error?.message || error);
-          res
-            .status(500)
-            .json({status: "error", message: "Error occurred while deleting property."});
+          res.status(500).json({status: "error", message: "Error occurred while deleting property."});
         }
       }
     );
@@ -610,8 +593,7 @@ export default class Property {
             : file.fieldname === "documents"
               ? path.join(base, "documents")
               : "";
-        if(!uploadPath)
-          return cb(new Error("Unexpected field: " + file.fieldname), "");
+        if(!uploadPath) return cb(new Error("Unexpected field: " + file.fieldname), "");
         fse.mkdirpSync(uploadPath);
         cb(null, uploadPath);
       },
@@ -622,15 +604,9 @@ export default class Property {
     });
 
     const fileFilter: multer.Options["fileFilter"] = (_req, file, cb) => {
-      if(
-        file.fieldname === "images" &&
-        allowedImageTypes.includes(file.mimetype)
-      )
+      if(file.fieldname === "images" && allowedImageTypes.includes(file.mimetype))
         return cb(null, true);
-      if(
-        file.fieldname === "documents" &&
-        allowedDocumentTypes.includes(file.mimetype)
-      )
+      if(file.fieldname === "documents" && allowedDocumentTypes.includes(file.mimetype))
         return cb(null, true);
       return cb(new Error("File type not allowed: " + file.mimetype));
     };
@@ -644,9 +620,7 @@ export default class Property {
         try {
           const propertyID = this.s(req.params.id || req.body.id);
           if(!propertyID) {
-            res
-              .status(400)
-              .json({status: "error", message: "Property ID is required in URL or body."});
+            res.status(400).json({status: "error", message: "Property ID is required in URL or body."});
             return;
           }
 
@@ -788,9 +762,7 @@ export default class Property {
             await this.deleteFolderWithRetry(
               path.join(this.DEFAULT_UPLOAD_PATH, propertyID, "tempImages")
             );
-            res
-              .status(400)
-              .json({status: "fail", message: "Validation failed", errors});
+            res.status(400).json({status: "fail", message: "Validation failed", errors});
             return;
           }
 
@@ -800,9 +772,7 @@ export default class Property {
             {new: true}
           );
           if(!updated) {
-            res
-              .status(404)
-              .json({status: "error", message: "Property not found or update failed."});
+            res.status(404).json({status: "error", message: "Property not found or update failed."});
             return;
           }
 
@@ -821,9 +791,7 @@ export default class Property {
                   channels: ["inapp", "email"],
                   metadata: {
                     refId: propertyID,
-                    data: {
-                      property: updated, updatedAt: new Date().toISOString(), propertyID
-                    }
+                    data: {property: updated, updatedAt: new Date().toISOString(), propertyID}
                   },
                   target: {kind: "Property", refId: propertyID},
                 },
@@ -834,9 +802,7 @@ export default class Property {
             console.warn("[update-property] notification failed:", e);
           }
 
-          res
-            .status(200)
-            .json({status: "success", message: "Property updated successfully.", data: updated});
+          res.status(200).json({status: "success", message: "Property updated successfully.", data: updated});
 
           await Promise.all(conversions);
           await this.deleteFolderWithRetry(
@@ -844,9 +810,7 @@ export default class Property {
           );
         } catch(error: any) {
           console.error("[update-property] error:", error?.stack || error);
-          res
-            .status(500)
-            .json({status: "error", message: "Error occurred while updating property."});
+          res.status(500).json({status: "error", message: "Error occurred while updating property."});
         }
       }
     );
@@ -863,9 +827,399 @@ export default class Property {
           data: properties,
         });
       } catch {
-        res
-          .status(500)
-          .json({status: "error", message: "Error fetching properties."});
+        res.status(500).json({status: "error", message: "Error fetching properties."});
+      }
+    });
+  }
+
+  /* ========================== DASHBOARD ENDPOINTS =========================== */
+  /**
+   * Common scoping helper:
+   * - ?scope=mine&username=<u> → restricts to addedBy.username == <u> (agent/operator)
+   * - ?owner=<ownerName>       → restricts to owner == <ownerName>
+   * - Always excludes archived by default unless ?includeArchived=true
+   */
+  private buildScopeMatch(req: Request): Record<string, unknown> {
+    const match: Record<string, unknown> = {};
+    const includeArchived = this.s(req.query.includeArchived) === "true";
+
+    if(!includeArchived) match.status = {$ne: "archived"};
+
+    const scope = this.s(req.query.scope);
+    const username = this.s(req.query.username);
+    if(scope === "mine" && username) {
+      match["addedBy.username"] = username;
+    }
+
+    const owner = this.s(req.query.owner);
+    if(owner) match["owner"] = owner;
+
+    return match;
+  }
+
+  /** GET /api-property/dashboard/portfolio-summary */
+  private dashboardPortfolioSummary(): void {
+    this.router.get("/dashboard/portfolio-summary", async (req, res) => {
+      try {
+        const match = this.buildScopeMatch(req);
+
+        // total = published + draft (excluding archived by default)
+        // occupancy heuristic:
+        //   - "rented" OR "sold" OR availabilityStatus == "not available"
+        //   - Feel free to adjust to your business definition.
+        const [agg] = await PropertyModel.aggregate([
+          {$match: match},
+          {
+            $facet: {
+              totals: [{$count: "total"}],
+              occ: [
+                {
+                  $match: {
+                    $or: [
+                      {listing: {$in: ["rented", "sold"]}},
+                      {availabilityStatus: "not available"},
+                    ],
+                  },
+                },
+                {$count: "occ"},
+              ],
+              series: [
+                // Occupancy sparkline by month (last 8 months)
+                ...this.monthlySeriesFacet(8, "createdAt", {
+                  $or: [
+                    {listing: {$in: ["rented", "sold"]}},
+                    {availabilityStatus: "not available"},
+                  ],
+                }),
+              ],
+            },
+          },
+          {
+            $project: {
+              totalProperties: {$ifNull: [{$arrayElemAt: ["$totals.total", 0]}, 0]},
+              occ: {$ifNull: [{$arrayElemAt: ["$occ.occ", 0]}, 0]},
+              series: "$series",
+            },
+          },
+        ]);
+
+        const total = agg?.totalProperties ?? 0;
+        const occ = agg?.occ ?? 0;
+        const occupancyPct = total > 0 ? Math.round((occ / total) * 100) : 0;
+        const series = Array.isArray(agg?.series) ? agg.series : [];
+
+        res.status(200).json({
+          status: "success",
+          message: "Portfolio summary",
+          data: {totalProperties: total, occupancyPct, series},
+        });
+      } catch(e) {
+        console.error("[dashboard/portfolio-summary] error:", e);
+        res.status(500).json({status: "error", message: "Failed to build portfolio summary"});
+      }
+    });
+  }
+
+  /** GET /api-property/dashboard/country-distribution */
+  private dashboardCountryDistribution(): void {
+    this.router.get("/dashboard/country-distribution", async (req, res) => {
+      try {
+        const match = this.buildScopeMatch(req);
+        const rows = await PropertyModel.aggregate([
+          {$match: match},
+          {
+            $group: {
+              _id: {$toUpper: "$address.country"},
+              properties: {$sum: 1},
+              occ: {
+                $sum: {
+                  $cond: [
+                    {
+                      $or: [
+                        {$in: ["$listing", ["rented", "sold"]]},
+                        {$eq: ["$availabilityStatus", "not available"]},
+                      ],
+                    },
+                    1,
+                    0,
+                  ],
+                },
+              },
+            },
+          },
+          {$project: {country: "$_id", properties: 1, occupancyPct: {$cond: [{$gt: ["$properties", 0]}, {$round: [{$multiply: [{$divide: ["$occ", "$properties"]}, 100]}, 0]}, 0]}}},
+          {$sort: {properties: -1}},
+        ]);
+
+        res.status(200).json({
+          status: "success",
+          message: "Country distribution",
+          data: rows,
+        });
+      } catch(e) {
+        console.error("[dashboard/country-distribution] error:", e);
+        res.status(500).json({status: "error", message: "Failed to build country distribution"});
+      }
+    });
+  }
+
+  /** GET /api-property/dashboard/maintenance-summary
+   * If you have a separate Maintenance collection, replace the heuristic below to aggregate from it.
+   * Current heuristic (fallback): count properties whose internalNote mentions "maintenance" OR priority == "high".
+   */
+  private dashboardMaintenanceSummary(): void {
+    this.router.get("/dashboard/maintenance-summary", async (req, res) => {
+      try {
+        const match = this.buildScopeMatch(req);
+        const openMatch = {
+          ...match,
+          $or: [
+            {priority: "high"},
+            {internalNote: {$regex: /maintenance/i}},
+          ],
+        };
+
+        const [agg] = await PropertyModel.aggregate([
+          {$match: openMatch},
+          {
+            $facet: {
+              open: [{$count: "cnt"}],
+              series: [
+                ...this.weeklySeriesFacet(8, "updatedAt"),
+              ],
+            },
+          },
+          {
+            $project: {
+              open: {$ifNull: [{$arrayElemAt: ["$open.cnt", 0]}, 0]},
+              series: "$series",
+            },
+          },
+        ]);
+
+        res.status(200).json({
+          status: "success",
+          message: "Maintenance summary",
+          data: {open: agg?.open ?? 0, series: agg?.series ?? []},
+        });
+      } catch(e) {
+        console.error("[dashboard/maintenance-summary] error:", e);
+        res.status(500).json({status: "error", message: "Failed to build maintenance summary"});
+      }
+    });
+  }
+
+  /** GET /api-property/dashboard/property-trends?range=12m
+   * range: "6m" | "12m" | "24m"
+   * - monthlyNew: count created
+   * - monthlySold: count with listing == sold|rented OR soldDate/rentedDate present
+   */
+  private dashboardPropertyTrends(): void {
+    this.router.get("/dashboard/property-trends", async (req, res) => {
+      try {
+        const rangeParam = this.s(req.query.range) || "12m";
+        const months = rangeParam === "6m" ? 6 : rangeParam === "24m" ? 24 : 12;
+
+        const match = this.buildScopeMatch(req);
+
+        // 1) New listings trend by createdAt
+        const newSeries = await PropertyModel.aggregate([
+          {$match: match},
+          ...this.monthBucketSeriesPipeline("createdAt", months),
+        ]);
+
+        // 2) Sold/Rented trend (by soldDate / rentedDate fallback to updatedAt)
+        const soldMatch = {
+          ...match,
+          $or: [
+            {listing: {$in: ["sold", "rented"]}},
+            {soldDate: {$type: "date"}},
+            {rentedDate: {$type: "date"}},
+          ],
+        };
+
+        const soldSeries = await PropertyModel.aggregate([
+          {$match: soldMatch},
+          {
+            $addFields: {
+              effectiveDate: {
+                $ifNull: ["$soldDate",
+                  {$ifNull: ["$rentedDate", "$updatedAt"]}
+                ],
+              },
+            },
+          },
+          ...this.monthBucketSeriesPipeline("effectiveDate", months),
+        ]);
+
+        res.status(200).json({
+          status: "success",
+          message: "Property trends",
+          data: {
+            monthlyNew: newSeries,
+            monthlySold: soldSeries,
+          },
+        });
+      } catch(e) {
+        console.error("[dashboard/property-trends] error:", e);
+        res.status(500).json({status: "error", message: "Failed to build property trends"});
+      }
+    });
+  }
+
+  /** GET /api-property/dashboard/status-counts
+   * Quick counters for key filters.
+   */
+  private dashboardStatusCounts(): void {
+    this.router.get("/dashboard/status-counts", async (req, res) => {
+      try {
+        const match = this.buildScopeMatch(req);
+
+        const rows = await PropertyModel.aggregate([
+          {$match: match},
+          {
+            $group: {
+              _id: null,
+              published: {$sum: {$cond: [{$eq: ["$status", "published"]}, 1, 0]}},
+              draft: {$sum: {$cond: [{$eq: ["$status", "draft"]}, 1, 0]}},
+              archived: {$sum: {$cond: [{$eq: ["$status", "archived"]}, 1, 0]}},
+              available: {$sum: {$cond: [{$eq: ["$availabilityStatus", "available"]}, 1, 0]}},
+              sold: {$sum: {$cond: [{$eq: ["$listing", "sold"]}, 1, 0]}},
+              rented: {$sum: {$cond: [{$eq: ["$listing", "rented"]}, 1, 0]}},
+              pending: {$sum: {$cond: [{$eq: ["$availabilityStatus", "pending"]}, 1, 0]}},
+            },
+          },
+        ]);
+
+        const base = rows?.[0] ?? {};
+        res.status(200).json({
+          status: "success",
+          message: "Status counters",
+          data: {
+            published: base.published ?? 0,
+            draft: base.draft ?? 0,
+            archived: base.archived ?? 0,
+            available: base.available ?? 0,
+            sold: base.sold ?? 0,
+            rented: base.rented ?? 0,
+            pending: base.pending ?? 0,
+          },
+        });
+      } catch(e) {
+        console.error("[dashboard/status-counts] error:", e);
+        res.status(500).json({status: "error", message: "Failed to build status counters"});
+      }
+    });
+  }
+
+  /** GET /api-property/dashboard/top-cities?limit=8 */
+  private dashboardTopCities(): void {
+    this.router.get("/dashboard/top-cities", async (req, res) => {
+      try {
+        const limit = Math.max(1, Math.min(100, Number(this.s(req.query.limit)) || 8));
+        const match = this.buildScopeMatch(req);
+
+        const rows = await PropertyModel.aggregate([
+          {$match: match},
+          {
+            $group: {
+              _id: {city: {$toUpper: "$address.city"}},
+              properties: {$sum: 1},
+              avgPrice: {$avg: "$price"},
+            },
+          },
+          {
+            $project: {
+              _id: 0,
+              city: "$_id.city",
+              properties: 1,
+              avgPrice: {$round: ["$avgPrice", 0]},
+            },
+          },
+          {$sort: {properties: -1}},
+          {$limit: limit},
+        ]);
+
+        res.status(200).json({
+          status: "success",
+          message: "Top cities by listings",
+          data: rows,
+        });
+      } catch(e) {
+        console.error("[dashboard/top-cities] error:", e);
+        res.status(500).json({status: "error", message: "Failed to build top cities"});
+      }
+    });
+  }
+
+  /** GET /api-property/dashboard/price-histogram?bins=10
+   * Even-width bins between min(price) and max(price).
+   */
+  private dashboardPriceHistogram(): void {
+    this.router.get("/dashboard/price-histogram", async (req, res) => {
+      try {
+        const binsRequested = Math.max(2, Math.min(50, Number(this.s(req.query.bins)) || 10));
+        const match = this.buildScopeMatch(req);
+
+        // Compute min/max in a single trip
+        const [mm] = await PropertyModel.aggregate([
+          {$match: match},
+          {$group: {_id: null, min: {$min: "$price"}, max: {$max: "$price"}}},
+        ]);
+
+        const min = Math.max(0, Number(mm?.min ?? 0));
+        const max = Math.max(min, Number(mm?.max ?? 0));
+        if(min === max) {
+          // all prices same – return single bin
+          res.status(200).json({
+            status: "success",
+            message: "Price histogram",
+            data: {bins: [{from: min, to: max, count: await PropertyModel.countDocuments(match)}]},
+          });
+          return;
+        }
+
+        const width = (max - min) / binsRequested;
+
+        // Build stages to classify into bins
+        const rows = await PropertyModel.aggregate([
+          {$match: match},
+          {
+            $project: {
+              price: 1,
+              bin: {
+                $floor: {
+                  $divide: [{$subtract: ["$price", min]}, width],
+                },
+              },
+            },
+          },
+          {
+            $group: {
+              _id: "$bin",
+              count: {$sum: 1},
+            },
+          },
+          {$sort: {_id: 1}},
+        ]);
+
+        // Materialize contiguous bins in Node so empty bins are included
+        const out: Array<{from: number; to: number; count: number}> = [];
+        for(let i = 0; i < binsRequested; i++) {
+          const from = Math.round(min + i * width);
+          const to = i === binsRequested - 1 ? Math.round(max) : Math.round(min + (i + 1) * width);
+          const row = rows.find((r) => Number(r._id) === i);
+          out.push({from, to, count: Number(row?.count ?? 0)});
+        }
+
+        res.status(200).json({
+          status: "success",
+          message: "Price histogram",
+          data: {bins: out},
+        });
+      } catch(e) {
+        console.error("[dashboard/price-histogram] error:", e);
+        res.status(500).json({status: "error", message: "Failed to build price histogram"});
       }
     });
   }
@@ -1170,6 +1524,100 @@ export default class Property {
 
     return {data, errors};
   }
+
+  // --- FACET helper: Occupancy (or any) sparkline by month (last N) on a condition
+  // Returns FacetPipelineStage[] (TS-safe inside $facet: { series: [...] })
+  private monthlySeriesFacet(
+    lastN: number,
+    dateField: string, // e.g., "createdAt"
+    extraMatch?: Record<string, unknown>,
+  ): PipelineStage.FacetPipelineStage[] {
+    const from = new Date();
+    from.setMonth(from.getMonth() - (lastN - 1), 1);
+    from.setHours(0, 0, 0, 0);
+
+    const stages: PipelineStage.FacetPipelineStage[] = [];
+
+    if(extraMatch && Object.keys(extraMatch).length) {
+      stages.push({$match: extraMatch});
+    }
+
+    stages.push(
+      {$match: {[dateField]: {$gte: from}}},
+      {
+        $group: {
+          _id: {
+            y: {$year: `$${dateField}`},
+            m: {$month: `$${dateField}`},
+          },
+          cnt: {$sum: 1},
+        },
+      },
+      {$sort: {"_id.y": 1 as 1, "_id.m": 1 as 1}},
+      {$group: {_id: null, arr: {$push: "$cnt"}}},
+      {$project: {series: "$arr"}},
+      {$replaceRoot: {newRoot: "$series"}},
+    );
+
+    return stages;
+  }
+
+  // --- FACET helper: sparkline by week (last N) using updatedAt
+  // Returns FacetPipelineStage[] (TS-safe inside $facet: { series: [...] })
+  private weeklySeriesFacet(
+    lastN: number,
+    dateField: string = "updatedAt",
+  ): PipelineStage.FacetPipelineStage[] {
+    const from = new Date();
+    from.setDate(from.getDate() - (lastN - 1) * 7);
+    from.setHours(0, 0, 0, 0);
+
+    return [
+      {$match: {[dateField]: {$gte: from}}},
+      {
+        $group: {
+          _id: {
+            y: {$isoWeekYear: `$${dateField}`},
+            w: {$isoWeek: `$${dateField}`},
+          },
+          cnt: {$sum: 1},
+        },
+      },
+      {$sort: {"_id.y": 1 as 1, "_id.w": 1 as 1}},
+      {$group: {_id: null, arr: {$push: "$cnt"}}},
+      {$project: {series: "$arr"}},
+      {$replaceRoot: {newRoot: "$series"}},
+    ];
+  }
+
+
+  // --- Month bucket series by a field (dense array length ≈ months; FE can pad zeros)
+  private monthBucketSeriesPipeline(
+    dateField: string,
+    months: number
+  ): PipelineStage[] {
+    const from = new Date();
+    from.setMonth(from.getMonth() - (months - 1), 1);
+    from.setHours(0, 0, 0, 0);
+
+    return [
+      {$match: {[dateField]: {$gte: from}}},
+      {
+        $group: {
+          _id: {
+            y: {$year: `$${dateField}`},
+            m: {$month: `$${dateField}`},
+          },
+          cnt: {$sum: 1},
+        },
+      },
+      {$sort: {"_id.y": 1 as 1, "_id.m": 1 as 1}},
+      {$group: {_id: null, arr: {$push: "$cnt"}}},
+      {$project: {series: "$arr"}},
+      {$replaceRoot: {newRoot: "$series"}},
+    ];
+  }
+
 
   // --- fs helpers ---
   private async deleteFolderWithRetry(

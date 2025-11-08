@@ -42,6 +42,8 @@ import Lease from './api/lease';
 import Validator from './api/validator';
 import NotificationController from './controller/notification.controller';
 import NotificationService from './services/notification.service';
+import Payments from './api/payment';
+import {UploadsRoutes} from './api/uploads'
 
 // Background/cron-like example
 import {AutoDeleteUserService} from './services/auto-delete.service';
@@ -185,6 +187,9 @@ export default class App {
   private fileTransfer = new FileTransfer();
   private lease = new Lease();
   private validator = new Validator();
+  private payments = new Payments();
+  private uploadsRoutes = new UploadsRoutes();
+
 
   // Notifications (service + controller)
   private notificationService = new NotificationService();
@@ -423,6 +428,7 @@ export default class App {
     });
 
     // Public / separately guarded APIs
+    this.app.use('/api', this.uploadsRoutes.router);
     this.app.use('/api-user', this.user.route);
     this.app.use('/api-tracking', this.tracking.route);
     this.app.use('/api-property', this.property.route);
@@ -431,6 +437,9 @@ export default class App {
     this.app.use('/api-file-transfer', this.fileTransfer.route);
     this.app.use('/api-lease', this.lease.route);
     this.app.use('/api-validator', this.validator.route);
+    this.app.use('/api-payments', this.payments.route);
+
+
 
     // Notifications (protected)
     this.app.use('/api-notification', this.auth.handler, this.notification.router);

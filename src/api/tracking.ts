@@ -96,17 +96,20 @@ export default class Tracking {
 
           // 2) Upsert into MongoDB audit
           await TrackingLoggedUserModel.updateOne(
-            {username},
+            {username, ip_address: ip},
             {
               $push: {
-                data: {
-                  ip_address: ip,
-                  date: parsedDate,
-                  // Keep sessionId as an extra field in Mongo
+                activities: {
+                  kind: 'user',
+                  severity: 'success',
+                  title: 'Login',
+                  activity: 'User logged in',
+                  refId: sessionId,
+                  timestamp: parsedDate,
                   // @ts-ignore
-                  sessionId,
-                },
-              },
+                  sessionId
+                }
+              }
             },
             {upsert: true}
           );
@@ -592,6 +595,87 @@ export default class Tracking {
     );
   }
 
+  // src/api/tracking.ts (inside class Tracking)
+  private getRecentFeed(): void {
+    // GET /api-tracking/recent?limit=20&cursor=<ISO>&kind=<lease|payment|maintenance|user|system>
+    this.router.get(
+      '/recent',
+      async (req: Request, res: Response): Promise<void> => {
+        try {
+          const rawLimit = String(req.query.limit ?? '');
+          const limit = Math.min(200, Math.max(1, this.toInt(rawLimit, 20, 1, 200)));
+          const cursorIso = (req.query.cursor as string | undefined)?.trim();
+          const kind = (req.query.kind as string | undefined)?.trim();
+
+          // Build time window filter using cursor (items strictly older than cursor)
+          const timeMatch: Record<string, any> = {};
+          if(cursorIso) {
+            const cursorDate = this.toDate(cursorIso);
+            if(cursorDate) timeMatch['$lt'] = cursorDate;
+          }
+
+          // Build $match for kind + time
+          const matchStage: Record<string, any> = {};
+          if(kind) matchStage['activities.kind'] = kind;
+          if(timeMatch.$lt) matchStage['activities.timestamp'] = timeMatch;
+
+          const pipeline: any[] = [
+            {$unwind: '$activities'},
+            Object.keys(matchStage).length ? {$match: matchStage} : null,
+            {$sort: {'activities.timestamp': -1}},
+            {$limit: limit + 1}, // pull one extra to compute nextCursor
+            {
+              $project: {
+                _id: 0,
+                username: 1,
+                ip_address: 1,
+                kind: '$activities.kind',
+                title: '$activities.title',
+                message: '$activities.activity',
+                refId: '$activities.refId',
+                occurredAt: '$activities.timestamp',
+                severity: '$activities.severity',
+                sessionId: '$activities.sessionId',
+              }
+            }
+          ].filter(Boolean);
+
+          const rows = await LoggedUserActivitiesModel.aggregate(pipeline);
+
+          // Shape to DTO
+          const items = rows.slice(0, limit).map((r: any) => ({
+            id: `${r.refId ?? ''}|${r.occurredAt ?? ''}|${r.username ?? ''}`,
+            kind: (r.kind || 'system') as any,
+            title: r.title || 'Activity',
+            message: r.message || '',
+            refId: r.refId,
+            actor: r.username ? {username: r.username, name: r.username, role: 'user'} : undefined,
+            occurredAt: new Date(r.occurredAt).toISOString(),
+            severity: (r.severity || 'info') as any
+          }));
+
+          const hasMore = rows.length > limit;
+
+          const lastItem = items.length > 0 ? items[items.length - 1] : undefined;
+
+          const nextCursor = hasMore && lastItem
+            ? this.toIsoOrUndef(lastItem.occurredAt)
+            : undefined;
+
+          res.status(200).json({
+            status: 'success',
+            message: 'Recent activity feed',
+            data: {items, nextCursor}
+          });
+        } catch(error) {
+          console.error('Error /recent:', error);
+          res.status(500).json({status: 'error', message: 'Internal Server Error: ' + (error as Error).message});
+        }
+      }
+    );
+  }
+
+
   // ============================================================================
   // Private helper METHODS (moved from top-level helpers)
   // ============================================================================
@@ -636,5 +720,11 @@ export default class Tracking {
     const dir = path.join(base, username);
     const file = path.join(dir, "user-login.log");
     return {base, dir, file};
+  }
+
+  private toIsoOrUndef(input: unknown): string | undefined {
+    if(typeof input !== 'string') return undefined;
+    const d = new Date(input);
+    return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
   }
 }

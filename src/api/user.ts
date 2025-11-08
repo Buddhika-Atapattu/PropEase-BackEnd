@@ -779,7 +779,8 @@ export default class UserRoute {
             return;
           }
           const exists = await UserModel.exists({username});
-          res.status(200).json({status: exists ? "true" : "false"});
+          const user = await UserModel.findOne({username: username})
+          res.status(200).json({status: exists ? "true" : "false", message: 'User found!', data: user, user: user});
         } catch(error) {
           console.error("findUserByUsername:", error);
           res.status(500).json({status: "error", message: "Server error"});
