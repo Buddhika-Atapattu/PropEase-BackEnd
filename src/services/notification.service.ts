@@ -182,6 +182,7 @@ export default class NotificationService {
                 Registration: 'Restore Registration',
                 Payment: 'Restore Payment',
                 System: 'Restore System',
+                Comment: 'Restore Comment'
             },
             permanent_delete: {
                 User: 'Permanent Delete User',
@@ -196,6 +197,7 @@ export default class NotificationService {
                 Registration: 'Permanent Delete Registration',
                 Payment: 'Permanent Delete Payment',
                 System: 'Permanent Delete System',
+                Comment: 'Permanent Delete Comment',
             },
         };
 

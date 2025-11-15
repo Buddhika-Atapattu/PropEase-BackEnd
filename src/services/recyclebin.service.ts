@@ -65,6 +65,7 @@ export default class RecycleBinService {
             Registration: 'registrations',
             Payment: 'payments',
             System: 'system',
+            Comment: 'comment'
         };
         this.folderMap = {...defaults, ...(opts.categoryFolderMap ?? {})};
     }

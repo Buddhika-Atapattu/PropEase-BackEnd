@@ -466,11 +466,11 @@ export default class Property {
           const safeID = this.s(req.params.id);
           const urlUsername = this.s(req.params.username);
           if(!safeID) {
-            res.status(400).json({status: "error", message: "Property ID is required."});
+            res.status(400).json({success: false, status: "error", message: "Property ID is required."});
             return;
           }
           if(!urlUsername) {
-            res.status(400).json({status: "error", message: "Property deletor is required."});
+            res.status(400).json({success: false, status: "error", message: "Property deletor is required."});
             return;
           }
 
@@ -480,7 +480,7 @@ export default class Property {
 
           const property = await PropertyModel.findOne({id: safeID}).lean();
           if(!property) {
-            res.status(404).json({status: "error", message: "Property not found."});
+            res.status(404).json({success: false, status: "error", message: "Property not found."});
             return;
           }
 
@@ -536,16 +536,17 @@ export default class Property {
           const delRes = await PropertyModel.deleteOne({id: safeID});
           if(delRes.deletedCount !== 1) {
             res.status(409).json({
+              success: false,
               status: "error",
               message: "Delete conflict: document was not removed from DB.",
             });
             return;
           }
 
-          res.status(200).json({status: "success", message: "Property deleted.", data: null});
+          res.status(200).json({success: true, status: "success", message: "Property deleted.", data: null});
         } catch(error: any) {
           console.error("[delete-property] error:", error?.message || error);
-          res.status(500).json({status: "error", message: "Error occurred while deleting property."});
+          res.status(500).json({success: false, status: "error", message: "Error occurred while deleting property."});
         }
       }
     );

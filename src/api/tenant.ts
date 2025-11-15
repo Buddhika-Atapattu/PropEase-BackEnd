@@ -7,6 +7,8 @@
 // - Create complaint (multipart: JSON + attachments[0..9])
 // - Get complaint by ID
 // - Get all complaints for a tenant
+// - Get all complaints (admin view)
+// - Post comment on complaint (multipart: JSON + attachments[0..9])
 // ----------------------------------------------------------------------------
 // Design notes:
 // • We never delete files outright during destructive ops; we move to /public/recyclebin
@@ -14,24 +16,33 @@
 // • For uploads we use Multer memoryStorage, validate, then persist to final disk paths
 // • All routes return JSON and follow the res.status(...).json(...); return; pattern
 // • All helpers are class methods; no free functions
+// • Electron-friendly: file responses may include relPath under "public/..."
 // ============================================================================
 
-import express, {Request, Response, Router, NextFunction} from 'express';
+import express, {
+  Request, Response, Router, NextFunction, RequestHandler
+} from 'express';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import * as fse from 'fs-extra';
 import path from 'path';
 import multer from 'multer';
+import type {FileFilterCallback} from 'multer';
 import {randomUUID} from 'crypto';
 
 import {ITenant, TenantModel} from '../models/tenant.model';
 import {LeaseModel} from '../models/lease.model';
 import NotificationService from '../services/notification.service';
 import {UserModel} from '../models/user.model';
-import {ComplaintModel, COMPLAINT_CATEGORIES} from '../models/complaint.model';
-import {create} from 'domain';
+import {
+  ComplaintModel,
+  COMPLAINT_CATEGORIES,
+  type ComplaintAudience,
+  DEFINED_AUDIENCES,
+} from '../models/complaint.model';
 
 dotenv.config();
+
 
 /**
  * Tenant API class — mount with:  app.use('/api/tenants', new Tenant().route);
@@ -85,14 +96,17 @@ export default class Tenant {
   // Constructor binds routes
   // ---------------------------------------------------------------------------
   public constructor () {
-    this.insertTenant();     // POST   /insertTenant
-    this.getAllTenants();    // GET    /get-all-tenants
-    this.deleteTenant();     // DELETE /delete-tenant/:username/:deletor
-    this.createComplaint();  // POST   /create-complaint
-    this.getComplaintById(); // GET    /complaint/:complaintID
-    this.getAllComplaintsByTenantUsername(); // GET /complaints/tenant/:username
-    this.getAllComplaints() // GET /complaints/all
+    this.insertTenant();                       // POST   /insertTenant
+    this.getAllTenants();                      // GET    /get-all-tenants
+    this.deleteTenant();                       // DELETE /delete-tenant/:username/:deletor
+    this.createComplaint();                    // POST   /create-complaint
+    this.getComplaintById();                   // GET    /complaint/:complaintID
+    this.getAllComplaintsByTenantUsername();   // GET    /complaints/tenant/:username
+    this.getAllComplaints();                   // GET    /complaints/all
+    this.postComment();                        // POST   /complaints/post-comments
+    this.getCommentsBasedOnComplaintCode()     // GET    /complaints/:complaint.code/comments?params
   }
+
 
   /** Expose router for mounting. */
   public get route(): Router {
@@ -112,6 +126,7 @@ export default class Tenant {
     }
     return target;
   }
+
 
   /** mkdir -p */
   private async ensureDir(dir: string): Promise<void> {
@@ -202,12 +217,39 @@ export default class Tenant {
     return map[mime] || '';
   }
 
+  // Build absolute URL for served files (frontend web) and a relPath (for Electron)
+  private buildFileRefs(req: Request, tenantId: string, code: string, storedName: string) {
+    const baseURL = `${req.protocol}://${req.get('host')}`;
+    const url = `${baseURL}/uploads/tenants/${encodeURIComponent(tenantId)}/complaints/${encodeURIComponent(code)}/comments/${encodeURIComponent(storedName)}`;
+    // relPath is project-relative, no leading "/" (Electron packaging rule)
+    const relPath = path
+      .join('public', 'uploads', 'tenants', tenantId, 'complaints', code, 'comments', storedName)
+      .replace(/\\/g, '/');
+
+    return {url, relPath};
+  }
+
+  // Parse JSON defensively and type-safely
+  private parseJson<T>(raw: unknown, label: string, res: Response): T | null {
+    try {
+      const s = (raw ?? '').toString().trim();
+      if(!s) {
+        res.status(400).json({success: false, message: `${label} is missing or empty`});
+        return null;
+      }
+      return JSON.parse(s) as T;
+    } catch(e) {
+      res.status(400).json({success: false, message: `${label} is not valid JSON`});
+      return null;
+    }
+  }
+
   // ===========================================================================
-  // Multer builder: specifically for complaint creation
+  // Multer builder: shared for /create-complaint and /complaints/post-comments
   // - memoryStorage, files <=10MB, max 10, field name "attachments"
   // - JSON-ify Multer errors into 400 responses
   // ===========================================================================
-  private buildComplaintUploader(): (req: Request, res: Response, next: NextFunction) => void {
+  private buildComplaintUploader(): RequestHandler {
     const upload = multer({
       storage: multer.memoryStorage(),
       limits: {
@@ -215,18 +257,20 @@ export default class Tenant {
         files: 10,                   // max 10 files
         fields: 20,                  // defensive
       },
-      fileFilter: (_req, file, cb) => {
+      fileFilter: (_req, file, cb: FileFilterCallback) => {
         if(this.isAllowedAttachmentType(file.mimetype)) {
           cb(null, true);
         } else {
+          // Use MulterError so TypeScript is happy and the code is consistent
           cb(new multer.MulterError('LIMIT_UNEXPECTED_FILE', `Unsupported mimetype: ${file.mimetype}`));
         }
       },
     }).fields([{name: 'attachments', maxCount: 10}]);
 
-    return (req, res, next) => {
+    return (req: Request, res: Response, next: NextFunction) => {
       upload(req, res, (err: any) => {
-        if(!err) return next();
+        if(!err) {next(); return;}
+
         if(err instanceof multer.MulterError) {
           let message = 'Upload error';
           if(err.code === 'LIMIT_FILE_SIZE') message = 'One or more files exceed the 10MB size limit.';
@@ -235,6 +279,7 @@ export default class Tenant {
           res.status(400).json({success: false, message, errors: {code: err.code, field: (err as any).field}});
           return;
         }
+
         res.status(400).json({success: false, message: err?.message || 'Upload failed'});
         return;
       });
@@ -286,7 +331,7 @@ export default class Tenant {
         });
         await (tenantDoc as any).save?.();
 
-        // Broadcast notification
+        // Broadcast notification (non-fatal if socket missing)
         try {
           const notificationService = new NotificationService();
           const io = req.app.get('io') as import('socket.io').Server;
@@ -328,6 +373,7 @@ export default class Tenant {
       }
     });
   }
+
 
   // ===========================================================================
   // GET /get-all-tenants
@@ -637,6 +683,7 @@ export default class Tenant {
     });
   }
 
+
   // ===========================================================================
   // GET /complaint/:complaintID
   // ===========================================================================
@@ -659,6 +706,7 @@ export default class Tenant {
     });
   }
 
+
   // ===========================================================================
   // GET /complaints/tenant/:username
   // ===========================================================================
@@ -679,14 +727,13 @@ export default class Tenant {
     });
   }
 
+
   // ===========================================================================
   // GET /complaints/all
   // ===========================================================================
   private getAllComplaints(): void {
-
-    this.router.get('/complaints/all', async (req: Request, res: Response) => {
+    this.router.get('/complaints/all', async (_req: Request, res: Response) => {
       try {
-
         // Fetch sorted (newest first)
         const [items, total] = await Promise.all([
           ComplaintModel
@@ -701,10 +748,7 @@ export default class Tenant {
           success: true,
           status: 'success',
           message: 'Complaints fetched successfully',
-          data: {
-            items,
-            total
-          }
+          data: {items, total}
         });
         return;
       } catch(error) {
@@ -719,4 +763,370 @@ export default class Tenant {
       }
     });
   }
+
+
+  // ===========================================================================
+  // POST /complaints/post-comments
+  // Body (multipart/form-data):
+  //   - complaint         : JSON string with { tenantID, code, byUserId, byName, audience? }
+  //   - comment           : string (message)
+  //   - attachmentCount   : stringified number (must match uploaded files)
+  //   - attachments[]     : optional files (<=10MB each, max 10; allowed images/docs)
+  // Behavior:
+  //   • Validates inputs
+  //   • Writes files to: /public/uploads/tenants/<tenantID>/complaints/<code>/comments
+  //   • Pushes a new comment object into complaint.comments[]
+  //   • Rolls back written files if DB update fails
+  // ===========================================================================
+  private postComment(): void {
+    const attachmentsUploader = this.buildComplaintUploader();
+
+    this.router.post('/complaints/post-comments', attachmentsUploader, async (req: Request, res: Response) => {
+      try {
+        // 1) Parse complaint reference JSON
+        type IncomingComplaintRef = {
+          tenantID?: string;
+          code?: string;
+          byUserId?: string;
+          byName?: string;
+          image?: string;
+          audience?: ComplaintAudience;
+        };
+
+        const complaintRef = this.parseJson<IncomingComplaintRef>(req.body?.complaint, 'Complaint', res);
+        if(!complaintRef) return;
+
+        const tenantID = (complaintRef.tenantID ?? '').toString().trim();
+        const code = (complaintRef.code ?? '').toString().trim();
+        const byUserId = (complaintRef.byUserId ?? '').toString().trim();
+        const byName = (complaintRef.byName ?? '').toString().trim();
+        const image = (complaintRef.image ?? '').toString().trim();
+        const audience = ((complaintRef.audience ?? 'all') as ComplaintAudience);
+
+        if(!tenantID) {res.status(400).json({success: false, message: 'Tenant ID is missing'}); return;}
+        if(!code) {res.status(400).json({success: false, message: 'Complaint ID is missing'}); return;}
+        if(!byUserId || !byName) {res.status(400).json({success: false, message: 'byUserId and byName are required'}); return;}
+        if(!DEFINED_AUDIENCES.includes(audience)) {
+          res.status(400).json({success: false, message: 'audience must be internal | tenant | all'}); return;
+        }
+
+        // 2) Validate text content
+        const rawComment = (req.body?.comment ?? '').toString().trim();
+        if(!rawComment) {res.status(400).json({success: false, message: 'Comment cannot be empty'}); return;}
+        if(rawComment.length > 5000) {
+          res.status(400).json({success: false, message: 'Comment is too long (max 5000 chars)'}); return;
+        }
+
+        // 3) Validate attachment count vs actual uploads
+        const attachmentCountStr = (req.body?.attachmentCount ?? '').toString().trim();
+        if(!attachmentCountStr || isNaN(Number(attachmentCountStr))) {
+          res.status(400).json({success: false, message: 'attachmentCount must be a valid number'});
+          return;
+        }
+        const expectedCount = Number(attachmentCountStr);
+
+        const filesMap = (req.files as Record<string, Express.Multer.File[]>) || {};
+        const files = filesMap['attachments'] || [];
+
+        if(files.length !== expectedCount) {
+          res.status(400).json({
+            success: false,
+            message: `attachmentCount mismatch: expected ${expectedCount}, received ${files.length}`,
+          });
+          return;
+        }
+
+        // 4) Confirm complaint existence early (cheap query)
+        const exists = await ComplaintModel.exists({code});
+        if(!exists) {res.status(404).json({success: false, message: `Complaint not found for code: ${code}`}); return;}
+
+        // 5) Write files (if any) to comments folder
+        const baseDir = this.safeJoin(this.UPLOADS_ROOT, 'tenants', tenantID, 'complaints', code, 'comments');
+        await fse.ensureDir(baseDir);
+
+        const written: string[] = []; // track written absolute paths for rollback
+        const attachments: Array<{
+          name: string;
+          mimetype: string;
+          size: number;
+          url: string;
+          relPath: string;
+        }> = [];
+
+        for(const f of files) {
+          // Defense-in-depth (fileFilter already validated)
+          if(!this.isAllowedAttachmentType(f.mimetype)) {
+            res.status(400).json({success: false, message: `Unsupported file type: ${f.mimetype}`});
+            return;
+          }
+
+          const rawName = (f.originalname || 'file').toString();
+          const cleanBase = (rawName.replace(/[^\w.\- ]+/g, '_').trim() || 'file').replace(/\.[^.]+$/, '');
+          const extFromName = path.extname(rawName).toLowerCase();
+          const extFromMime = this.mimeToExt(f.mimetype);
+          const ext = extFromName || extFromMime || '';
+          const storedName = ext ? `${randomUUID()}-${cleanBase}${ext}` : `${randomUUID()}-${cleanBase}`;
+
+          const fullPath = path.join(baseDir, storedName);
+          await fse.writeFile(fullPath, f.buffer);
+          written.push(fullPath);
+
+          const refs = this.buildFileRefs(req, tenantID, code, storedName);
+          attachments.push({
+            name: cleanBase + (ext || ''),
+            mimetype: f.mimetype,
+            size: f.size,
+            url: refs.url,
+            relPath: refs.relPath,
+          });
+        }
+
+        // 6) Construct the comment object
+        const newComment = {
+          byUserId,
+          byName,
+          audience,
+          image,
+          message: rawComment,
+          createdAt: new Date().toISOString(),
+          attachments: attachments.length ? attachments : undefined,
+        };
+
+        // 7) Push the comment atomically and bump updatedAt
+        const updated = await ComplaintModel.findOneAndUpdate(
+          {code},
+          {
+            $push: {comments: newComment},
+            $set: {updatedAt: new Date().toISOString()},
+          },
+          {new: true, projection: {comments: {$slice: -1}}} // only last comment back
+        ).lean();
+
+        if(!updated) {
+          // Rollback files if DB write failed (race/removed complaint)
+          for(const p of written) {await fse.remove(p).catch(() => void 0);}
+          res.status(404).json({success: false, message: `Complaint not found for code: ${code}`});
+          return;
+        }
+
+        const created = (updated as any)?.comments?.[0] ?? newComment;
+
+        const notificationService = new NotificationService();
+        const io = req.app.get('io') as import('socket.io').Server;
+        await notificationService.createNotification(
+          {
+            title: 'New Comment',
+            body: `New comment ${code} has been created by ${newComment.byName}.`,
+            type: 'create',
+            severity: 'info',
+            audience: {mode: 'role', roles: ['admin', 'agent', 'manager', 'operator', 'developer'], usernames: [tenantID]},
+            channels: ['inapp', 'email'],
+            metadata: {refId: code, data: {snapshot: created}},
+          },
+          (rooms, payload) => rooms.forEach(room => io?.to(room).emit('notification.new', payload)),
+        );
+
+        res.status(200).json({
+          success: true,
+          status: 'success',
+          message: 'Comment posted successfully',
+          data: {
+            code,
+            comment: created,
+          },
+        });
+        return;
+      } catch(error) {
+        console.error('post-comments:', error);
+        res.status(500).json({
+          success: false,
+          status: 'error',
+          message: 'Internal server error while posting comment',
+          errors: {reason: (error as Error)?.message ?? 'Unknown error'}
+        });
+        return;
+      }
+    });
+  }
+
+  // Clamp & parse "limit" safely (defaults to 10, max 50)
+  private parseLimit(raw: unknown, def = 10, min = 1, max = 50): number {
+    const n = Number(raw);
+    if(Number.isFinite(n)) return Math.min(Math.max(Math.trunc(n), min), max);
+    return def;
+  }
+
+  // Encode the paging cursor (opaque base64)
+  private encodeCursor(createdAt: Date, id: import('mongoose').Types.ObjectId): string {
+    const payload = {t: createdAt.toISOString(), id: id.toString()};
+    return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
+  }
+
+  // Decode the paging cursor; returns null if invalid
+  // Keep the same return type: { t: Date; id?: import('mongoose').Types.ObjectId } | null
+  private decodeCursor(
+    raw?: string | null
+  ): {t: Date; id?: import('mongoose').Types.ObjectId} | null {
+    if(!raw) return null;
+
+    try {
+      const txt = Buffer.from(String(raw), 'base64').toString('utf8');
+      const obj = JSON.parse(txt) as {t?: string; id?: string};
+      if(!obj?.t) return null;
+
+      const t = new Date(obj.t);
+      if(Number.isNaN(t.getTime())) return null;
+
+      const mongoose = require('mongoose') as typeof import('mongoose');
+
+      // Build the payload without 'id' first
+      const base: {t: Date; id?: import('mongoose').Types.ObjectId} = {t};
+
+      if(obj.id && mongoose.isValidObjectId(obj.id)) {
+        // Only add 'id' property when we actually have one (do not set undefined)
+        base.id = new mongoose.Types.ObjectId(obj.id);
+      }
+
+      return base;
+    } catch {
+      // Legacy fallback: accept ISO date or ObjectId in plain form
+      const mongoose = require('mongoose') as typeof import('mongoose');
+
+      if(mongoose.isValidObjectId(raw)) {
+        return {
+          t: new Date('9999-12-31T23:59:59.999Z'),
+          id: new mongoose.Types.ObjectId(raw), // included only when present
+        };
+      }
+
+      const t = new Date(raw as string);
+      if(!Number.isNaN(t.getTime())) {
+        return {t}; // no 'id' property at all
+      }
+      return null;
+    }
+  }
+
+
+
+  // ===========================================================================
+  // GET /complaints/:code/comments
+  // Query: ?limit=10&cursor=<opaque-base64>
+  // Returns newest -> older.
+  // Pagination rule: if cursor present, return comments with
+  //   (createdAt < cursor.t) OR (createdAt == cursor.t AND _id < cursor.id)
+  // ===========================================================================
+  private getCommentsBasedOnComplaintCode(): void {
+    this.router.get('/complaints/:code/comments', async (
+      req: Request<{code: string}>,
+      res: Response
+    ) => {
+      try {
+        const code = (req.params.code || '').toString().trim();
+        if(!code) {res.status(400).json({success: false, message: 'Invalid complaint code'}); return;}
+
+        const limit = this.parseLimit(req.query.limit, 10, 1, 50);
+        const cursor = this.decodeCursor((req.query.cursor as string) || null);
+
+        // Build a pipeline that pages over embedded comments
+        const matchBase: any = {code};
+        const cursorMatch: any = {};
+
+        if(cursor?.t) {
+          // createdAt must be Date in DB; if it's stored as string, $toDate in $addFields then match
+          cursorMatch.$or = [
+            {'comments.createdAt': {$lt: cursor.t}},
+            ...(cursor.id
+              ? [{
+                $and: [
+                  {'comments.createdAt': cursor.t},
+                  {'comments._id': {$lt: cursor.id}}
+                ]
+              }]
+              : [])
+          ];
+        }
+
+        const pipeline: any[] = [
+          {$match: matchBase},
+          {$unwind: '$comments'},
+
+          // If your schema stores createdAt as String, convert it once for sorting/matching:
+          // { $addFields: { 'comments._createdAt': { $toDate: '$comments.createdAt' } } },
+
+          // Apply cursor window if present
+          ...(cursorMatch.$or ? [{$match: cursorMatch}] : []),
+
+          // Sort newest → older (tie-break on _id for stable order)
+          {$sort: {'comments.createdAt': -1, 'comments._id': -1}},
+
+          // Page size
+          {$limit: limit},
+
+          // Only send the comment subdocument
+          {$replaceWith: '$comments'},
+        ];
+
+        // Run aggregation
+        const items = await ComplaintModel.aggregate(pipeline).exec();
+
+        // Compute nextCursor + hasMore
+        let nextCursor: string | undefined;
+        let hasMore = false;
+
+        if(items.length > 0) {
+          const last = items[items.length - 1];
+          const createdAt: Date = new Date(last.createdAt);
+          const id = (last as any)._id;
+          nextCursor = this.encodeCursor(createdAt, id);
+
+          // Lightweight “has more” check:
+          // Ask for 1 more document beyond the last boundary
+          const tailMatch: any = {
+            code,
+          };
+          const tailWindow: any = {
+            $or: [
+              {'comments.createdAt': {$lt: createdAt}},
+              {
+                $and: [
+                  {'comments.createdAt': createdAt},
+                  {'comments._id': {$lt: id}}
+                ]
+              }
+            ]
+          };
+
+          const morePipeline = [
+            {$match: tailMatch},
+            {$unwind: '$comments'},
+            {$match: tailWindow},
+            {$limit: 1},
+            {$project: {_id: 1}}
+          ];
+
+          const more = await ComplaintModel.aggregate(morePipeline).exec();
+          hasMore = more.length > 0;
+        }
+
+        res.status(200).json({
+          success: true,
+          items,
+          nextCursor,
+          hasMore,
+        });
+        return;
+      } catch(error) {
+        console.error('get-comments:', error);
+        res.status(500).json({
+          success: false,
+          message: 'Internal server error while fetching comments',
+          errors: {reason: (error as Error)?.message ?? 'Unknown error'}
+        });
+        return;
+      }
+    });
+  }
+
+
 }

@@ -22,7 +22,7 @@ class NotificationCatalog {
   public static readonly CATEGORIES = [
     'User', 'Tenant', 'Property', 'Lease',
     'Agent', 'Developer', 'Maintenance', 'Complaint',
-    'Team', 'Registration', 'Payment', 'System',
+    'Team', 'Registration', 'Payment', 'System', 'Comment'
   ] as const;
   public static readonly CATEGORY_ICON_MAP: Record<TitleCategory, string> = {
     User: 'person',
@@ -37,6 +37,7 @@ class NotificationCatalog {
     Registration: 'verified_user',
     Payment: 'payments',
     System: 'settings',
+    Comment: 'speaker_notes',
   };
 
   // ── A.2 Channels / severity / audience
@@ -100,6 +101,9 @@ class NotificationCatalog {
     'New Notification', 'Update Notification', 'Delete Notification',
     'Restore Notification', 'Permanent Delete Notification',
     'System Update', 'Security Alert', 'Backup Completed', 'New Message', 'Broadcast Announcement',
+
+    // Comment
+    'New Comment', 'Update Comment', 'Delete Comment', 'Reject Comment',
   ] as const;
 
   // ── A.4 Normalized action types (includes restore & permanent_delete)
@@ -188,6 +192,8 @@ class NotificationCatalog {
       'Restore Notification', 'Permanent Delete Notification',
       'System Update', 'Security Alert', 'Backup Completed', 'New Message', 'Broadcast Announcement',
     ]);
+
+    add('Comment', ['New Comment', 'Update Comment', 'Delete Comment', 'Reject Comment',])
 
     return M as Record<Title, TitleCategory>;
   })();
@@ -450,6 +456,7 @@ NotificationSchema.pre('validate', function(next) {
         Registration: ['registration', 'kyc'],
         Payment: ['payment', 'invoice'],
         System: ['system', 'security'],
+        Comment: ['comment', 'idea']
       };
       const dt = defaults[doc.category] || [];
       if(dt.length) doc.tags = NotificationCatalog.capTags(NotificationCatalog.dedupeTrim(dt));

@@ -8,7 +8,8 @@ export type ComplaintStatus =
     | 'resolved' | 'closed' | 'reopened' | 'cancelled';
 
 export type ComplaintPriority = 'low' | 'medium' | 'high' | 'urgent';
-export type ComplaintAudience = 'tenant' | 'admin' | 'agent' | 'system' | 'developer';
+export type ComplaintAudience = 'admin' | 'all' | 'agent' | 'tenant' | 'owner'
+    | 'operator' | 'manager' | 'developer' | 'user' | 'system';
 
 export type AttachmentSource = 'camera' | 'filesystem' | 'paste' | 'dragdrop';
 
@@ -27,6 +28,7 @@ export const COMPLAINT_CATEGORIES: readonly ComplaintsCategory[] = [
     'Painting Decor', 'Gas Supply', 'Noise Nuisance', 'Renovation Work', 'Other',
 ] as const;
 
+export const DEFINED_AUDIENCES: readonly string[] = ['admin', 'all', 'agent', 'developer', 'manager', 'operator', 'owner', 'system', 'tenant', 'user'] as const;
 export interface ComplaintAttachmentClient {
     _id?: string;
     name: string;
@@ -47,6 +49,7 @@ export interface ComplaintCommentClient {
     _id?: string;
     byUserId: string;
     byName: string;                  // allowed duplication (display)
+    image: string;
     audience: ComplaintAudience;
     message: string;
     createdAt: string;               // ISO
@@ -158,6 +161,7 @@ class AttachmentSchemaBuilder {
 export interface IComplaintComment extends Document {
     byUserId: string;
     byName: string;
+    image: string;
     audience: ComplaintAudience;
     message: string;
     createdAt: Date;
@@ -170,7 +174,8 @@ class CommentSchemaBuilder {
             {
                 byUserId: {type: String, required: true, trim: true},
                 byName: {type: String, required: true, trim: true},
-                audience: {type: String, enum: ['tenant', 'admin', 'agent', 'system', 'developer'], required: true},
+                audience: {type: String, enum: ['admin', 'all', 'agent', 'tenant', 'owner', 'operator', 'manager', 'developer', 'user', 'system'], required: true, default: 'all'},
+                image: {type: String, required: true, trim: true, default: 'https://www.google.com/url?sa=i&url=https%3A%2F%2Fohmylens.com%2Fdummy-profile-pic%2F&psig=AOvVaw0eaeWajno5AHrxzbwviD4U&ust=1762825037264000&source=images&cd=vfe&opi=89978449&ved=0CBUQjRxqFwoTCPjyt5S55pADFQAAAAAdAAAAABAE'},
                 message: {type: String, required: true, trim: true},
                 createdAt: {type: Date, required: true},
                 attachments: {type: [attachmentSchema], default: []},
@@ -321,6 +326,7 @@ class ComplaintSchemaBuilder {
                 const com: ComplaintCommentClient = {
                     byUserId: c.byUserId,
                     byName: c.byName,
+                    image: c.image,
                     audience: c.audience,
                     message: c.message,
                     createdAt: c.createdAt.toISOString(),

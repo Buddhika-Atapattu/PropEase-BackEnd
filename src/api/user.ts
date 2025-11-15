@@ -935,7 +935,7 @@ export default class UserRoute {
           }
 
           const token = crypto.randomBytes(32).toString("hex");
-          const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+          const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 10 minutes
 
           const saved = await TokenMap.create({
             token,
