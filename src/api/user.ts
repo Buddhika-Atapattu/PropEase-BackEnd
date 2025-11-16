@@ -758,6 +758,8 @@ export default class UserRoute {
             start: safeStart,
             end: Math.min(safeStart + safeLimit, count),
             limit: safeLimit,
+            success: true,
+            status: 'success',
             data: users,
           });
         } catch(error) {

@@ -8,6 +8,7 @@
 // ============================================================================
 
 import express, {Request, Response, Router} from "express";
+import {FilterQuery} from "mongoose";
 import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
@@ -1463,33 +1464,86 @@ export default class Lease {
   // ============================================================================
 
   private getAllLeases(): void {
-    this.router.get("/all-leases", async (req: Request, res: Response) => {
-      try {
-        const page = Math.max(parseInt((req.query.page as string) || "1", 10), 1);
-        const limit = Math.min(Math.max(parseInt((req.query.limit as string) || "20", 10), 1), 100);
-        const skip = (page - 1) * limit;
+    this.router.get(
+      "/all-leases",
+      async (req: Request, res: Response): Promise<void> => {
+        try {
+          // ──────────────────────────────────────────────
+          // 1) Pagination parameters
+          // ──────────────────────────────────────────────
+          let page: number = Math.max(parseInt((req.query.page as string) || "1", 10), 1);
+          let limit: number = parseInt((req.query.limit as string) || "20", 10);
 
-        const [data, total] = await Promise.all([
-          LeaseModel.find().skip(skip).limit(limit).lean(),
-          LeaseModel.countDocuments(),
-        ]);
+          if(limit < 1) limit = 20;
+          if(limit > 100) limit = 100;
 
-        res.status(200).json({
-          status: "success",
-          message: "All leases retrieved successfully!",
-          page,
-          limit,
-          total,
-          data,
-        });
-        return;
-      } catch(error) {
-        console.log(error);
-        res.status(500).json({status: "error", error: "An unknown error occurred: " + error});
-        return;
+          const skip: number = (page - 1) * limit;
+
+          // ──────────────────────────────────────────────
+          // 2) Search filter
+          // ──────────────────────────────────────────────
+          const rawSearch = this.s(req.query.search);
+          const filter: FilterQuery<LeasePayload> = {};
+
+          if(rawSearch && rawSearch.trim() !== "") {
+            const rx = new RegExp(rawSearch.trim(), "i");
+
+            filter.$or = [
+              {leaseID: {$regex: rx}},
+              {propertyID: {$regex: rx}},
+              {"tenantInformation.tenantUsername": {$regex: rx}},
+              {"tenantInformation.fullName": {$regex: rx}},
+            ];
+          }
+
+          // ──────────────────────────────────────────────
+          // 3) Sorting
+          // ──────────────────────────────────────────────
+          const sortBy: string = (req.query.sortBy as string) || "createdAt";
+          const sortOrder: string = (req.query.sortOrder as string) || "desc";
+
+          const sort: Record<string, 1 | -1> = {
+            [sortBy]: sortOrder === "asc" ? 1 : -1,
+          };
+
+          // ──────────────────────────────────────────────
+          // 4) DB query
+          // ──────────────────────────────────────────────
+          const [data, total] = await Promise.all([
+            LeaseModel.find(filter)
+              .sort(sort)
+              .skip(skip)
+              .limit(limit)
+              .lean()
+              .exec(),
+
+            LeaseModel.countDocuments(filter),
+          ]);
+
+          // ──────────────────────────────────────────────
+          // 5) Response
+          // ──────────────────────────────────────────────
+          res.status(200).json({
+            status: "success",
+            message: "All leases retrieved successfully!",
+            page,
+            limit,
+            total,
+            totalPages: Math.ceil(total / limit),
+            data,
+          });
+          return;
+        } catch(error) {
+          console.error(error);
+          res.status(500).json({
+            status: "error",
+            error: "An unknown error occurred: " + error,
+          });
+        }
       }
-    });
+    );
   }
+
 
   // ============================================================================
   // GET: User by username
@@ -1516,9 +1570,53 @@ export default class Lease {
     });
   }
 
+
   // ============================================================================
   // Type checks (kept from your original, lightly adjusted)
   // ============================================================================
+
+
+  // --- Narrow/convert ---
+  private isStr(v: unknown): v is string {
+    return typeof v === "string";
+  }
+  private s(v: unknown): string {
+    return this.isStr(v) ? v.trim() : "";
+  }
+  private toLower(v: unknown): string {
+    return this.s(v).toLowerCase();
+  }
+  private toNum(v: unknown, def = 0): number {
+    const n = Number(this.s(v));
+    return Number.isFinite(n) ? n : def;
+  }
+  private toNonNeg(v: unknown, def = 0): number {
+    return Math.max(0, this.toNum(v, def));
+  }
+  private parseJSON<T>(v: unknown, fallback: T): T {
+    try {
+      if(v == null) return fallback;
+      if(typeof v === "string") {
+        const t = v.trim();
+        if(!t) return fallback;
+        return JSON.parse(t) as T;
+      }
+      return v as T;
+    } catch {
+      return fallback;
+    }
+  }
+  private toDateOrNull(v: unknown): Date | null {
+    const str = this.s(v);
+    if(!str) return null;
+    const d = new Date(str);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  private toDateOrThrow(v: unknown, field: string): Date {
+    const d = this.toDateOrNull(v);
+    if(!d) throw new Error(`Invalid date for "${field}"`);
+    return d;
+  }
 
   private checkSystemMetaDataFormat(input: any): input is SystemMetadata {
     const data = typeof input === "string" ? JSON.parse(input) : input;
