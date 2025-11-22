@@ -59,6 +59,7 @@ export default class UserRoute {
     this.createUser();
     this.getAllUsers();
     this.getUserData(); // login verification
+    this.getAllUserCount();
     this.updateUser();
     this.getAllUsersWithPagination();
     this.findUserByUsername();
@@ -728,6 +729,22 @@ export default class UserRoute {
     });
   }
 
+  private getAllUserCount() {
+    this.router.get("/users-count", async (_req: Request, res: Response) => {
+      try {
+        const data = await UserModel.countDocuments();
+        res.status(200).json({
+          success: true,
+          status: 'success',
+          message: `Total number of users are ${data}`,
+          data
+        });
+      } catch(error) {
+        res.status(500).json({success: false, status: 'error', error: `Failed to fetch users: ${error}`});
+      }
+    });
+  }
+
   private getAllUsersWithPagination() {
     this.router.get(
       "/users-with-pagination/:start/:limit",
@@ -760,6 +777,7 @@ export default class UserRoute {
             limit: safeLimit,
             success: true,
             status: 'success',
+            message: 'Users fetch successful!',
             data: users,
           });
         } catch(error) {

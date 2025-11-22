@@ -4,8 +4,8 @@
 // NOTE: No business logic here — controllers/services handle operations.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import {Schema, model, type Document, type Model} from 'mongoose';
-import type {Property} from './property.model'; // used in LeasePayloadWithProperty type
+import { Schema, model, type Document, type Model } from 'mongoose';
+import type { Property } from './property.model'; // used in LeasePayloadWithProperty type
 
 // ======================= DATA =======================
 const VALIDATION_STATUSES = [
@@ -99,7 +99,7 @@ export interface TenantInformation {
   nicOrPassport: string;
   gender: string;
   nationality: string;
-  dateOfBirth: Date; // ISO
+  dateOfBirth: Date | string; // ISO
   phoneCodeDetails: CountryCodes;
   phoneNumber: string;
   email: string;
@@ -112,7 +112,7 @@ export interface TenantInformation {
 export interface CoTenant {
   fullName: string;
   email: string;
-  phoneCode: string;
+  phoneCodeDetails: CountryCodes;
   phoneNumber: string;
   gender: string;
   nicOrPassport: string;
@@ -225,14 +225,14 @@ export interface RulesAndRegulations {
 export interface Signatures {
   tenantSignature: FILE;
   landlordSignature: FILE;
-  signedAt: Date;
+  signedAt: Date | string;
   ipAddress: string;
   userAgent: AddedBy;
 }
 
 export interface SystemMetadata {
   ocrAutoFillStatus: boolean;
-  validationStatus: typeof VALIDATION_STATUSES[number];
+  validationStatus: typeof VALIDATION_STATUSES[ number ];
   language: string;
   leaseTemplateVersion: string;
   pdfDownloadUrl?: string;
@@ -282,225 +282,225 @@ export interface LeaseType extends Document {
 export class LeaseModelBuilder {
   public static buildSchema(): Schema<LeaseType> {
     // Reusable sub-schemas
-    const FileSchema = new Schema<FILE>({
-      fieldname: {type: String, required: true},
-      originalname: {type: String, required: true},
-      mimetype: {type: String, required: true},
-      size: {type: Number, required: true},
-      filename: {type: String, required: true},
-      URL: {type: String, required: true},
-    }, {_id: false});
+    const FileSchema = new Schema<FILE>( {
+      fieldname: { type: String, required: true },
+      originalname: { type: String, required: true },
+      mimetype: { type: String, required: true },
+      size: { type: Number, required: true },
+      filename: { type: String, required: true },
+      URL: { type: String, required: true },
+    }, { _id: false } );
 
-    const TokenViceDataSchema = new Schema<TokenViceData>({
-      ageInMinutes: {type: Number, required: true},
-      file: {type: FileSchema, required: true},
-    }, {_id: false});
+    const TokenViceDataSchema = new Schema<TokenViceData>( {
+      ageInMinutes: { type: Number, required: true },
+      file: { type: FileSchema, required: true },
+    }, { _id: false } );
 
-    const ScannedFileRecordSchema = new Schema<ScannedFileRecordJSON>({
-      date: {type: String, required: true},
-      tenant: {type: String, required: true},
-      token: {type: String, required: true},
-      files: {type: [TokenViceDataSchema], default: []},
-    }, {_id: false});
+    const ScannedFileRecordSchema = new Schema<ScannedFileRecordJSON>( {
+      date: { type: String, required: true },
+      tenant: { type: String, required: true },
+      token: { type: String, required: true },
+      files: { type: [ TokenViceDataSchema ], default: [] },
+    }, { _id: false } );
 
-    const AddedBySchema = new Schema<AddedBy>({
+    const AddedBySchema = new Schema<AddedBy>( {
       username: String,
       name: String,
       email: String,
       role: String,
       contactNumber: String,
-      addedAt: {type: Date},
-    }, {_id: false});
+      addedAt: { type: Date },
+    }, { _id: false } );
 
-    const EmergencyContactSchema = new Schema<EmergencyContact>({
-      name: {type: String, required: true},
-      relationship: {type: String, required: false},
-      contact: {type: String, required: true},
-    }, {_id: false});
+    const EmergencyContactSchema = new Schema<EmergencyContact>( {
+      name: { type: String, required: true },
+      relationship: { type: String, required: false },
+      contact: { type: String, required: true },
+    }, { _id: false } );
 
-    const CurrencyFormatSchema = new Schema<CurrencyFormat>({
-      country: {type: String, required: true},
+    const CurrencyFormatSchema = new Schema<CurrencyFormat>( {
+      country: { type: String, required: true },
       // symbol is often string but your interface is string; Mixed kept if you sometimes pass non-string
-      symbol: {type: Schema.Types.Mixed, required: true},
+      symbol: { type: Schema.Types.Mixed, required: true },
       flags: {
-        png: {type: String, required: true},
-        svg: {type: String, required: true},
-        alt: {type: String, required: true},
+        png: { type: String, required: true },
+        svg: { type: String, required: true },
+        alt: { type: String, required: true },
       },
-      currency: {type: String, required: true},
-    }, {_id: false});
+      currency: { type: String, required: true },
+    }, { _id: false } );
 
-    const PaymentFrequencySchema = new Schema<PaymentFrequency>({
-      id: {type: String, required: true},
-      name: {type: String, required: true},
-      duration: {type: String, required: true},
+    const PaymentFrequencySchema = new Schema<PaymentFrequency>( {
+      id: { type: String, required: true },
+      name: { type: String, required: true },
+      duration: { type: String, required: true },
       unit: {
         type: String,
-        enum: ['day', 'week', 'month', 'year', 'one-time'],
+        enum: [ 'day', 'week', 'month', 'year', 'one-time' ],
         required: true,
       },
-    }, {_id: false});
+    }, { _id: false } );
 
-    const PaymentMethodSchema = new Schema<PaymentMethod>({
-      id: {type: String, required: true},
-      name: {type: String, required: true},
-      category: {type: String, required: true, default: ''},
-      region: {type: String},
-      supported: {type: Boolean, default: false},
-      description: {type: String},
-    }, {_id: false});
+    const PaymentMethodSchema = new Schema<PaymentMethod>( {
+      id: { type: String, required: true },
+      name: { type: String, required: true },
+      category: { type: String, required: true, default: '' },
+      region: { type: String },
+      supported: { type: Boolean, default: false },
+      description: { type: String },
+    }, { _id: false } );
 
-    const SecurityDepositSchema = new Schema<SecurityDeposit>({
-      id: {type: String, required: true},
-      name: {type: String, required: true},
-      description: {type: String, required: true, default: ''},
-      refundable: {type: Boolean, required: true, default: false},
-    }, {_id: false});
+    const SecurityDepositSchema = new Schema<SecurityDeposit>( {
+      id: { type: String, required: true },
+      name: { type: String, required: true },
+      description: { type: String, required: true, default: '' },
+      refundable: { type: Boolean, required: true, default: false },
+    }, { _id: false } );
 
-    const RentDueDateSchema = new Schema<RentDueDate>({
-      id: {type: String, required: true},
-      label: {type: String, required: true},
-      day: {type: Number, required: true, default: 0},
-      offsetDays: {type: Number, required: true, default: 0},
-      description: {type: String, required: true},
-    }, {_id: false});
+    const RentDueDateSchema = new Schema<RentDueDate>( {
+      id: { type: String, required: true },
+      label: { type: String, required: true },
+      day: { type: Number, required: true, default: 0 },
+      offsetDays: { type: Number, required: true, default: 0 },
+      description: { type: String, required: true },
+    }, { _id: false } );
 
-    const LatePaymentPenaltySchema = new Schema<LatePaymentPenalty>({
-      label: {type: String, required: true},
-      type: {type: String, required: true},
-      value: {type: Number, required: true, default: 0},
-      description: {type: String, required: true},
-      isEditable: {type: Boolean, default: false},
-    }, {_id: false});
+    const LatePaymentPenaltySchema = new Schema<LatePaymentPenalty>( {
+      label: { type: String, required: true },
+      type: { type: String, required: true },
+      value: { type: Number, required: true, default: 0 },
+      description: { type: String, required: true },
+      isEditable: { type: Boolean, default: false },
+    }, { _id: false } );
 
-    const UtilityResponsibilitySchema = new Schema<UtilityResponsibility>({
-      id: {type: String, required: true},
-      utility: {type: String, required: true},
+    const UtilityResponsibilitySchema = new Schema<UtilityResponsibility>( {
+      id: { type: String, required: true },
+      utility: { type: String, required: true },
       paidBy: {
         type: String,
-        enum: ['landlord', 'tenant', 'shared', 'real estate company'],
+        enum: [ 'landlord', 'tenant', 'shared', 'real estate company' ],
         required: true,
       },
-      description: {type: String, required: true},
-      isEditable: {type: Boolean, default: false},
-    }, {_id: false});
+      description: { type: String, required: true },
+      isEditable: { type: Boolean, default: false },
+    }, { _id: false } );
 
-    const NoticePeriodSchema = new Schema<NoticePeriod>({
-      id: {type: String, required: true},
-      label: {type: String, required: true},
-      days: {type: Number, required: true, default: 0},
-      description: {type: String, required: true},
-    }, {_id: false});
+    const NoticePeriodSchema = new Schema<NoticePeriod>( {
+      id: { type: String, required: true },
+      label: { type: String, required: true },
+      days: { type: Number, required: true, default: 0 },
+      description: { type: String, required: true },
+    }, { _id: false } );
 
-    const FlagSchema = new Schema({
-      png: {type: String, required: true},
-      svg: {type: String, required: true},
-      alt: {type: String, required: true},
-    }, {_id: false});
+    const FlagSchema = new Schema( {
+      png: { type: String, required: true },
+      svg: { type: String, required: true },
+      alt: { type: String, required: true },
+    }, { _id: false } );
 
-    const CountryCodeSchema = new Schema<CountryCodes>({
-      name: {type: String, required: true},
-      code: {type: String, required: true},
-      flags: {type: FlagSchema, required: true, default: {}},
-    }, {_id: false});
+    const CountryCodeSchema = new Schema<CountryCodes>( {
+      name: { type: String, required: true },
+      code: { type: String, required: true },
+      flags: { type: FlagSchema, required: true, default: {} },
+    }, { _id: false } );
 
-    const CountryDetailsSchema = new Schema<CountryDetails>({
-      name: {type: String, required: true},
-      code: {type: String, required: true},
-      emoji: {type: String, required: true},
-      unicode: {type: String, required: true},
-      image: {type: String, required: true},
-    }, {_id: false});
+    const CountryDetailsSchema = new Schema<CountryDetails>( {
+      name: { type: String, required: true },
+      code: { type: String, required: true },
+      emoji: { type: String, required: true },
+      unicode: { type: String, required: true },
+      image: { type: String, required: true },
+    }, { _id: false } );
 
-    const AddressSchema = new Schema<Address>({
-      street: {type: String, required: true},
-      houseNumber: {type: String, required: true},
-      city: {type: String, required: true},
-      stateOrProvince: {type: String, required: true},
-      postalCode: {type: String, required: true},
-      country: {type: CountryDetailsSchema, required: true, default: {}},
-    }, {_id: false});
+    const AddressSchema = new Schema<Address>( {
+      street: { type: String, required: true },
+      houseNumber: { type: String, required: true },
+      city: { type: String, required: true },
+      stateOrProvince: { type: String, required: true },
+      postalCode: { type: String, required: true },
+      country: { type: CountryDetailsSchema, required: true, default: {} },
+    }, { _id: false } );
 
-    const LeaseAgreementSchema = new Schema<LeaseAgreement>({
-      startDate: {type: Date, required: true},
-      endDate: {type: Date, required: true},
-      durationMonths: {type: Number, required: true, default: 0},
-      monthlyRent: {type: Number, required: true, default: 0},
-      currency: {type: CurrencyFormatSchema, required: true, default: {}},
-      paymentFrequency: {type: PaymentFrequencySchema, required: true, default: {}},
-      paymentMethod: {type: PaymentMethodSchema, required: true, default: {}},
-      securityDeposit: {type: SecurityDepositSchema, required: true, default: {}},
-      rentDueDate: {type: RentDueDateSchema, required: true, default: {}},
-      latePaymentPenalties: {type: [LatePaymentPenaltySchema], required: true, default: []},
-      utilityResponsibilities: {type: [UtilityResponsibilitySchema], required: true, default: []},
-      noticePeriodDays: {type: NoticePeriodSchema, required: true, default: {}},
-    }, {_id: false});
+    const LeaseAgreementSchema = new Schema<LeaseAgreement>( {
+      startDate: { type: Date, required: true },
+      endDate: { type: Date, required: true },
+      durationMonths: { type: Number, required: true, default: 0 },
+      monthlyRent: { type: Number, required: true, default: 0 },
+      currency: { type: CurrencyFormatSchema, required: true, default: {} },
+      paymentFrequency: { type: PaymentFrequencySchema, required: true, default: {} },
+      paymentMethod: { type: PaymentMethodSchema, required: true, default: {} },
+      securityDeposit: { type: SecurityDepositSchema, required: true, default: {} },
+      rentDueDate: { type: RentDueDateSchema, required: true, default: {} },
+      latePaymentPenalties: { type: [ LatePaymentPenaltySchema ], required: true, default: [] },
+      utilityResponsibilities: { type: [ UtilityResponsibilitySchema ], required: true, default: [] },
+      noticePeriodDays: { type: NoticePeriodSchema, required: true, default: {} },
+    }, { _id: false } );
 
-    const TenantInformationSchema = new Schema<TenantInformation>({
-      tenantUsername: {type: String, required: true},
-      fullName: {type: String, required: true},
-      nicOrPassport: {type: String, required: true},
-      gender: {type: String, required: true},
-      nationality: {type: String, required: true},
+    const TenantInformationSchema = new Schema<TenantInformation>( {
+      tenantUsername: { type: String, required: true },
+      fullName: { type: String, required: true },
+      nicOrPassport: { type: String, required: true },
+      gender: { type: String, required: true },
+      nationality: { type: String, required: true },
       // Use function form so the date is evaluated at insert-time
-      dateOfBirth: {type: Date, required: true, default: Date.now},
-      phoneCodeDetails: {type: CountryCodeSchema, required: true, default: {}},
-      phoneNumber: {type: String, required: true},
-      email: {type: String, required: true},
-      permanentAddress: {type: AddressSchema, required: true, default: {}},
-      emergencyContact: {type: EmergencyContactSchema, required: true, default: {}},
+      dateOfBirth: { type: Date, required: true, default: Date.now },
+      phoneCodeDetails: { type: CountryCodeSchema, required: true, default: {} },
+      phoneNumber: { type: String, required: true },
+      email: { type: String, required: true },
+      permanentAddress: { type: AddressSchema, required: true, default: {} },
+      emergencyContact: { type: EmergencyContactSchema, required: true, default: {} },
       // FIX: make it an array of subdocs (not an array-of-array)
-      scannedDocuments: {type: [ScannedFileRecordSchema], required: true, default: []},
-    }, {_id: false});
+      scannedDocuments: { type: [ ScannedFileRecordSchema ], required: true, default: [] },
+    }, { _id: false } );
 
-    const CoTenantSchema = new Schema<CoTenant>({
-      fullName: {type: String},
-      email: {type: String},
-      phoneNumber: {type: String},
-      phoneCode: {type: String},
-      gender: {type: String},
-      nicOrPassport: {type: String},
-      age: {type: Number, default: 0},
-      relationship: {type: String},
-    }, {_id: false});
+    const CoTenantSchema = new Schema<CoTenant>( {
+      fullName: { type: String },
+      email: { type: String },
+      phoneNumber: { type: String },
+      phoneCodeDetails: { type: CountryCodeSchema, default: {} },
+      gender: { type: String },
+      nicOrPassport: { type: String },
+      age: { type: Number, default: 0 },
+      relationship: { type: String },
+    }, { _id: false } );
 
-    const RulesAndRegulationsSchema = new Schema<RulesAndRegulations>({
-      rule: {type: String, required: true},
-      description: {type: String, required: true},
-      isEditable: {type: Boolean, default: false},
-    }, {_id: false});
+    const RulesAndRegulationsSchema = new Schema<RulesAndRegulations>( {
+      rule: { type: String, required: true },
+      description: { type: String, required: true },
+      isEditable: { type: Boolean, default: false },
+    }, { _id: false } );
 
-    const SignaturesSchema = new Schema<Signatures>({
-      tenantSignature: {type: FileSchema, required: true, default: {}},
-      landlordSignature: {type: FileSchema, required: true, default: {}},
-      signedAt: {type: Date, required: true, default: Date.now},
-      ipAddress: {type: String, required: true},
-      userAgent: {type: AddedBySchema, required: true},
-    }, {_id: false});
+    const SignaturesSchema = new Schema<Signatures>( {
+      tenantSignature: { type: FileSchema, required: true, default: {} },
+      landlordSignature: { type: FileSchema, required: true, default: {} },
+      signedAt: { type: Date, required: true, default: Date.now },
+      ipAddress: { type: String, required: true },
+      userAgent: { type: AddedBySchema, required: true },
+    }, { _id: false } );
 
-    const SystemMetadataSchema = new Schema<SystemMetadata>({
-      ocrAutoFillStatus: {type: Boolean, required: true, default: false},
-      validationStatus: {type: String, enum: VALIDATION_STATUSES, required: true},
-      language: {type: String, required: true},
-      leaseTemplateVersion: {type: String, required: true},
-      pdfDownloadUrl: {type: String},
-      lastUpdated: {type: String, required: true},
-    }, {_id: false});
+    const SystemMetadataSchema = new Schema<SystemMetadata>( {
+      ocrAutoFillStatus: { type: Boolean, required: true, default: false },
+      validationStatus: { type: String, enum: VALIDATION_STATUSES, required: true },
+      language: { type: String, required: true },
+      leaseTemplateVersion: { type: String, required: true },
+      pdfDownloadUrl: { type: String },
+      lastUpdated: { type: String, required: true },
+    }, { _id: false } );
 
     // Main schema
     const LeaseSchema = new Schema<LeaseType>(
       {
-        leaseID: {type: String, required: true, index: true},
-        tenantInformation: {type: TenantInformationSchema, required: true, default: {}},
-        coTenant: {type: CoTenantSchema, default: {}},
-        propertyID: {type: String, required: true, default: ''},
-        leaseAgreement: {type: LeaseAgreementSchema, required: true, default: {}},
-        rulesAndRegulations: {type: [RulesAndRegulationsSchema], required: true, default: []},
-        isReadTheCompanyPolicy: {type: Boolean, required: true, default: false},
-        signatures: {type: SignaturesSchema, required: true, default: {}},
-        systemMetadata: {type: SystemMetadataSchema, required: true, default: {}},
+        leaseID: { type: String, required: true, index: true },
+        tenantInformation: { type: TenantInformationSchema, required: true, default: {} },
+        coTenant: { type: CoTenantSchema, default: {} },
+        propertyID: { type: String, required: true, default: '' },
+        leaseAgreement: { type: LeaseAgreementSchema, required: true, default: {} },
+        rulesAndRegulations: { type: [ RulesAndRegulationsSchema ], required: true, default: [] },
+        isReadTheCompanyPolicy: { type: Boolean, required: true, default: false },
+        signatures: { type: SignaturesSchema, required: true, default: {} },
+        systemMetadata: { type: SystemMetadataSchema, required: true, default: {} },
       },
-      {timestamps: true}
+      { timestamps: true }
     );
 
     return LeaseSchema;
@@ -509,7 +509,7 @@ export class LeaseModelBuilder {
   public static getModel(): Model<LeaseType> {
     const schema = LeaseModelBuilder.buildSchema();
     // Explicit collection name for clarity/consistency
-    return model<LeaseType>('Lease', schema, 'leases');
+    return model<LeaseType>( 'Lease', schema, 'leases' );
   }
 }
 

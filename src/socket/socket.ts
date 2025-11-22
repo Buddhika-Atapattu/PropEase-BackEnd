@@ -1,4 +1,4 @@
-//src/socket/socket.ts
+// src/socket/socket.ts
 import {Server as HttpServer} from 'http';
 import {Server as IOServer, Socket, Namespace} from 'socket.io';
 import jwt from 'jsonwebtoken';
@@ -24,18 +24,73 @@ type JwtPayload = {
 
 type AuthUser = {username: string; role: Role; sub?: string};
 
-// Small helper to safely build AuthUser without ever assigning `undefined`
 function toAuthUser(p: JwtPayload): AuthUser {
   const base = {username: p.username, role: p.role} as const;
   return p.sub ? {...base, sub: p.sub} : base;
 }
 
-
-// small helper: only allow simple room names (a-z0-9:/-_)
+// Only allow simple room names (a-z0-9:/-_)
 const ROOM_RE = /^[a-z0-9:/_-]{1,64}$/i;
 const safeRooms = (rooms: unknown) =>
   (Array.isArray(rooms) ? rooms : [])
     .filter((r): r is string => typeof r === 'string' && ROOM_RE.test(r));
+
+/** ====== Notification types (mirror FE types, cut-down) ====== */
+export type AudienceMode = 'user' | 'role' | 'broadcast';
+
+export interface NotificationAudience {
+  mode: AudienceMode;
+  usernames?: string[];
+  roles?: Role[];
+}
+
+export interface NotificationPayload {
+  _id: string;
+  title: string;
+  body: string;
+  category: string;
+  type: string;
+  severity?: 'info' | 'success' | 'warning' | 'error';
+  audience: NotificationAudience;
+  createdAt: string;
+  // ... extra fields as needed
+}
+
+/** ====== Chat / Call payloads (for future features) ====== */
+
+// Simple chat message payload
+export interface ChatMessagePayload {
+  id: string;
+  roomId?: string;     // e.g. "chat:tenant-123-owner-7"
+  from: string;        // sender username
+  to?: string;         // direct message
+  text?: string;
+  createdAt: string;
+}
+
+// WebRTC signalling payloads
+export interface CallSignalBase {
+  callId: string;      // unique call/session id
+  from: string;        // caller username
+  to: string;          // callee username
+}
+
+export interface CallOfferPayload extends CallSignalBase {
+  sdp: any;
+  kind: 'audio' | 'video' | 'screen' | 'audio_video';
+}
+
+export interface CallAnswerPayload extends CallSignalBase {
+  sdp: any;
+}
+
+export interface CallCandidatePayload extends CallSignalBase {
+  candidate: any;
+}
+
+export interface CallEndPayload extends CallSignalBase {
+  reason?: string;
+}
 
 export default class SocketServer {
   private ioServer!: IOServer;
@@ -52,15 +107,12 @@ export default class SocketServer {
     };
   }
 
-
   /** Initialize Socket.IO on top of your existing HTTP server */
   attach(httpServer: HttpServer) {
-    // Add explicit ping settings (Socket.IO already pings, we’ll add an app heartbeat too)
     const io = new IOServer(httpServer, {
       cors: {origin: this.opts.origins, credentials: true},
-      pingInterval: 25000, // default 25000
-      pingTimeout: 20000,  // default 20000
-      // NOTE: keep defaults unless you have special infra constraints
+      pingInterval: 25000,
+      pingTimeout: 20000,
     });
 
     this.ioServer = io;
@@ -74,7 +126,7 @@ export default class SocketServer {
         const payload = jwt.verify(token, this.opts.jwtSecret) as JwtPayload;
         if(!payload.username || !payload.role) return next(new Error('Unauthorized: bad payload'));
 
-        socket.data.authUser = toAuthUser(payload);   // ✅ omit sub if undefined
+        socket.data.authUser = toAuthUser(payload);
         next();
       } catch(e: any) {
         console.warn('[socket auth] token rejected:', e?.message || e);
@@ -84,18 +136,13 @@ export default class SocketServer {
 
     // -------- Connection lifecycle --------
     this.nsp.on('connection', (socket: Socket) => {
-      // ---------- auth from handshake (your middleware already verified the token) ----------
-      const auth = socket.data.authUser as {username: string; role: Role} | undefined;
+      const auth = socket.data.authUser as AuthUser | undefined;
       if(!auth?.username || !auth?.role) return socket.disconnect(true);
-
-      // keep the canonical copy on socket.data
       socket.data.authUser = auth;
 
-      // ---------- join base rooms & greet ----------
       this.joinBaseRooms(socket, auth);
       console.log(`✅ Socket connected: ${auth.username} (role=${auth.role}) id=${socket.id}`);
 
-      // track liveness/latency for this socket
       let lastClientPongAt = Date.now();
       let lastServerHelloAt = 0;
 
@@ -108,7 +155,7 @@ export default class SocketServer {
         server: {name: 'prop-ease-api', version: '1.0.0'},
       });
 
-      // 2) Client → Server greeting (single handler, with ack + server welcome)
+      // 2) Client → Server greeting (as used by your SocketService)
       socket.on('client:hello', (payload: any, ack?: (resp: {ok: boolean; serverTime: number}) => void) => {
         lastServerHelloAt = Date.now();
         ack?.({ok: true, serverTime: lastServerHelloAt});
@@ -119,13 +166,16 @@ export default class SocketServer {
         });
       });
 
-      // 3) Client → Server ping (client measures RTT using ack)
-      socket.on('client:ping', (ts: number, ack?: (resp: {pong: true; ts: number; serverTs: number}) => void) => {
-        ack?.({pong: true, ts, serverTs: Date.now()});
-      });
+      // 3) Client → Server ping (matches FE: emitWithAck('client:ping', {t0}))
+      socket.on(
+        'client:ping',
+        (payload: {t0: number}, ack?: (resp: {pong: true; ts: number; serverTs: number}) => void) => {
+          const t0 = typeof payload?.t0 === 'number' ? payload.t0 : Date.now();
+          ack?.({pong: true, ts: t0, serverTs: Date.now()});
+        }
+      );
 
-      // 4) Server → Client ping (server measures client responsiveness)
-      // use timeout-wrapped acks to auto-fail if the client doesn't answer
+      // 4) Server → Client ping (server-side heartbeat)
       const hb = setInterval(() => {
         const startedAt = Date.now();
         socket
@@ -138,10 +188,9 @@ export default class SocketServer {
           });
       }, 15000);
 
-      // (optional) client may proactively pong without ack
       socket.on('client:pong', () => {lastClientPongAt = Date.now();});
 
-      // ---------- dynamic room membership (safe) ----------
+      // ---------- dynamic room membership ----------
       socket.on('client:subscribe', (rooms?: unknown) => {
         for(const r of safeRooms(rooms)) socket.join(r);
       });
@@ -158,7 +207,7 @@ export default class SocketServer {
           const prev = socket.data.authUser as AuthUser | undefined;
           if(prev) this.leaveBaseRooms(socket, prev);
 
-          const nextUser = toAuthUser(payload);         // ✅ safe build
+          const nextUser = toAuthUser(payload);
           socket.data.authUser = nextUser;
           this.joinBaseRooms(socket, nextUser);
 
@@ -170,18 +219,93 @@ export default class SocketServer {
         }
       });
 
-
-      // ---------- notification delivery ACK (optional) ----------
+      // ---------- notification delivery ACK (for FE `notification:ack`) ----------
       socket.on('notification:ack', (p: {notificationId: string}, ack?: (res: {ok: boolean}) => void) => {
+        // TODO: optionally mark "delivered" in DB by socket.data.authUser + p.notificationId
         ack?.({ok: true});
       });
 
+      // ---------- CHAT: basic real-time messaging ----------
+      socket.on('chat:send', (msg: ChatMessagePayload, ack?: (res: {ok: boolean}) => void) => {
+        try {
+          const sender = socket.data.authUser as AuthUser;
+          if(!sender?.username) throw new Error('unauthenticated');
+
+          // enforce sender
+          msg.from = sender.username;
+          msg.createdAt = msg.createdAt || new Date().toISOString();
+
+          // Direct message → use user room
+          if(msg.to) {
+            this.emitToUser(msg.to, 'chat:new', msg);
+          }
+
+          // Optional: room-based chats
+          if(msg.roomId && ROOM_RE.test(msg.roomId)) {
+            this.emitToRooms([msg.roomId], 'chat:new', msg);
+          }
+
+          // echo back to sender (for optimistic UI)
+          socket.emit('chat:sent', msg);
+          ack?.({ok: true});
+        } catch(e) {
+          console.error('[chat:send] failed:', e);
+          ack?.({ok: false});
+        }
+      });
+
+      // ---------- CALL: WebRTC signalling ----------
+      socket.on('call:offer', (payload: CallOfferPayload, ack?: (res: {ok: boolean}) => void) => {
+        try {
+          const sender = socket.data.authUser as AuthUser;
+          payload.from = sender.username;
+          this.emitToUser(payload.to, 'call:offer', payload);
+          ack?.({ok: true});
+        } catch(e) {
+          console.error('[call:offer] failed:', e);
+          ack?.({ok: false});
+        }
+      });
+
+      socket.on('call:answer', (payload: CallAnswerPayload, ack?: (res: {ok: boolean}) => void) => {
+        try {
+          const sender = socket.data.authUser as AuthUser;
+          payload.from = sender.username;
+          this.emitToUser(payload.to, 'call:answer', payload);
+          ack?.({ok: true});
+        } catch(e) {
+          console.error('[call:answer] failed:', e);
+          ack?.({ok: false});
+        }
+      });
+
+      socket.on('call:candidate', (payload: CallCandidatePayload, ack?: (res: {ok: boolean}) => void) => {
+        try {
+          const sender = socket.data.authUser as AuthUser;
+          payload.from = sender.username;
+          this.emitToUser(payload.to, 'call:candidate', payload);
+          ack?.({ok: true});
+        } catch(e) {
+          console.error('[call:candidate] failed:', e);
+          ack?.({ok: false});
+        }
+      });
+
+      socket.on('call:end', (payload: CallEndPayload, ack?: (res: {ok: boolean}) => void) => {
+        try {
+          const sender = socket.data.authUser as AuthUser;
+          payload.from = sender.username;
+          this.emitToUser(payload.to, 'call:end', payload);
+          ack?.({ok: true});
+        } catch(e) {
+          console.error('[call:end] failed:', e);
+          ack?.({ok: false});
+        }
+      });
+
       // ---------- cleanup ----------
-      // 🔧 clean up both on 'disconnecting' and 'disconnect'
       socket.on('disconnecting', (reason) => {
         clearInterval(hb);
-        // Optional: log current rooms being left
-        // console.log('leaving rooms', [...socket.rooms]);
         console.log(`↘️  Socket disconnecting: ${auth.username} (${reason}) id=${socket.id}`);
       });
 
@@ -197,6 +321,7 @@ export default class SocketServer {
   /** Attach namespace to Express for req.app.get('io') usage */
   attachToApp(app: import('express').Express) {
     app.set('io', this.nsp);
+    app.set('socketServer', this); // handy for controllers
   }
 
   get instance(): Namespace {
@@ -204,7 +329,7 @@ export default class SocketServer {
     return this.nsp;
   }
 
-  // ---------- Emission helpers ----------
+  // ---------- Emission helpers (generic) ----------
   emitToUser(username: string, event: string, payload: any) {
     this.instance.to(`user:${username}`).emit(event, payload);
   }
@@ -217,6 +342,32 @@ export default class SocketServer {
   emitToRooms(rooms: string[], event: string, payload: any) {
     if(!rooms?.length) return;
     this.instance.to(rooms).emit(event, payload);
+  }
+
+  /** ====== Notification-specific helper ====== */
+  emitNotification(notif: NotificationPayload) {
+    const {audience} = notif;
+    if(!audience) return;
+
+    // Standard event name used by FE (matches NotificationService filter)
+    const event = 'notification:new';
+
+    if(audience.mode === 'broadcast') {
+      this.emitBroadcast(event, notif);
+      return;
+    }
+
+    if(audience.mode === 'user' && audience.usernames?.length) {
+      for(const u of audience.usernames) {
+        this.emitToUser(u, event, notif);
+      }
+    }
+
+    if(audience.mode === 'role' && audience.roles?.length) {
+      for(const r of audience.roles) {
+        this.emitToRole(r, event, notif);
+      }
+    }
   }
 
   // ---------- Internals ----------

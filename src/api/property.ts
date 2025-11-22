@@ -1,8 +1,8 @@
 // File: src/api/property.ts
 // Class-based Property API with all helpers encapsulated as private methods/fields
 
-import express, {Request, Response, Router} from "express";
-import type {PipelineStage} from "mongoose";
+import express, { Request, Response, Router } from "express";
+import type { PipelineStage } from "mongoose";
 import dotenv from "dotenv";
 import multer from "multer";
 import sharp from "sharp";
@@ -10,6 +10,7 @@ import path from "path";
 import fs from "fs";
 import fse from "fs-extra";
 import NotificationService from "../services/notification.service";
+import { FilterQuery } from 'mongoose';
 import {
   PropertyModel,
   IProperty,
@@ -51,47 +52,47 @@ export default class Property {
   private readonly DEFAULT_RECYCLE_URL = "recyclebin/properties";
 
   /* ------------------------------- Enum sets -------------------------------- */
-  private readonly PROPERTY_TYPES = new Set([
+  private readonly PROPERTY_TYPES = new Set( [
     "apartment",
     "house",
     "villa",
     "commercial",
     "land",
     "studio",
-  ]);
-  private readonly LISTINGS = new Set(["sale", "rent", "sold", "rented"]);
-  private readonly FURNISHING = new Set([
+  ] );
+  private readonly LISTINGS = new Set( [ "sale", "rent", "sold", "rented" ] );
+  private readonly FURNISHING = new Set( [
     "furnished",
     "semi-furnished",
     "unfurnished",
-  ]);
-  private readonly CONDITIONS = new Set([
+  ] );
+  private readonly CONDITIONS = new Set( [
     "new",
     "old",
     "excellent",
     "good",
     "needs renovation",
-  ]);
-  private readonly OWNERSHIP = new Set([
+  ] );
+  private readonly OWNERSHIP = new Set( [
     "freehold",
     "leasehold",
     "company",
     "trust",
-  ]);
-  private readonly AVAILABILITY = new Set([
+  ] );
+  private readonly AVAILABILITY = new Set( [
     "available",
     "not available",
     "pending",
     "ready to move",
-  ]);
-  private readonly VERIFICATION = new Set([
+  ] );
+  private readonly VERIFICATION = new Set( [
     "pending",
     "verified",
     "rejected",
     "approved",
-  ]);
-  private readonly PRIORITY = new Set(["high", "medium", "low"]);
-  private readonly STATUS = new Set(["draft", "published", "archived"]);
+  ] );
+  private readonly PRIORITY = new Set( [ "high", "medium", "low" ] );
+  private readonly STATUS = new Set( [ "draft", "published", "archived" ] );
 
   /* -------------------------------- Router --------------------------------- */
   private router: express.Router;
@@ -104,9 +105,12 @@ export default class Property {
     this.insertProperty();
     this.getAllPropertiesWithPagination();
     this.getSinglePropertyById();
+    this.getPropertySectionById();
     this.deleteProperty();
     this.updateProperty();
     this.getAllProperties();
+    this.getAllPropertiesCount();
+
 
     // Dashboard routes (NEW)
     this.dashboardPortfolioSummary();
@@ -125,9 +129,9 @@ export default class Property {
   /* =============================== ROUTES =================================== */
 
   private test() {
-    this.router.get("/test", (_req, res) => {
-      res.status(200).json({status: "success", message: "Property API is working"});
-    });
+    this.router.get( "/test", ( _req, res ) => {
+      res.status( 200 ).json( { status: "success", message: "Property API is working" } );
+    } );
   }
 
   // ------------------------------ INSERT -------------------------------------
@@ -161,59 +165,59 @@ export default class Property {
       "image/svg+xml",
     ];
 
-    const storage = multer.diskStorage({
-      destination: (req, file, cb) => {
-        const propertyID = this.s(req.params.propertyID);
-        if(!propertyID)
-          return cb(new Error("Property ID is required in URL param."), "");
-        const base = path.join(this.DEFAULT_UPLOAD_PATH, propertyID);
+    const storage = multer.diskStorage( {
+      destination: ( req, file, cb ) => {
+        const propertyID = this.s( req.params.propertyID );
+        if ( !propertyID )
+          return cb( new Error( "Property ID is required in URL param." ), "" );
+        const base = path.join( this.DEFAULT_UPLOAD_PATH, propertyID );
         const uploadPath =
           file.fieldname === "images"
-            ? path.join(base, "tempImages")
+            ? path.join( base, "tempImages" )
             : file.fieldname === "documents"
-              ? path.join(base, "documents")
+              ? path.join( base, "documents" )
               : "";
-        if(!uploadPath)
-          return cb(new Error("Unexpected field: " + file.fieldname), "");
-        fse.mkdirpSync(uploadPath);
-        cb(null, uploadPath);
+        if ( !uploadPath )
+          return cb( new Error( "Unexpected field: " + file.fieldname ), "" );
+        fse.mkdirpSync( uploadPath );
+        cb( null, uploadPath );
       },
-      filename: (_req, file, cb) => {
-        const u = Date.now() + "-" + Math.round(Math.random() * 1e9);
-        cb(null, `${u}-${file.originalname.replace(/\s+/g, "_")}`);
+      filename: ( _req, file, cb ) => {
+        const u = Date.now() + "-" + Math.round( Math.random() * 1e9 );
+        cb( null, `${ u }-${ file.originalname.replace( /\s+/g, "_" ) }` );
       },
-    });
+    } );
 
-    const fileFilter: multer.Options["fileFilter"] = (_req, file, cb) => {
-      if(file.fieldname === "images" && allowedImageTypes.includes(file.mimetype))
-        return cb(null, true);
-      if(file.fieldname === "documents" && allowedDocumentTypes.includes(file.mimetype))
-        return cb(null, true);
-      return cb(new Error(`File type not allowed for ${file.fieldname}: ${file.mimetype}`));
+    const fileFilter: multer.Options[ "fileFilter" ] = ( _req, file, cb ) => {
+      if ( file.fieldname === "images" && allowedImageTypes.includes( file.mimetype ) )
+        return cb( null, true );
+      if ( file.fieldname === "documents" && allowedDocumentTypes.includes( file.mimetype ) )
+        return cb( null, true );
+      return cb( new Error( `File type not allowed for ${ file.fieldname }: ${ file.mimetype }` ) );
     };
 
-    const upload = multer({
+    const upload = multer( {
       storage,
       fileFilter,
-      limits: {fileSize: 25 * 1024 * 1024, files: 40},
-    });
+      limits: { fileSize: 25 * 1024 * 1024, files: 40 },
+    } );
 
     this.router.post(
       "/insert-property/:propertyID",
-      upload.fields([
-        {name: "images", maxCount: 30},
-        {name: "documents", maxCount: 20},
-      ]),
-      async (req: Request<{propertyID: string}>, res: Response): Promise<void> => {
+      upload.fields( [
+        { name: "images", maxCount: 30 },
+        { name: "documents", maxCount: 20 },
+      ] ),
+      async ( req: Request<{ propertyID: string; }>, res: Response ): Promise<void> => {
         try {
-          const propertyID = this.s(req.params.propertyID);
-          if(!propertyID) {
-            res.status(400).json({status: "error", message: "Property ID missing in URL."});
+          const propertyID = this.s( req.params.propertyID );
+          if ( !propertyID ) {
+            res.status( 400 ).json( { status: "error", message: "Property ID missing in URL." } );
             return;
           }
 
           // Build media arrays & convert images to .webp
-          const files = req.files as {[k: string]: Express.Multer.File[]} | undefined;
+          const files = req.files as { [ k: string ]: Express.Multer.File[]; } | undefined;
           const imagesIn = files?.images ?? [];
           const docsIn = files?.documents ?? [];
 
@@ -222,88 +226,88 @@ export default class Property {
           const conversions: Promise<void>[] = [];
 
           // Documents
-          for(const f of docsIn) {
-            documents.push({
+          for ( const f of docsIn ) {
+            documents.push( {
               originalname: f.originalname.trim(),
               filename: f.filename.trim(),
               mimetype: f.mimetype.trim(),
               size: f.size,
-              documentURL: `${req.protocol}://${req.get("host")}/${this.DEFAULT_PROPERTY_URL}/${propertyID}/documents/${f.filename}`,
-            });
+              documentURL: `${ req.protocol }://${ req.get( "host" ) }/${ this.DEFAULT_PROPERTY_URL }/${ propertyID }/documents/${ f.filename }`,
+            } );
           }
 
           // Images (tempImages -> images/*.webp)
-          const outDir = path.join(this.DEFAULT_UPLOAD_PATH, propertyID, "images");
-          fse.mkdirpSync(outDir);
+          const outDir = path.join( this.DEFAULT_UPLOAD_PATH, propertyID, "images" );
+          fse.mkdirpSync( outDir );
 
-          for(const f of imagesIn) {
-            const base = path.basename(f.filename, path.extname(f.filename));
-            const out = path.join(outDir, `${base}.webp`);
-            const url = `${req.protocol}://${req.get("host")}/${this.DEFAULT_PROPERTY_URL}/${propertyID}/images/${base}.webp`;
+          for ( const f of imagesIn ) {
+            const base = path.basename( f.filename, path.extname( f.filename ) );
+            const out = path.join( outDir, `${ base }.webp` );
+            const url = `${ req.protocol }://${ req.get( "host" ) }/${ this.DEFAULT_PROPERTY_URL }/${ propertyID }/images/${ base }.webp`;
 
-            const p = sharp(f.path)
-              .webp({quality: 90})
-              .resize(1600, 1200, {fit: "inside", withoutEnlargement: true})
-              .toFile(out)
-              .then(() => void 0);
-            conversions.push(p);
+            const p = sharp( f.path )
+              .webp( { quality: 90 } )
+              .resize( 1600, 1200, { fit: "inside", withoutEnlargement: true } )
+              .toFile( out )
+              .then( () => void 0 );
+            conversions.push( p );
 
-            images.push({
+            images.push( {
               originalname: f.originalname.trim(),
-              filename: `${base}.webp`,
+              filename: `${ base }.webp`,
               mimetype: "image/webp",
               size: f.size,
               imageURL: url,
-            });
+            } );
           }
 
-          await Promise.all(conversions);
+          await Promise.all( conversions );
 
           // Validate payload strictly against model (insert mode)
-          const {data, errors} = this.buildValidatedPayload(req, {
+          const { data, errors } = this.buildValidatedPayload( req, {
             images,
             documents,
             isUpdate: false,
-          });
+          } );
           data.id = propertyID; // enforce URL id
 
-          if(errors.length) {
+          if ( errors.length ) {
             await this.deleteFolderWithRetry(
-              path.join(this.DEFAULT_UPLOAD_PATH, propertyID, "tempImages")
+              path.join( this.DEFAULT_UPLOAD_PATH, propertyID, "tempImages" )
             );
-            res.status(400).json({status: "fail", message: "Validation failed", errors});
+            res.status( 400 ).json( { status: "fail", message: "Validation failed", errors } );
             return;
           }
 
-          const inserted = await new PropertyModel(data as IProperty).save();
+          const inserted = await new PropertyModel( data as IProperty ).save();
 
           await this.deleteFolderWithRetry(
-            path.join(this.DEFAULT_UPLOAD_PATH, propertyID, "tempImages")
+            path.join( this.DEFAULT_UPLOAD_PATH, propertyID, "tempImages" )
           );
 
           // Notify
           const notificationService = new NotificationService();
-          const io = req.app.get("io") as import("socket.io").Server;
+          const io = req.app.get( "io" ) as import( "socket.io" ).Server;
           await notificationService.createNotification(
             {
               title: "New Property",
-              body: `A new property "${inserted.title}" has been added.`,
+              body: `A new property "${ inserted.title }" has been added.`,
               type: "create",
               severity: "info",
-              audience: {mode: "role", roles: ["admin", "agent", "manager", "operator"]},
-              channels: ["inapp", "email"],
+              audience: { mode: "role", roles: [ "admin", "agent", "manager", "operator" ] },
+              channels: [ "inapp", "email" ],
               metadata: {
                 refId: propertyID,
-                data: {property: inserted}
+                data: { property: inserted }
               },
             },
-            (rooms, payload) => rooms.forEach((r) => io.to(r).emit("notification.new", payload))
+            ( rooms, payload ) => rooms.forEach( ( r ) => io.to( r ).emit( "notification.new", payload ) )
           );
 
-          res.status(201).json({status: "success", message: "Property inserted successfully", data: inserted});
-        } catch(err: any) {
-          console.error("[insert-property] error:", err);
-          res.status(500).json({status: "error", message: err?.message || "Internal server error"});
+          res.status( 201 ).json( { status: "success", message: "Property inserted successfully", data: inserted } );
+        } catch ( err: any ) {
+          console.error( "[insert-property] error:", err );
+          res.status( 500 ).json( { status: "error", message: err?.message || "Internal server error" } );
         }
       }
     );
@@ -313,15 +317,15 @@ export default class Property {
   private getAllPropertiesWithPagination(): void {
     this.router.get(
       "/get-all-properties-with-pagination/:start/:end/",
-      async (req: Request<{start: string; end: string}>, res: Response) => {
+      async ( req: Request<{ start: string; end: string; }>, res: Response ) => {
         try {
-          const start = Math.max(0, parseInt(req.params.start, 10));
-          const end = Math.max(1, parseInt(req.params.end, 10));
-          if(Number.isNaN(start) || Number.isNaN(end))
-            throw new Error("Invalid start or end parameters.");
+          const start = Math.max( 0, parseInt( req.params.start, 10 ) );
+          const end = Math.max( 1, parseInt( req.params.end, 10 ) );
+          if ( Number.isNaN( start ) || Number.isNaN( end ) )
+            throw new Error( "Invalid start or end parameters." );
 
-          const rawSearch = this.s(req.query.search);
-          const rawFilter = this.s(req.query.filter);
+          const rawSearch = this.s( req.query.search );
+          const rawFilter = this.s( req.query.filter );
 
           const filterData = rawFilter
             ? this.parseJSON<{
@@ -332,7 +336,7 @@ export default class Property {
               amenities: string[];
               type: string;
               status: string;
-            }>(rawFilter, {
+            }>( rawFilter, {
               minPrice: 0,
               maxPrice: Number.MAX_SAFE_INTEGER,
               beds: "",
@@ -340,7 +344,7 @@ export default class Property {
               amenities: [],
               type: "",
               status: "",
-            })
+            } )
             : {
               minPrice: 0,
               maxPrice: Number.MAX_SAFE_INTEGER,
@@ -353,82 +357,82 @@ export default class Property {
 
           const and: any[] = [];
 
-          if(rawSearch) {
-            const rx = new RegExp(rawSearch, "i");
-            and.push({
+          if ( rawSearch ) {
+            const rx = new RegExp( rawSearch, "i" );
+            and.push( {
               $or: [
-                {title: {$regex: rx}},
-                {type: {$regex: rx}},
-                {status: {$regex: rx}},
-                {"address.country": {$regex: rx}},
+                { title: { $regex: rx } },
+                { type: { $regex: rx } },
+                { status: { $regex: rx } },
+                { "address.country": { $regex: rx } },
               ],
-            });
+            } );
           }
 
-          and.push({
+          and.push( {
             price: {
-              $gte: Number(filterData.minPrice) || 0,
-              $lte: Number(filterData.maxPrice) || Number.MAX_SAFE_INTEGER,
+              $gte: Number( filterData.minPrice ) || 0,
+              $lte: Number( filterData.maxPrice ) || Number.MAX_SAFE_INTEGER,
             },
-          });
+          } );
 
-          if(filterData.beds === "10+") and.push({bedrooms: {$gte: 10}});
-          else if(filterData.beds)
-            and.push({bedrooms: Number.parseInt(filterData.beds, 10) || 0});
+          if ( filterData.beds === "10+" ) and.push( { bedrooms: { $gte: 10 } } );
+          else if ( filterData.beds )
+            and.push( { bedrooms: Number.parseInt( filterData.beds, 10 ) || 0 } );
 
-          if(filterData.bathrooms === "10+") and.push({bathrooms: {$gte: 10}});
-          else if(filterData.bathrooms)
-            and.push({
-              bathrooms: Number.parseInt(filterData.bathrooms, 10) || 0,
-            });
+          if ( filterData.bathrooms === "10+" ) and.push( { bathrooms: { $gte: 10 } } );
+          else if ( filterData.bathrooms )
+            and.push( {
+              bathrooms: Number.parseInt( filterData.bathrooms, 10 ) || 0,
+            } );
 
-          if(filterData.type) {
+          if ( filterData.type ) {
             const t = filterData.type.toLowerCase();
-            if(this.PROPERTY_TYPES.has(t)) and.push({type: t});
+            if ( this.PROPERTY_TYPES.has( t ) ) and.push( { type: t } );
           }
 
-          if(filterData.status) {
+          if ( filterData.status ) {
             const st = filterData.status.toLowerCase();
-            if(this.STATUS.has(st)) and.push({status: st});
+            if ( this.STATUS.has( st ) ) and.push( { status: st } );
           }
 
-          if(Array.isArray(filterData.amenities) && filterData.amenities.length) {
-            and.push({featuresAndAmenities: {$all: filterData.amenities}});
+          if ( Array.isArray( filterData.amenities ) && filterData.amenities.length ) {
+            and.push( { featuresAndAmenities: { $all: filterData.amenities } } );
           }
 
-          const match = and.length ? {$and: and} : {};
+          const match = and.length ? { $and: and } : {};
 
-          const properties = await PropertyModel.aggregate([
-            {$match: match},
+          const properties = await PropertyModel.aggregate( [
+            { $match: match },
             {
               $addFields: {
                 priorityOrder: {
                   $switch: {
                     branches: [
-                      {case: {$eq: ["$priority", "high"]}, then: 1},
-                      {case: {$eq: ["$priority", "medium"]}, then: 2},
-                      {case: {$eq: ["$priority", "low"]}, then: 3},
+                      { case: { $eq: [ "$priority", "high" ] }, then: 1 },
+                      { case: { $eq: [ "$priority", "medium" ] }, then: 2 },
+                      { case: { $eq: [ "$priority", "low" ] }, then: 3 },
                     ],
                     default: 4,
                   },
                 },
               },
             },
-            {$sort: {priorityOrder: 1, updatedAt: -1}},
-            {$skip: start},
-            {$limit: end - start},
-          ]);
+            { $sort: { priorityOrder: 1, updatedAt: -1 } },
+            { $skip: start },
+            { $limit: end - start },
+          ] );
 
-          const totalCount = await PropertyModel.countDocuments(match);
+          const totalCount = await PropertyModel.countDocuments( match );
 
-          res.status(200).json({
+          res.status( 200 ).json( {
             status: "success",
             message: "Properties fetched successfully.",
-            data: {properties, count: totalCount},
-          });
-        } catch(error) {
-          console.error("[get-all-properties-with-pagination] error:", error);
-          res.status(500).json({status: "error", message: "Error occurred while fetching properties."});
+            data: { properties, count: totalCount },
+          } );
+        } catch ( error ) {
+          console.error( "[get-all-properties-with-pagination] error:", error );
+          res.status( 500 ).json( { status: "error", message: "Error occurred while fetching properties." } );
         }
       }
     );
@@ -438,76 +442,190 @@ export default class Property {
   private getSinglePropertyById(): void {
     this.router.get(
       "/get-single-property-by-id/:id",
-      async (req: Request<{id: string}>, res: Response) => {
+      async ( req: Request<{ id: string; }>, res: Response ) => {
         try {
-          const id = this.s(req.params.id);
-          if(!id) throw new Error("Property ID is required.");
-          const property = await PropertyModel.findOne({id});
-          if(!property) throw new Error("Property not found.");
-          res.status(200).json({
+          const id = this.s( req.params.id );
+          if ( !id ) throw new Error( "Property ID is required." );
+          const property = await PropertyModel.findOne( { id } );
+          if ( !property ) throw new Error( "Property not found." );
+          res.status( 200 ).json( {
             status: "success",
             message: "Property fetched successfully.",
             data: property,
-          });
-        } catch(error) {
-          console.error("[get-single-property] error:", error);
-          res.status(500).json({status: "error", message: "Error occurred while fetching property."});
+          } );
+        } catch ( error ) {
+          console.error( "[get-single-property] error:", error );
+          res.status( 500 ).json( { status: "error", message: "Error occurred while fetching property." } );
         }
       }
     );
   }
 
+  // --------------------------- GET SINGLE PROPERTY SECTION BY ID ------------------------------
+  // Inside your class
+  private getPropertySectionById(): void {
+    this.router.get(
+      "/get-single-property-section-by-id/:id",
+      async (
+        req: Request<{ id: string; }, any, any, { section?: string; }>,
+        res: Response
+      ): Promise<void> => {
+        try {
+          // -------- 1) Read & sanitise inputs --------
+          const rawId = req.params.id;
+          const rawSection = req.query.section;
+
+          const id = this.s( rawId );
+          const section = typeof rawSection === "string" ? this.s( rawSection ) : "";
+
+          if ( !section ) {
+            res.status( 400 ).json( {
+              success: false,
+              status: "error",
+              message: "Invalid property section!",
+              data: null,
+            } );
+            return;
+          }
+
+          if ( !id ) {
+            res.status( 400 ).json( {
+              success: false,
+              status: "error",
+              message: "Property ID is required!",
+              data: null,
+            } );
+            return;
+          }
+
+          // Optional but strongly recommended: whitelist allowed sections
+          const allowedSections: string[] = [
+            "images",
+            "title",
+            "type",
+            "listing",
+          ];
+
+          if ( !allowedSections.includes( section ) ) {
+            res.status( 400 ).json( {
+              success: false,
+              status: "error",
+              message: "Requested section is not allowed!",
+              data: null,
+            } );
+            return;
+          }
+
+          const filter: FilterQuery<IProperty> = {};
+
+          // -------- 2) Query only one section from MongoDB --------
+          // Dynamic projection: { [section]: 1 } means "include this field"
+          const property = await PropertyModel
+            .findOne( { id } )
+            .select( `${ section } -_id` ) // include `section`, exclude `_id`
+            .lean()
+            .exec();
+
+          if ( !property ) {
+            res.status( 404 ).json( {
+              success: false,
+              status: "error",
+              message: "Property not found!",
+              data: null,
+            } );
+            return;
+          }
+
+          // If document exists but section field is missing
+          if ( typeof property[ section as keyof typeof property ] === "undefined" ) {
+            res.status( 404 ).json( {
+              success: false,
+              status: "error",
+              message: "Requested section not found on this property!",
+              data: null,
+            } );
+            return;
+          }
+
+
+          // -------- 3) Success response (only that section) --------
+          res.status( 200 ).json( {
+            success: true,
+            status: "success",
+            message: "Property section fetched successfully.",
+            data: {
+              id,
+              section,
+              value: property[ section as keyof typeof property ],
+            },
+          } );
+          return;
+        } catch ( error ) {
+          console.error( "[get-single-property-section-by-id] error:", error );
+          res.status( 500 ).json( {
+            success: false,
+            status: "error",
+            message: "Error occurred while fetching property section.",
+            data: null,
+          } );
+          return;
+        }
+      }
+    );
+  }
+
+
   // --------------------------------- DELETE ----------------------------------
   private deleteProperty(): void {
     this.router.delete(
       "/delete-property/:id/:username",
-      async (req: Request<{id: string; username: string}>, res: Response) => {
+      async ( req: Request<{ id: string; username: string; }>, res: Response ) => {
         try {
-          const safeID = this.s(req.params.id);
-          const urlUsername = this.s(req.params.username);
-          if(!safeID) {
-            res.status(400).json({success: false, status: "error", message: "Property ID is required."});
+          const safeID = this.s( req.params.id );
+          const urlUsername = this.s( req.params.username );
+          if ( !safeID ) {
+            res.status( 400 ).json( { success: false, status: "error", message: "Property ID is required." } );
             return;
           }
-          if(!urlUsername) {
-            res.status(400).json({success: false, status: "error", message: "Property deletor is required."});
+          if ( !urlUsername ) {
+            res.status( 400 ).json( { success: false, status: "error", message: "Property deletor is required." } );
             return;
           }
 
           // @ts-ignore optional auth middleware
           const actorUsername: string =
-            (req.user?.username as string | undefined)?.trim() || urlUsername;
+            ( req.user?.username as string | undefined )?.trim() || urlUsername;
 
-          const property = await PropertyModel.findOne({id: safeID}).lean();
-          if(!property) {
-            res.status(404).json({success: false, status: "error", message: "Property not found."});
+          const property = await PropertyModel.findOne( { id: safeID } ).lean();
+          if ( !property ) {
+            res.status( 404 ).json( { success: false, status: "error", message: "Property not found." } );
             return;
           }
 
-          const srcDir = path.join(this.DEFAULT_UPLOAD_PATH, safeID);
-          let dstDir = path.join(this.DEFAULT_RECYCLE_PATH, safeID);
-          if(await fse.pathExists(dstDir)) {
-            dstDir = path.join(this.DEFAULT_RECYCLE_PATH, `${safeID}_${Date.now()}`);
+          const srcDir = path.join( this.DEFAULT_UPLOAD_PATH, safeID );
+          let dstDir = path.join( this.DEFAULT_RECYCLE_PATH, safeID );
+          if ( await fse.pathExists( dstDir ) ) {
+            dstDir = path.join( this.DEFAULT_RECYCLE_PATH, `${ safeID }_${ Date.now() }` );
           }
 
-          if(await fse.pathExists(srcDir)) await fse.move(srcDir, dstDir, {overwrite: false});
-          else await fse.mkdirp(dstDir);
+          if ( await fse.pathExists( srcDir ) ) await fse.move( srcDir, dstDir, { overwrite: false } );
+          else await fse.mkdirp( dstDir );
 
-          const snapshotPath = path.join(dstDir, "data.json");
-          await fse.writeJson(snapshotPath, property, {spaces: 2});
+          const snapshotPath = path.join( dstDir, "data.json" );
+          await fse.writeJson( snapshotPath, property, { spaces: 2 } );
 
           try {
-            const io = req.app.get("io") as import("socket.io").Server | undefined;
-            if(io) {
+            const io = req.app.get( "io" ) as import( "socket.io" ).Server | undefined;
+            if ( io ) {
               const notificationService = new NotificationService();
               await notificationService.createNotification(
                 {
                   title: "Delete Property",
-                  body: `Property "${(property as any)?.title ?? safeID}" has been deleted.`,
+                  body: `Property "${ ( property as any )?.title ?? safeID }" has been deleted.`,
                   type: "delete",
                   severity: "warning",
-                  audience: {mode: "role", roles: ["admin", "agent", "manager", "operator"]},
-                  channels: ["inapp", "email"],
+                  audience: { mode: "role", roles: [ "admin", "agent", "manager", "operator" ] },
+                  channels: [ "inapp", "email" ],
                   metadata: {
                     refId: safeID,
                     data: {
@@ -518,35 +636,35 @@ export default class Property {
                       recyclebin: {
                         folder: dstDir,
                         dataJson: snapshotPath,
-                        base: `${req.protocol}://${req.get("host")}/${this.DEFAULT_RECYCLE_URL}/${path.basename(
+                        base: `${ req.protocol }://${ req.get( "host" ) }/${ this.DEFAULT_RECYCLE_URL }/${ path.basename(
                           dstDir
-                        )}`,
+                        ) }`,
                       },
                     },
                   },
-                  target: {kind: "Property", refId: safeID},
+                  target: { kind: "Property", refId: safeID },
                 },
-                (rooms, payload) => rooms.forEach((r) => io.to(r).emit("notification.new", payload))
+                ( rooms, payload ) => rooms.forEach( ( r ) => io.to( r ).emit( "notification.new", payload ) )
               );
             }
-          } catch(notifyErr) {
-            console.warn("[delete-property] notification failed:", notifyErr);
+          } catch ( notifyErr ) {
+            console.warn( "[delete-property] notification failed:", notifyErr );
           }
 
-          const delRes = await PropertyModel.deleteOne({id: safeID});
-          if(delRes.deletedCount !== 1) {
-            res.status(409).json({
+          const delRes = await PropertyModel.deleteOne( { id: safeID } );
+          if ( delRes.deletedCount !== 1 ) {
+            res.status( 409 ).json( {
               success: false,
               status: "error",
               message: "Delete conflict: document was not removed from DB.",
-            });
+            } );
             return;
           }
 
-          res.status(200).json({success: true, status: "success", message: "Property deleted.", data: null});
-        } catch(error: any) {
-          console.error("[delete-property] error:", error?.message || error);
-          res.status(500).json({success: false, status: "error", message: "Error occurred while deleting property."});
+          res.status( 200 ).json( { success: true, status: "success", message: "Property deleted.", data: null } );
+        } catch ( error: any ) {
+          console.error( "[delete-property] error:", error?.message || error );
+          res.status( 500 ).json( { success: false, status: "error", message: "Error occurred while deleting property." } );
         }
       }
     );
@@ -583,49 +701,49 @@ export default class Property {
       "image/svg+xml",
     ];
 
-    const storage = multer.diskStorage({
-      destination: (req, file, cb) => {
-        const propertyID = this.s(req.params.id);
-        if(!propertyID) return cb(new Error("Property ID is required in URL."), "");
-        const base = path.join(this.DEFAULT_UPLOAD_PATH, propertyID);
+    const storage = multer.diskStorage( {
+      destination: ( req, file, cb ) => {
+        const propertyID = this.s( req.params.id );
+        if ( !propertyID ) return cb( new Error( "Property ID is required in URL." ), "" );
+        const base = path.join( this.DEFAULT_UPLOAD_PATH, propertyID );
         const uploadPath =
           file.fieldname === "images"
-            ? path.join(base, "tempImages")
+            ? path.join( base, "tempImages" )
             : file.fieldname === "documents"
-              ? path.join(base, "documents")
+              ? path.join( base, "documents" )
               : "";
-        if(!uploadPath) return cb(new Error("Unexpected field: " + file.fieldname), "");
-        fse.mkdirpSync(uploadPath);
-        cb(null, uploadPath);
+        if ( !uploadPath ) return cb( new Error( "Unexpected field: " + file.fieldname ), "" );
+        fse.mkdirpSync( uploadPath );
+        cb( null, uploadPath );
       },
-      filename: (_req, file, cb) => {
-        const u = Date.now() + "-" + Math.round(Math.random() * 1e9);
-        cb(null, `${u}-${file.originalname.replace(/\s+/g, "_")}`);
+      filename: ( _req, file, cb ) => {
+        const u = Date.now() + "-" + Math.round( Math.random() * 1e9 );
+        cb( null, `${ u }-${ file.originalname.replace( /\s+/g, "_" ) }` );
       },
-    });
+    } );
 
-    const fileFilter: multer.Options["fileFilter"] = (_req, file, cb) => {
-      if(file.fieldname === "images" && allowedImageTypes.includes(file.mimetype))
-        return cb(null, true);
-      if(file.fieldname === "documents" && allowedDocumentTypes.includes(file.mimetype))
-        return cb(null, true);
-      return cb(new Error("File type not allowed: " + file.mimetype));
+    const fileFilter: multer.Options[ "fileFilter" ] = ( _req, file, cb ) => {
+      if ( file.fieldname === "images" && allowedImageTypes.includes( file.mimetype ) )
+        return cb( null, true );
+      if ( file.fieldname === "documents" && allowedDocumentTypes.includes( file.mimetype ) )
+        return cb( null, true );
+      return cb( new Error( "File type not allowed: " + file.mimetype ) );
     };
 
-    const upload = multer({storage, fileFilter});
+    const upload = multer( { storage, fileFilter } );
 
     this.router.put(
       "/update-property/:id",
-      upload.fields([{name: "images"}, {name: "documents"}]),
-      async (req: Request<{id: string}>, res: Response): Promise<void> => {
+      upload.fields( [ { name: "images" }, { name: "documents" } ] ),
+      async ( req: Request<{ id: string; }>, res: Response ): Promise<void> => {
         try {
-          const propertyID = this.s(req.params.id || req.body.id);
-          if(!propertyID) {
-            res.status(400).json({status: "error", message: "Property ID is required in URL or body."});
+          const propertyID = this.s( req.params.id || req.body.id );
+          if ( !propertyID ) {
+            res.status( 400 ).json( { status: "error", message: "Property ID is required in URL or body." } );
             return;
           }
 
-          const files = req.files as {[k: string]: Express.Multer.File[]} | undefined;
+          const files = req.files as { [ k: string ]: Express.Multer.File[]; } | undefined;
           const imagesIn = files?.images ?? [];
           const docsIn = files?.documents ?? [];
 
@@ -638,25 +756,25 @@ export default class Property {
             req.body.existingDocuments,
             []
           );
-          if(!Array.isArray(existingImages) || !Array.isArray(existingDocs)) {
-            res.status(400).json({
+          if ( !Array.isArray( existingImages ) || !Array.isArray( existingDocs ) ) {
+            res.status( 400 ).json( {
               status: "fail",
               message: "existingImages / existingDocuments must be arrays",
-            });
+            } );
             return;
           }
 
-          const Images: UploadedImage[] = [...existingImages];
-          const Documents: UploadedDocument[] = [...existingDocs];
+          const Images: UploadedImage[] = [ ...existingImages ];
+          const Documents: UploadedDocument[] = [ ...existingDocs ];
 
           // Remove images -> move to /deleted
           const removeImages = this.parseJSON<UploadedImage[]>(
             req.body.removeImages,
             []
           );
-          if(Array.isArray(removeImages) && removeImages.length) {
-            for(const img of removeImages) {
-              if(!img?.filename) continue;
+          if ( Array.isArray( removeImages ) && removeImages.length ) {
+            for ( const img of removeImages ) {
+              if ( !img?.filename ) continue;
               const src = path.join(
                 this.DEFAULT_UPLOAD_PATH,
                 propertyID,
@@ -670,12 +788,12 @@ export default class Property {
                 "images"
               );
               try {
-                await this.moveToTheRecycleBin(dst, src);
-              } catch(e) {
-                console.warn("[update] failed moving image to deleted:", e);
+                await this.moveToTheRecycleBin( dst, src );
+              } catch ( e ) {
+                console.warn( "[update] failed moving image to deleted:", e );
               }
-              const idx = Images.findIndex((x) => x.filename === img.filename);
-              if(idx >= 0) Images.splice(idx, 1);
+              const idx = Images.findIndex( ( x ) => x.filename === img.filename );
+              if ( idx >= 0 ) Images.splice( idx, 1 );
             }
           }
 
@@ -684,9 +802,9 @@ export default class Property {
             req.body.removeDocuments,
             []
           );
-          if(Array.isArray(removeDocs) && removeDocs.length) {
-            for(const d of removeDocs) {
-              if(!d?.filename) continue;
+          if ( Array.isArray( removeDocs ) && removeDocs.length ) {
+            for ( const d of removeDocs ) {
+              if ( !d?.filename ) continue;
               const src = path.join(
                 this.DEFAULT_UPLOAD_PATH,
                 propertyID,
@@ -700,118 +818,118 @@ export default class Property {
                 "documents"
               );
               try {
-                await this.moveToTheRecycleBin(dst, src);
-              } catch(e) {
-                console.warn("[update] failed moving doc to deleted:", e);
+                await this.moveToTheRecycleBin( dst, src );
+              } catch ( e ) {
+                console.warn( "[update] failed moving doc to deleted:", e );
               }
-              const idx = Documents.findIndex((x) => x.filename === d.filename);
-              if(idx >= 0) Documents.splice(idx, 1);
+              const idx = Documents.findIndex( ( x ) => x.filename === d.filename );
+              if ( idx >= 0 ) Documents.splice( idx, 1 );
             }
           }
 
           // Convert new images
           const conversions: Promise<void>[] = [];
-          if(imagesIn.length) {
-            const outDir = path.join(this.DEFAULT_UPLOAD_PATH, propertyID, "images");
-            await fse.mkdirp(outDir);
+          if ( imagesIn.length ) {
+            const outDir = path.join( this.DEFAULT_UPLOAD_PATH, propertyID, "images" );
+            await fse.mkdirp( outDir );
 
-            for(const f of imagesIn) {
-              const base = path.basename(f.filename, path.extname(f.filename));
-              const out = path.join(outDir, `${base}.webp`);
-              const url = `${req.protocol}://${req.get("host")}/${this.DEFAULT_PROPERTY_URL}/${propertyID}/images/${base}.webp`;
-              const p = sharp(f.path)
-                .webp({quality: 100})
-                .resize(800, 600, {fit: "inside", withoutEnlargement: true})
-                .toFile(out)
-                .then(async () => {
-                  await fse.remove(f.path);
-                })
-                .catch((e) => console.warn("[update] image convert error:", e));
-              conversions.push(p);
-              Images.push({
+            for ( const f of imagesIn ) {
+              const base = path.basename( f.filename, path.extname( f.filename ) );
+              const out = path.join( outDir, `${ base }.webp` );
+              const url = `${ req.protocol }://${ req.get( "host" ) }/${ this.DEFAULT_PROPERTY_URL }/${ propertyID }/images/${ base }.webp`;
+              const p = sharp( f.path )
+                .webp( { quality: 100 } )
+                .resize( 800, 600, { fit: "inside", withoutEnlargement: true } )
+                .toFile( out )
+                .then( async () => {
+                  await fse.remove( f.path );
+                } )
+                .catch( ( e ) => console.warn( "[update] image convert error:", e ) );
+              conversions.push( p );
+              Images.push( {
                 originalname: f.originalname.trim(),
-                filename: `${base}.webp`,
+                filename: `${ base }.webp`,
                 mimetype: "image/webp",
                 size: f.size,
                 imageURL: url,
-              });
+              } );
             }
           }
 
           // Accept new docs
-          if(docsIn.length) {
-            for(const f of docsIn) {
-              Documents.push({
+          if ( docsIn.length ) {
+            for ( const f of docsIn ) {
+              Documents.push( {
                 originalname: f.originalname.trim(),
                 filename: f.filename.trim(),
                 mimetype: f.mimetype.trim(),
                 size: f.size,
-                documentURL: `${req.protocol}://${req.get("host")}/${this.DEFAULT_PROPERTY_URL}/${propertyID}/documents/${f.filename}`,
-              });
+                documentURL: `${ req.protocol }://${ req.get( "host" ) }/${ this.DEFAULT_PROPERTY_URL }/${ propertyID }/documents/${ f.filename }`,
+              } );
             }
           }
 
           // Validate (update mode)
-          const {data, errors} = this.buildValidatedPayload(req, {
+          const { data, errors } = this.buildValidatedPayload( req, {
             images: Images,
             documents: Documents,
             isUpdate: true,
-          });
+          } );
           data.id = propertyID;
 
-          if(errors.length) {
+          if ( errors.length ) {
             await this.deleteFolderWithRetry(
-              path.join(this.DEFAULT_UPLOAD_PATH, propertyID, "tempImages")
+              path.join( this.DEFAULT_UPLOAD_PATH, propertyID, "tempImages" )
             );
-            res.status(400).json({status: "fail", message: "Validation failed", errors});
+            res.status( 400 ).json( { status: "fail", message: "Validation failed", errors } );
             return;
           }
 
           const updated = await PropertyModel.findOneAndUpdate(
-            {id: propertyID},
-            {$set: data},
-            {new: true}
+            { id: propertyID },
+            { $set: data },
+            { new: true }
           );
-          if(!updated) {
-            res.status(404).json({status: "error", message: "Property not found or update failed."});
+          if ( !updated ) {
+            res.status( 404 ).json( { status: "error", message: "Property not found or update failed." } );
             return;
           }
 
           // Notify
           try {
             const notificationService = new NotificationService();
-            const io = req.app.get("io") as import("socket.io").Server | undefined;
-            if(io) {
+            const io = req.app.get( "io" ) as import( "socket.io" ).Server | undefined;
+            if ( io ) {
               await notificationService.createNotification(
                 {
                   title: "Update Property",
-                  body: `Property with ID ${propertyID} has been updated.`,
+                  body: `Property with ID ${ propertyID } has been updated.`,
                   type: "update",
                   severity: "info",
-                  audience: {mode: "role", roles: ["admin", "operator"]},
-                  channels: ["inapp", "email"],
+                  audience: { mode: "role", roles: [ "admin", "operator" ] },
+                  channels: [ "inapp", "email" ],
                   metadata: {
                     refId: propertyID,
-                    data: {property: updated, updatedAt: new Date().toISOString(), propertyID}
+                    data: { property: updated, updatedAt: new Date().toISOString(), propertyID }
                   },
-                  target: {kind: "Property", refId: propertyID},
+                  target: { kind: "Property", refId: propertyID },
                 },
-                (rooms, payload) => rooms.forEach((room) => io.to(room).emit("notification.new", payload))
+                ( rooms, payload ) => rooms.forEach( ( room ) => io.to( room ).emit( "notification.new", payload ) )
               );
             }
-          } catch(e) {
-            console.warn("[update-property] notification failed:", e);
+          } catch ( e ) {
+            console.warn( "[update-property] notification failed:", e );
           }
 
-          res.status(200).json({status: "success", message: "Property updated successfully.", data: updated});
+          res.status( 200 ).json( { status: "success", message: "Property updated successfully.", data: updated } );
 
-          await Promise.all(conversions);
+          await Promise.all( conversions );
           await this.deleteFolderWithRetry(
-            path.join(this.DEFAULT_UPLOAD_PATH, propertyID, "tempImages")
+            path.join( this.DEFAULT_UPLOAD_PATH, propertyID, "tempImages" )
           );
-        } catch(error: any) {
-          console.error("[update-property] error:", error?.stack || error);
-          res.status(500).json({status: "error", message: "Error occurred while updating property."});
+        } catch ( error: any ) {
+          console.error( "[update-property] error:", error?.stack || error );
+          res.status( 500 ).json( { status: "error", message: "Error occurred while updating property." } );
         }
       }
     );
@@ -819,18 +937,35 @@ export default class Property {
 
   // ------------------------------- GET ALL -----------------------------------
   private getAllProperties(): void {
-    this.router.get("/get-all-properties/", async (_req, res) => {
+    this.router.get( "/get-all-properties/", async ( _req, res ) => {
       try {
-        const properties = await PropertyModel.find().sort({createdAt: -1});
-        res.status(200).json({
+        const properties = await PropertyModel.find().sort( { createdAt: -1 } );
+        res.status( 200 ).json( {
           status: "success",
           message: "Properties fetched successfully.",
           data: properties,
-        });
+        } );
       } catch {
-        res.status(500).json({status: "error", message: "Error fetching properties."});
+        res.status( 500 ).json( { status: "error", message: "Error fetching properties." } );
       }
-    });
+    } );
+  }
+
+  // ------------------------------- GET ALL COUNT -----------------------------------
+
+  private getAllPropertiesCount(): void {
+    this.router.get( "/get-all-properties-count/", async ( _req, res ) => {
+      try {
+        const count = await PropertyModel.countDocuments();
+        res.status( 200 ).json( {
+          status: "success",
+          message: "Properties fetched successfully.",
+          data: count,
+        } );
+      } catch {
+        res.status( 500 ).json( { status: "error", message: "Error fetching properties." } );
+      }
+    } );
   }
 
   /* ========================== DASHBOARD ENDPOINTS =========================== */
@@ -840,105 +975,105 @@ export default class Property {
    * - ?owner=<ownerName>       → restricts to owner == <ownerName>
    * - Always excludes archived by default unless ?includeArchived=true
    */
-  private buildScopeMatch(req: Request): Record<string, unknown> {
+  private buildScopeMatch( req: Request ): Record<string, unknown> {
     const match: Record<string, unknown> = {};
-    const includeArchived = this.s(req.query.includeArchived) === "true";
+    const includeArchived = this.s( req.query.includeArchived ) === "true";
 
-    if(!includeArchived) match.status = {$ne: "archived"};
+    if ( !includeArchived ) match.status = { $ne: "archived" };
 
-    const scope = this.s(req.query.scope);
-    const username = this.s(req.query.username);
-    if(scope === "mine" && username) {
-      match["addedBy.username"] = username;
+    const scope = this.s( req.query.scope );
+    const username = this.s( req.query.username );
+    if ( scope === "mine" && username ) {
+      match[ "addedBy.username" ] = username;
     }
 
-    const owner = this.s(req.query.owner);
-    if(owner) match["owner"] = owner;
+    const owner = this.s( req.query.owner );
+    if ( owner ) match[ "owner" ] = owner;
 
     return match;
   }
 
   /** GET /api-property/dashboard/portfolio-summary */
   private dashboardPortfolioSummary(): void {
-    this.router.get("/dashboard/portfolio-summary", async (req, res) => {
+    this.router.get( "/dashboard/portfolio-summary", async ( req, res ) => {
       try {
-        const match = this.buildScopeMatch(req);
+        const match = this.buildScopeMatch( req );
 
         // total = published + draft (excluding archived by default)
         // occupancy heuristic:
         //   - "rented" OR "sold" OR availabilityStatus == "not available"
         //   - Feel free to adjust to your business definition.
-        const [agg] = await PropertyModel.aggregate([
-          {$match: match},
+        const [ agg ] = await PropertyModel.aggregate( [
+          { $match: match },
           {
             $facet: {
-              totals: [{$count: "total"}],
+              totals: [ { $count: "total" } ],
               occ: [
                 {
                   $match: {
                     $or: [
-                      {listing: {$in: ["rented", "sold"]}},
-                      {availabilityStatus: "not available"},
+                      { listing: { $in: [ "rented", "sold" ] } },
+                      { availabilityStatus: "not available" },
                     ],
                   },
                 },
-                {$count: "occ"},
+                { $count: "occ" },
               ],
               series: [
                 // Occupancy sparkline by month (last 8 months)
-                ...this.monthlySeriesFacet(8, "createdAt", {
+                ...this.monthlySeriesFacet( 8, "createdAt", {
                   $or: [
-                    {listing: {$in: ["rented", "sold"]}},
-                    {availabilityStatus: "not available"},
+                    { listing: { $in: [ "rented", "sold" ] } },
+                    { availabilityStatus: "not available" },
                   ],
-                }),
+                } ),
               ],
             },
           },
           {
             $project: {
-              totalProperties: {$ifNull: [{$arrayElemAt: ["$totals.total", 0]}, 0]},
-              occ: {$ifNull: [{$arrayElemAt: ["$occ.occ", 0]}, 0]},
+              totalProperties: { $ifNull: [ { $arrayElemAt: [ "$totals.total", 0 ] }, 0 ] },
+              occ: { $ifNull: [ { $arrayElemAt: [ "$occ.occ", 0 ] }, 0 ] },
               series: "$series",
             },
           },
-        ]);
+        ] );
 
         const total = agg?.totalProperties ?? 0;
         const occ = agg?.occ ?? 0;
-        const occupancyPct = total > 0 ? Math.round((occ / total) * 100) : 0;
-        const series = Array.isArray(agg?.series) ? agg.series : [];
+        const occupancyPct = total > 0 ? Math.round( ( occ / total ) * 100 ) : 0;
+        const series = Array.isArray( agg?.series ) ? agg.series : [];
 
-        res.status(200).json({
+        res.status( 200 ).json( {
           status: "success",
           message: "Portfolio summary",
-          data: {totalProperties: total, occupancyPct, series},
-        });
-      } catch(e) {
-        console.error("[dashboard/portfolio-summary] error:", e);
-        res.status(500).json({status: "error", message: "Failed to build portfolio summary"});
+          data: { totalProperties: total, occupancyPct, series },
+        } );
+      } catch ( e ) {
+        console.error( "[dashboard/portfolio-summary] error:", e );
+        res.status( 500 ).json( { status: "error", message: "Failed to build portfolio summary" } );
       }
-    });
+    } );
   }
 
   /** GET /api-property/dashboard/country-distribution */
   private dashboardCountryDistribution(): void {
-    this.router.get("/dashboard/country-distribution", async (req, res) => {
+    this.router.get( "/dashboard/country-distribution", async ( req, res ) => {
       try {
-        const match = this.buildScopeMatch(req);
-        const rows = await PropertyModel.aggregate([
-          {$match: match},
+        const match = this.buildScopeMatch( req );
+        const rows = await PropertyModel.aggregate( [
+          { $match: match },
           {
             $group: {
-              _id: {$toUpper: "$address.country"},
-              properties: {$sum: 1},
+              _id: { $toUpper: "$address.country" },
+              properties: { $sum: 1 },
               occ: {
                 $sum: {
                   $cond: [
                     {
                       $or: [
-                        {$in: ["$listing", ["rented", "sold"]]},
-                        {$eq: ["$availabilityStatus", "not available"]},
+                        { $in: [ "$listing", [ "rented", "sold" ] ] },
+                        { $eq: [ "$availabilityStatus", "not available" ] },
                       ],
                     },
                     1,
@@ -948,20 +1083,20 @@ export default class Property {
               },
             },
           },
-          {$project: {country: "$_id", properties: 1, occupancyPct: {$cond: [{$gt: ["$properties", 0]}, {$round: [{$multiply: [{$divide: ["$occ", "$properties"]}, 100]}, 0]}, 0]}}},
-          {$sort: {properties: -1}},
-        ]);
+          { $project: { country: "$_id", properties: 1, occupancyPct: { $cond: [ { $gt: [ "$properties", 0 ] }, { $round: [ { $multiply: [ { $divide: [ "$occ", "$properties" ] }, 100 ] }, 0 ] }, 0 ] } } },
+          { $sort: { properties: -1 } },
+        ] );
 
-        res.status(200).json({
+        res.status( 200 ).json( {
           status: "success",
           message: "Country distribution",
           data: rows,
-        });
-      } catch(e) {
-        console.error("[dashboard/country-distribution] error:", e);
-        res.status(500).json({status: "error", message: "Failed to build country distribution"});
+        } );
+      } catch ( e ) {
+        console.error( "[dashboard/country-distribution] error:", e );
+        res.status( 500 ).json( { status: "error", message: "Failed to build country distribution" } );
       }
-    });
+    } );
   }
 
   /** GET /api-property/dashboard/maintenance-summary
@@ -969,45 +1104,45 @@ export default class Property {
    * Current heuristic (fallback): count properties whose internalNote mentions "maintenance" OR priority == "high".
    */
   private dashboardMaintenanceSummary(): void {
-    this.router.get("/dashboard/maintenance-summary", async (req, res) => {
+    this.router.get( "/dashboard/maintenance-summary", async ( req, res ) => {
       try {
-        const match = this.buildScopeMatch(req);
+        const match = this.buildScopeMatch( req );
         const openMatch = {
           ...match,
           $or: [
-            {priority: "high"},
-            {internalNote: {$regex: /maintenance/i}},
+            { priority: "high" },
+            { internalNote: { $regex: /maintenance/i } },
           ],
         };
 
-        const [agg] = await PropertyModel.aggregate([
-          {$match: openMatch},
+        const [ agg ] = await PropertyModel.aggregate( [
+          { $match: openMatch },
           {
             $facet: {
-              open: [{$count: "cnt"}],
+              open: [ { $count: "cnt" } ],
               series: [
-                ...this.weeklySeriesFacet(8, "updatedAt"),
+                ...this.weeklySeriesFacet( 8, "updatedAt" ),
               ],
             },
           },
           {
             $project: {
-              open: {$ifNull: [{$arrayElemAt: ["$open.cnt", 0]}, 0]},
+              open: { $ifNull: [ { $arrayElemAt: [ "$open.cnt", 0 ] }, 0 ] },
               series: "$series",
             },
           },
-        ]);
+        ] );
 
-        res.status(200).json({
+        res.status( 200 ).json( {
           status: "success",
           message: "Maintenance summary",
-          data: {open: agg?.open ?? 0, series: agg?.series ?? []},
-        });
-      } catch(e) {
-        console.error("[dashboard/maintenance-summary] error:", e);
-        res.status(500).json({status: "error", message: "Failed to build maintenance summary"});
+          data: { open: agg?.open ?? 0, series: agg?.series ?? [] },
+        } );
+      } catch ( e ) {
+        console.error( "[dashboard/maintenance-summary] error:", e );
+        res.status( 500 ).json( { status: "error", message: "Failed to build maintenance summary" } );
       }
-    });
+    } );
   }
 
   /** GET /api-property/dashboard/property-trends?range=12m
@@ -1016,84 +1151,84 @@ export default class Property {
    * - monthlySold: count with listing == sold|rented OR soldDate/rentedDate present
    */
   private dashboardPropertyTrends(): void {
-    this.router.get("/dashboard/property-trends", async (req, res) => {
+    this.router.get( "/dashboard/property-trends", async ( req, res ) => {
       try {
-        const rangeParam = this.s(req.query.range) || "12m";
+        const rangeParam = this.s( req.query.range ) || "12m";
         const months = rangeParam === "6m" ? 6 : rangeParam === "24m" ? 24 : 12;
 
-        const match = this.buildScopeMatch(req);
+        const match = this.buildScopeMatch( req );
 
         // 1) New listings trend by createdAt
-        const newSeries = await PropertyModel.aggregate([
-          {$match: match},
-          ...this.monthBucketSeriesPipeline("createdAt", months),
-        ]);
+        const newSeries = await PropertyModel.aggregate( [
+          { $match: match },
+          ...this.monthBucketSeriesPipeline( "createdAt", months ),
+        ] );
 
         // 2) Sold/Rented trend (by soldDate / rentedDate fallback to updatedAt)
         const soldMatch = {
           ...match,
           $or: [
-            {listing: {$in: ["sold", "rented"]}},
-            {soldDate: {$type: "date"}},
-            {rentedDate: {$type: "date"}},
+            { listing: { $in: [ "sold", "rented" ] } },
+            { soldDate: { $type: "date" } },
+            { rentedDate: { $type: "date" } },
           ],
         };
 
-        const soldSeries = await PropertyModel.aggregate([
-          {$match: soldMatch},
+        const soldSeries = await PropertyModel.aggregate( [
+          { $match: soldMatch },
           {
             $addFields: {
               effectiveDate: {
-                $ifNull: ["$soldDate",
-                  {$ifNull: ["$rentedDate", "$updatedAt"]}
+                $ifNull: [ "$soldDate",
+                  { $ifNull: [ "$rentedDate", "$updatedAt" ] }
                 ],
               },
             },
           },
-          ...this.monthBucketSeriesPipeline("effectiveDate", months),
-        ]);
+          ...this.monthBucketSeriesPipeline( "effectiveDate", months ),
+        ] );
 
-        res.status(200).json({
+        res.status( 200 ).json( {
           status: "success",
           message: "Property trends",
           data: {
             monthlyNew: newSeries,
             monthlySold: soldSeries,
           },
-        });
-      } catch(e) {
-        console.error("[dashboard/property-trends] error:", e);
-        res.status(500).json({status: "error", message: "Failed to build property trends"});
+        } );
+      } catch ( e ) {
+        console.error( "[dashboard/property-trends] error:", e );
+        res.status( 500 ).json( { status: "error", message: "Failed to build property trends" } );
       }
-    });
+    } );
   }
 
   /** GET /api-property/dashboard/status-counts
    * Quick counters for key filters.
    */
   private dashboardStatusCounts(): void {
-    this.router.get("/dashboard/status-counts", async (req, res) => {
+    this.router.get( "/dashboard/status-counts", async ( req, res ) => {
       try {
-        const match = this.buildScopeMatch(req);
+        const match = this.buildScopeMatch( req );
 
-        const rows = await PropertyModel.aggregate([
-          {$match: match},
+        const rows = await PropertyModel.aggregate( [
+          { $match: match },
           {
             $group: {
               _id: null,
-              published: {$sum: {$cond: [{$eq: ["$status", "published"]}, 1, 0]}},
-              draft: {$sum: {$cond: [{$eq: ["$status", "draft"]}, 1, 0]}},
-              archived: {$sum: {$cond: [{$eq: ["$status", "archived"]}, 1, 0]}},
-              available: {$sum: {$cond: [{$eq: ["$availabilityStatus", "available"]}, 1, 0]}},
-              sold: {$sum: {$cond: [{$eq: ["$listing", "sold"]}, 1, 0]}},
-              rented: {$sum: {$cond: [{$eq: ["$listing", "rented"]}, 1, 0]}},
-              pending: {$sum: {$cond: [{$eq: ["$availabilityStatus", "pending"]}, 1, 0]}},
+              published: { $sum: { $cond: [ { $eq: [ "$status", "published" ] }, 1, 0 ] } },
+              draft: { $sum: { $cond: [ { $eq: [ "$status", "draft" ] }, 1, 0 ] } },
+              archived: { $sum: { $cond: [ { $eq: [ "$status", "archived" ] }, 1, 0 ] } },
+              available: { $sum: { $cond: [ { $eq: [ "$availabilityStatus", "available" ] }, 1, 0 ] } },
+              sold: { $sum: { $cond: [ { $eq: [ "$listing", "sold" ] }, 1, 0 ] } },
+              rented: { $sum: { $cond: [ { $eq: [ "$listing", "rented" ] }, 1, 0 ] } },
+              pending: { $sum: { $cond: [ { $eq: [ "$availabilityStatus", "pending" ] }, 1, 0 ] } },
             },
           },
-        ]);
+        ] );
 
-        const base = rows?.[0] ?? {};
-        res.status(200).json({
+        const base = rows?.[ 0 ] ?? {};
+        res.status( 200 ).json( {
           status: "success",
           message: "Status counters",
           data: {
@@ -1105,28 +1240,28 @@ export default class Property {
             rented: base.rented ?? 0,
             pending: base.pending ?? 0,
           },
-        });
-      } catch(e) {
-        console.error("[dashboard/status-counts] error:", e);
-        res.status(500).json({status: "error", message: "Failed to build status counters"});
+        } );
+      } catch ( e ) {
+        console.error( "[dashboard/status-counts] error:", e );
+        res.status( 500 ).json( { status: "error", message: "Failed to build status counters" } );
       }
-    });
+    } );
   }
 
   /** GET /api-property/dashboard/top-cities?limit=8 */
   private dashboardTopCities(): void {
-    this.router.get("/dashboard/top-cities", async (req, res) => {
+    this.router.get( "/dashboard/top-cities", async ( req, res ) => {
       try {
-        const limit = Math.max(1, Math.min(100, Number(this.s(req.query.limit)) || 8));
-        const match = this.buildScopeMatch(req);
+        const limit = Math.max( 1, Math.min( 100, Number( this.s( req.query.limit ) ) || 8 ) );
+        const match = this.buildScopeMatch( req );
 
-        const rows = await PropertyModel.aggregate([
-          {$match: match},
+        const rows = await PropertyModel.aggregate( [
+          { $match: match },
           {
             $group: {
-              _id: {city: {$toUpper: "$address.city"}},
-              properties: {$sum: 1},
-              avgPrice: {$avg: "$price"},
+              _id: { city: { $toUpper: "$address.city" } },
+              properties: { $sum: 1 },
+              avgPrice: { $avg: "$price" },
             },
           },
           {
@@ -1134,63 +1269,63 @@ export default class Property {
               _id: 0,
               city: "$_id.city",
               properties: 1,
-              avgPrice: {$round: ["$avgPrice", 0]},
+              avgPrice: { $round: [ "$avgPrice", 0 ] },
             },
           },
-          {$sort: {properties: -1}},
-          {$limit: limit},
-        ]);
+          { $sort: { properties: -1 } },
+          { $limit: limit },
+        ] );
 
-        res.status(200).json({
+        res.status( 200 ).json( {
           status: "success",
           message: "Top cities by listings",
           data: rows,
-        });
-      } catch(e) {
-        console.error("[dashboard/top-cities] error:", e);
-        res.status(500).json({status: "error", message: "Failed to build top cities"});
+        } );
+      } catch ( e ) {
+        console.error( "[dashboard/top-cities] error:", e );
+        res.status( 500 ).json( { status: "error", message: "Failed to build top cities" } );
       }
-    });
+    } );
   }
 
   /** GET /api-property/dashboard/price-histogram?bins=10
    * Even-width bins between min(price) and max(price).
    */
   private dashboardPriceHistogram(): void {
-    this.router.get("/dashboard/price-histogram", async (req, res) => {
+    this.router.get( "/dashboard/price-histogram", async ( req, res ) => {
       try {
-        const binsRequested = Math.max(2, Math.min(50, Number(this.s(req.query.bins)) || 10));
-        const match = this.buildScopeMatch(req);
+        const binsRequested = Math.max( 2, Math.min( 50, Number( this.s( req.query.bins ) ) || 10 ) );
+        const match = this.buildScopeMatch( req );
 
         // Compute min/max in a single trip
-        const [mm] = await PropertyModel.aggregate([
-          {$match: match},
-          {$group: {_id: null, min: {$min: "$price"}, max: {$max: "$price"}}},
-        ]);
+        const [ mm ] = await PropertyModel.aggregate( [
+          { $match: match },
+          { $group: { _id: null, min: { $min: "$price" }, max: { $max: "$price" } } },
+        ] );
 
-        const min = Math.max(0, Number(mm?.min ?? 0));
-        const max = Math.max(min, Number(mm?.max ?? 0));
-        if(min === max) {
+        const min = Math.max( 0, Number( mm?.min ?? 0 ) );
+        const max = Math.max( min, Number( mm?.max ?? 0 ) );
+        if ( min === max ) {
           // all prices same – return single bin
-          res.status(200).json({
+          res.status( 200 ).json( {
             status: "success",
             message: "Price histogram",
-            data: {bins: [{from: min, to: max, count: await PropertyModel.countDocuments(match)}]},
-          });
+            data: { bins: [ { from: min, to: max, count: await PropertyModel.countDocuments( match ) } ] },
+          } );
           return;
         }
 
-        const width = (max - min) / binsRequested;
+        const width = ( max - min ) / binsRequested;
 
         // Build stages to classify into bins
-        const rows = await PropertyModel.aggregate([
-          {$match: match},
+        const rows = await PropertyModel.aggregate( [
+          { $match: match },
           {
             $project: {
               price: 1,
               bin: {
                 $floor: {
-                  $divide: [{$subtract: ["$price", min]}, width],
+                  $divide: [ { $subtract: [ "$price", min ] }, width ],
                 },
               },
             },
@@ -1198,202 +1333,202 @@ export default class Property {
           {
             $group: {
               _id: "$bin",
-              count: {$sum: 1},
+              count: { $sum: 1 },
             },
           },
-          {$sort: {_id: 1}},
-        ]);
+          { $sort: { _id: 1 } },
+        ] );
 
         // Materialize contiguous bins in Node so empty bins are included
-        const out: Array<{from: number; to: number; count: number}> = [];
-        for(let i = 0; i < binsRequested; i++) {
-          const from = Math.round(min + i * width);
-          const to = i === binsRequested - 1 ? Math.round(max) : Math.round(min + (i + 1) * width);
-          const row = rows.find((r) => Number(r._id) === i);
-          out.push({from, to, count: Number(row?.count ?? 0)});
+        const out: Array<{ from: number; to: number; count: number; }> = [];
+        for ( let i = 0; i < binsRequested; i++ ) {
+          const from = Math.round( min + i * width );
+          const to = i === binsRequested - 1 ? Math.round( max ) : Math.round( min + ( i + 1 ) * width );
+          const row = rows.find( ( r ) => Number( r._id ) === i );
+          out.push( { from, to, count: Number( row?.count ?? 0 ) } );
         }
 
-        res.status(200).json({
+        res.status( 200 ).json( {
           status: "success",
           message: "Price histogram",
-          data: {bins: out},
-        });
-      } catch(e) {
-        console.error("[dashboard/price-histogram] error:", e);
-        res.status(500).json({status: "error", message: "Failed to build price histogram"});
+          data: { bins: out },
+        } );
+      } catch ( e ) {
+        console.error( "[dashboard/price-histogram] error:", e );
+        res.status( 500 ).json( { status: "error", message: "Failed to build price histogram" } );
       }
-    });
+    } );
   }
 
   /* ============================ PRIVATE HELPERS ============================= */
 
   // --- Narrow/convert ---
-  private isStr(v: unknown): v is string {
+  private isStr( v: unknown ): v is string {
     return typeof v === "string";
   }
-  private s(v: unknown): string {
-    return this.isStr(v) ? v.trim() : "";
+  private s( v: unknown ): string {
+    return this.isStr( v ) ? v.trim() : "";
   }
-  private toLower(v: unknown): string {
-    return this.s(v).toLowerCase();
+  private toLower( v: unknown ): string {
+    return this.s( v ).toLowerCase();
   }
-  private toNum(v: unknown, def = 0): number {
-    const n = Number(this.s(v));
-    return Number.isFinite(n) ? n : def;
+  private toNum( v: unknown, def = 0 ): number {
+    const n = Number( this.s( v ) );
+    return Number.isFinite( n ) ? n : def;
   }
-  private toNonNeg(v: unknown, def = 0): number {
-    return Math.max(0, this.toNum(v, def));
+  private toNonNeg( v: unknown, def = 0 ): number {
+    return Math.max( 0, this.toNum( v, def ) );
   }
-  private parseJSON<T>(v: unknown, fallback: T): T {
+  private parseJSON<T>( v: unknown, fallback: T ): T {
     try {
-      if(v == null) return fallback;
-      if(typeof v === "string") {
+      if ( v == null ) return fallback;
+      if ( typeof v === "string" ) {
         const t = v.trim();
-        if(!t) return fallback;
-        return JSON.parse(t) as T;
+        if ( !t ) return fallback;
+        return JSON.parse( t ) as T;
       }
       return v as T;
     } catch {
       return fallback;
     }
   }
-  private toDateOrNull(v: unknown): Date | null {
-    const str = this.s(v);
-    if(!str) return null;
-    const d = new Date(str);
-    return Number.isNaN(d.getTime()) ? null : d;
+  private toDateOrNull( v: unknown ): Date | null {
+    const str = this.s( v );
+    if ( !str ) return null;
+    const d = new Date( str );
+    return Number.isNaN( d.getTime() ) ? null : d;
   }
-  private toDateOrThrow(v: unknown, field: string): Date {
-    const d = this.toDateOrNull(v);
-    if(!d) throw new Error(`Invalid date for "${field}"`);
+  private toDateOrThrow( v: unknown, field: string ): Date {
+    const d = this.toDateOrNull( v );
+    if ( !d ) throw new Error( `Invalid date for "${ field }"` );
     return d;
   }
 
   // --- shape validators ---
-  private validateAddress(raw: unknown): Address {
-    const a = this.parseJSON<Address>(raw, {} as any);
+  private validateAddress( raw: unknown ): Address {
+    const a = this.parseJSON<Address>( raw, {} as any );
     return {
-      houseNumber: this.s(a.houseNumber),
-      street: this.s((a as any).street),
-      city: this.s(a.city),
-      stateOrProvince: this.s((a as any).stateOrProvince),
-      postcode: this.s(a.postcode),
-      country: this.s(a.country),
+      houseNumber: this.s( a.houseNumber ),
+      street: this.s( ( a as any ).street ),
+      city: this.s( a.city ),
+      stateOrProvince: this.s( ( a as any ).stateOrProvince ),
+      postcode: this.s( a.postcode ),
+      country: this.s( a.country ),
     };
   }
-  private validateCountryDetails(raw: unknown): CountryDetails {
-    const c = this.parseJSON<CountryDetails>(raw, {} as any);
-    const out = {...c} as CountryDetails;
-    (out.tld as any) = Array.isArray((c as any).tld) ? (c as any).tld : undefined;
-    (out.capital as any) = Array.isArray((c as any).capital) ? (c as any).capital : undefined;
-    (out.timezones as any) = Array.isArray((c as any).timezones) ? (c as any).timezones : undefined;
-    (out.continents as any) = Array.isArray((c as any).continents) ? (c as any).continents : undefined;
-    (out.latlng as any) = Array.isArray((c as any).latlng) ? (c as any).latlng : undefined;
-    (out.flags as any) = typeof (c as any).flags === "object" ? (c as any).flags : ({} as any);
+  private validateCountryDetails( raw: unknown ): CountryDetails {
+    const c = this.parseJSON<CountryDetails>( raw, {} as any );
+    const out = { ...c } as CountryDetails;
+    ( out.tld as any ) = Array.isArray( ( c as any ).tld ) ? ( c as any ).tld : undefined;
+    ( out.capital as any ) = Array.isArray( ( c as any ).capital ) ? ( c as any ).capital : undefined;
+    ( out.timezones as any ) = Array.isArray( ( c as any ).timezones ) ? ( c as any ).timezones : undefined;
+    ( out.continents as any ) = Array.isArray( ( c as any ).continents ) ? ( c as any ).continents : undefined;
+    ( out.latlng as any ) = Array.isArray( ( c as any ).latlng ) ? ( c as any ).latlng : undefined;
+    ( out.flags as any ) = typeof ( c as any ).flags === "object" ? ( c as any ).flags : ( {} as any );
     return out;
   }
-  private validateAddedBy(raw: unknown): AddedBy {
-    const a = this.parseJSON<AddedBy>(raw, {} as any);
+  private validateAddedBy( raw: unknown ): AddedBy {
+    const a = this.parseJSON<AddedBy>( raw, {} as any );
     return {
-      username: this.s(a.username),
-      name: this.s(a.name),
-      email: this.s(a.email),
-      role: this.s(a.role) as any,
-      contactNumber: this.s(a.contactNumber),
-      addedAt: a?.addedAt ? this.toDateOrNull(a.addedAt) || new Date() : new Date(),
+      username: this.s( a.username ),
+      name: this.s( a.name ),
+      email: this.s( a.email ),
+      role: this.s( a.role ) as any,
+      contactNumber: this.s( a.contactNumber ),
+      addedAt: a?.addedAt ? this.toDateOrNull( a.addedAt ) || new Date() : new Date(),
     };
   }
-  private validateLocation(raw: unknown): GoogleMapLocation | undefined {
-    const loc = this.parseJSON<GoogleMapLocation>(raw, {} as any);
-    const lat = Number((loc as any).lat);
-    const lng = Number((loc as any).lng);
-    const embeddedUrl = this.s((loc as any).embeddedUrl);
-    if(!Number.isFinite(lat) || !Number.isFinite(lng)) return undefined;
-    return {lat, lng, embeddedUrl};
+  private validateLocation( raw: unknown ): GoogleMapLocation | undefined {
+    const loc = this.parseJSON<GoogleMapLocation>( raw, {} as any );
+    const lat = Number( ( loc as any ).lat );
+    const lng = Number( ( loc as any ).lng );
+    const embeddedUrl = this.s( ( loc as any ).embeddedUrl );
+    if ( !Number.isFinite( lat ) || !Number.isFinite( lng ) ) return undefined;
+    return { lat, lng, embeddedUrl };
   }
 
   // --- payload builder (insert/update) ---
   private buildValidatedPayload(
     req: Request,
-    ctx: {images: UploadedImage[]; documents: UploadedDocument[]; isUpdate: boolean}
-  ): {data: Partial<IProperty>; errors: string[]} {
+    ctx: { images: UploadedImage[]; documents: UploadedDocument[]; isUpdate: boolean; }
+  ): { data: Partial<IProperty>; errors: string[]; } {
     const errors: string[] = [];
     const isUpdate = ctx.isUpdate;
 
     // Basic
-    const id = this.s((req.params as any).propertyID || (req.params as any).id || req.body.id);
-    if(!isUpdate && !id) errors.push("id (as :propertyID in URL or body.id) is required.");
+    const id = this.s( ( req.params as any ).propertyID || ( req.params as any ).id || req.body.id );
+    if ( !isUpdate && !id ) errors.push( "id (as :propertyID in URL or body.id) is required." );
 
-    const title = this.s(req.body.title);
-    if(!isUpdate && !title) errors.push("title is required.");
+    const title = this.s( req.body.title );
+    if ( !isUpdate && !title ) errors.push( "title is required." );
 
-    const type = this.toLower(req.body.type);
-    if(!isUpdate && !type) errors.push("type is required.");
-    if(type && !this.PROPERTY_TYPES.has(type))
-      errors.push(`type must be one of: ${Array.from(this.PROPERTY_TYPES).join(", ")}`);
+    const type = this.toLower( req.body.type );
+    if ( !isUpdate && !type ) errors.push( "type is required." );
+    if ( type && !this.PROPERTY_TYPES.has( type ) )
+      errors.push( `type must be one of: ${ Array.from( this.PROPERTY_TYPES ).join( ", " ) }` );
 
-    const listing = this.toLower(req.body.listing);
-    if(!isUpdate && !listing) errors.push("listing is required.");
-    if(listing && !this.LISTINGS.has(listing))
-      errors.push(`listing must be one of: ${Array.from(this.LISTINGS).join(", ")}`);
+    const listing = this.toLower( req.body.listing );
+    if ( !isUpdate && !listing ) errors.push( "listing is required." );
+    if ( listing && !this.LISTINGS.has( listing ) )
+      errors.push( `listing must be one of: ${ Array.from( this.LISTINGS ).join( ", " ) }` );
 
-    const description = this.s(req.body.description);
-    if(!isUpdate && !description) errors.push("description is required.");
+    const description = this.s( req.body.description );
+    if ( !isUpdate && !description ) errors.push( "description is required." );
 
     // Location
-    const countryDetails = this.validateCountryDetails(req.body.countryDetails);
-    const address = this.validateAddress(req.body.address);
-    const location = this.validateLocation(req.body.location);
+    const countryDetails = this.validateCountryDetails( req.body.countryDetails );
+    const address = this.validateAddress( req.body.address );
+    const location = this.validateLocation( req.body.location );
 
     // Specs
-    const totalArea = this.toNonNeg(req.body.totalArea);
-    const builtInArea = this.toNonNeg(req.body.builtInArea);
-    const livingRooms = this.toNonNeg(req.body.livingRooms);
-    const balconies = this.toNonNeg(req.body.balconies);
-    const kitchen = this.toNonNeg(req.body.kitchen);
-    const bedrooms = this.toNonNeg(req.body.bedrooms);
-    const bathrooms = this.toNonNeg(req.body.bathrooms);
-    const maidrooms = this.toNonNeg(req.body.maidrooms);
-    const driverRooms = this.toNonNeg(req.body.driverRooms);
-    const furnishingStatus = this.toLower(req.body.furnishingStatus);
-    if(!isUpdate && !furnishingStatus) errors.push("furnishingStatus is required.");
-    if(furnishingStatus && !this.FURNISHING.has(furnishingStatus))
-      errors.push(`furnishingStatus must be one of: ${Array.from(this.FURNISHING).join(", ")}`);
-    const totalFloors = this.toNonNeg(req.body.totalFloors);
-    const numberOfParking = this.toNonNeg(req.body.numberOfParking);
+    const totalArea = this.toNonNeg( req.body.totalArea );
+    const builtInArea = this.toNonNeg( req.body.builtInArea );
+    const livingRooms = this.toNonNeg( req.body.livingRooms );
+    const balconies = this.toNonNeg( req.body.balconies );
+    const kitchen = this.toNonNeg( req.body.kitchen );
+    const bedrooms = this.toNonNeg( req.body.bedrooms );
+    const bathrooms = this.toNonNeg( req.body.bathrooms );
+    const maidrooms = this.toNonNeg( req.body.maidrooms );
+    const driverRooms = this.toNonNeg( req.body.driverRooms );
+    const furnishingStatus = this.toLower( req.body.furnishingStatus );
+    if ( !isUpdate && !furnishingStatus ) errors.push( "furnishingStatus is required." );
+    if ( furnishingStatus && !this.FURNISHING.has( furnishingStatus ) )
+      errors.push( `furnishingStatus must be one of: ${ Array.from( this.FURNISHING ).join( ", " ) }` );
+    const totalFloors = this.toNonNeg( req.body.totalFloors );
+    const numberOfParking = this.toNonNeg( req.body.numberOfParking );
 
     // Construction & Age
-    const builtYear = this.toNonNeg(req.body.builtYear);
-    const propertyCondition = this.toLower(req.body.propertyCondition);
-    if(!isUpdate && !propertyCondition) errors.push("propertyCondition is required.");
-    if(propertyCondition && !this.CONDITIONS.has(propertyCondition))
-      errors.push(`propertyCondition must be one of: ${Array.from(this.CONDITIONS).join(", ")}`);
-    const developerName = this.s(req.body.developerName);
-    const projectName = this.s(req.body.projectName);
-    const ownerShipType = this.toLower(req.body.ownerShipType);
-    if(!isUpdate && !ownerShipType) errors.push("ownerShipType is required.");
-    if(ownerShipType && !this.OWNERSHIP.has(ownerShipType))
-      errors.push(`ownerShipType must be one of: ${Array.from(this.OWNERSHIP).join(", ")}`);
+    const builtYear = this.toNonNeg( req.body.builtYear );
+    const propertyCondition = this.toLower( req.body.propertyCondition );
+    if ( !isUpdate && !propertyCondition ) errors.push( "propertyCondition is required." );
+    if ( propertyCondition && !this.CONDITIONS.has( propertyCondition ) )
+      errors.push( `propertyCondition must be one of: ${ Array.from( this.CONDITIONS ).join( ", " ) }` );
+    const developerName = this.s( req.body.developerName );
+    const projectName = this.s( req.body.projectName );
+    const ownerShipType = this.toLower( req.body.ownerShipType );
+    if ( !isUpdate && !ownerShipType ) errors.push( "ownerShipType is required." );
+    if ( ownerShipType && !this.OWNERSHIP.has( ownerShipType ) )
+      errors.push( `ownerShipType must be one of: ${ Array.from( this.OWNERSHIP ).join( ", " ) }` );
 
     // Financial
-    const price = this.toNonNeg(req.body.price);
-    const currency = this.s(req.body.currency) || "lkr";
+    const price = this.toNonNeg( req.body.price );
+    const currency = this.s( req.body.currency ) || "lkr";
     const pricePerSqurFeet = this.toNonNeg(
       req.body.pricePerSqurFeet,
-      totalArea > 0 ? Number((price / totalArea).toFixed(2)) : 0
+      totalArea > 0 ? Number( ( price / totalArea ).toFixed( 2 ) ) : 0
     );
-    const expectedRentYearly = this.toNonNeg(req.body.expectedRentYearly);
-    const expectedRentQuartely = this.toNonNeg(req.body.expectedRentQuartely);
-    const expectedRentMonthly = this.toNonNeg(req.body.expectedRentMonthly);
-    const expectedRentDaily = this.toNonNeg(req.body.expectedRentDaily);
-    const maintenanceFees = this.toNonNeg(req.body.maintenanceFees);
-    const serviceCharges = this.toNonNeg(req.body.serviceCharges);
-    const transferFees = this.toNonNeg(req.body.transferFees);
+    const expectedRentYearly = this.toNonNeg( req.body.expectedRentYearly );
+    const expectedRentQuartely = this.toNonNeg( req.body.expectedRentQuartely );
+    const expectedRentMonthly = this.toNonNeg( req.body.expectedRentMonthly );
+    const expectedRentDaily = this.toNonNeg( req.body.expectedRentDaily );
+    const maintenanceFees = this.toNonNeg( req.body.maintenanceFees );
+    const serviceCharges = this.toNonNeg( req.body.serviceCharges );
+    const transferFees = this.toNonNeg( req.body.transferFees );
 
-    const availabilityStatus = this.toLower(req.body.availabilityStatus);
-    if(availabilityStatus && !this.AVAILABILITY.has(availabilityStatus))
+    const availabilityStatus = this.toLower( req.body.availabilityStatus );
+    if ( availabilityStatus && !this.AVAILABILITY.has( availabilityStatus ) )
       errors.push(
-        `availabilityStatus must be one of: ${Array.from(this.AVAILABILITY).join(", ")}`
+        `availabilityStatus must be one of: ${ Array.from( this.AVAILABILITY ).join( ", " ) }`
       );
 
     // Features & Amenities
@@ -1401,129 +1536,129 @@ export default class Property {
       req.body.featuresAndAmenities,
       []
     );
-    if(!Array.isArray(featuresAndAmenities))
-      errors.push("featuresAndAmenities must be an array of strings.");
+    if ( !Array.isArray( featuresAndAmenities ) )
+      errors.push( "featuresAndAmenities must be an array of strings." );
 
     // Media (require at least one of each on insert)
     const images = ctx.images || [];
     const documents = ctx.documents || [];
-    if(!isUpdate) {
-      if(images.length === 0) errors.push("At least one image is required.");
-      if(documents.length === 0) errors.push("At least one document is required.");
+    if ( !isUpdate ) {
+      if ( images.length === 0 ) errors.push( "At least one image is required." );
+      if ( documents.length === 0 ) errors.push( "At least one document is required." );
     }
 
     // Listing Management
     const listingDate = isUpdate
-      ? this.toDateOrNull(req.body.listingDate) || undefined
-      : this.toDateOrThrow(req.body.listingDate, "listingDate");
-    const availabilityDate = this.toDateOrNull(req.body.availabilityDate);
-    const listingExpiryDate = this.toDateOrNull(req.body.listingExpiryDate);
-    const rentedDate = this.toDateOrNull(req.body.rentedDate);
-    const soldDate = this.toDateOrNull(req.body.soldDate);
+      ? this.toDateOrNull( req.body.listingDate ) || undefined
+      : this.toDateOrThrow( req.body.listingDate, "listingDate" );
+    const availabilityDate = this.toDateOrNull( req.body.availabilityDate );
+    const listingExpiryDate = this.toDateOrNull( req.body.listingExpiryDate );
+    const rentedDate = this.toDateOrNull( req.body.rentedDate );
+    const soldDate = this.toDateOrNull( req.body.soldDate );
 
-    const addedBy = this.validateAddedBy(req.body.addedBy);
-    if(!isUpdate) {
-      if(!addedBy.username) errors.push("addedBy.username is required.");
-      if(!addedBy.email) errors.push("addedBy.email is required.");
-      if(!addedBy.role) errors.push("addedBy.role is required.");
+    const addedBy = this.validateAddedBy( req.body.addedBy );
+    if ( !isUpdate ) {
+      if ( !addedBy.username ) errors.push( "addedBy.username is required." );
+      if ( !addedBy.email ) errors.push( "addedBy.email is required." );
+      if ( !addedBy.role ) errors.push( "addedBy.role is required." );
     }
-    const owner = this.s(req.body.owner);
-    if(!isUpdate && !owner) errors.push("owner is required.");
+    const owner = this.s( req.body.owner );
+    if ( !isUpdate && !owner ) errors.push( "owner is required." );
 
     // Admin
-    const referenceCode = this.s(req.body.referenceCode);
-    if(!isUpdate && !referenceCode) errors.push("referenceCode is required.");
-    const verificationStatus = this.toLower(req.body.verificationStatus) || "verified";
-    if(verificationStatus && !this.VERIFICATION.has(verificationStatus))
+    const referenceCode = this.s( req.body.referenceCode );
+    if ( !isUpdate && !referenceCode ) errors.push( "referenceCode is required." );
+    const verificationStatus = this.toLower( req.body.verificationStatus ) || "verified";
+    if ( verificationStatus && !this.VERIFICATION.has( verificationStatus ) )
       errors.push(
-        `verificationStatus must be one of: ${Array.from(this.VERIFICATION).join(", ")}`
+        `verificationStatus must be one of: ${ Array.from( this.VERIFICATION ).join( ", " ) }`
       );
-    const priority = this.toLower(req.body.priority) || "medium";
-    if(priority && !this.PRIORITY.has(priority))
-      errors.push(`priority must be one of: ${Array.from(this.PRIORITY).join(", ")}`);
-    const status = this.toLower(req.body.status) || "published";
-    if(status && !this.STATUS.has(status))
-      errors.push(`status must be one of: ${Array.from(this.STATUS).join(", ")}`);
-    const internalNote = this.s(req.body.internalNote);
+    const priority = this.toLower( req.body.priority ) || "medium";
+    if ( priority && !this.PRIORITY.has( priority ) )
+      errors.push( `priority must be one of: ${ Array.from( this.PRIORITY ).join( ", " ) }` );
+    const status = this.toLower( req.body.status ) || "published";
+    if ( status && !this.STATUS.has( status ) )
+      errors.push( `status must be one of: ${ Array.from( this.STATUS ).join( ", " ) }` );
+    const internalNote = this.s( req.body.internalNote );
 
     // Build data
     const data: Partial<IProperty> = {};
 
-    if(id) data.id = id;
-    if(title) data.title = title;
-    if(type) data.type = type as any;
-    if(listing) data.listing = listing as any;
-    if(description || !isUpdate) data.description = description;
+    if ( id ) data.id = id;
+    if ( title ) data.title = title;
+    if ( type ) data.type = type as any;
+    if ( listing ) data.listing = listing as any;
+    if ( description || !isUpdate ) data.description = description;
 
-    if(Object.keys(countryDetails || {}).length) data.countryDetails = countryDetails;
-    if(Object.keys(address || {}).length) data.address = address;
-    if(location) data.location = location;
+    if ( Object.keys( countryDetails || {} ).length ) data.countryDetails = countryDetails;
+    if ( Object.keys( address || {} ).length ) data.address = address;
+    if ( location ) data.location = location;
 
-    if(!isUpdate || req.body.totalArea != null) data.totalArea = totalArea;
-    if(!isUpdate || req.body.builtInArea != null) data.builtInArea = builtInArea;
-    if(!isUpdate || req.body.livingRooms != null) data.livingRooms = livingRooms;
-    if(!isUpdate || req.body.balconies != null) data.balconies = balconies;
-    if(!isUpdate || req.body.kitchen != null) data.kitchen = kitchen;
-    if(!isUpdate || req.body.bedrooms != null) data.bedrooms = bedrooms;
-    if(!isUpdate || req.body.bathrooms != null) data.bathrooms = bathrooms;
-    if(!isUpdate || req.body.maidrooms != null) data.maidrooms = maidrooms;
-    if(!isUpdate || req.body.driverRooms != null) data.driverRooms = driverRooms;
-    if(furnishingStatus) data.furnishingStatus = furnishingStatus as any;
-    if(!isUpdate || req.body.totalFloors != null) data.totalFloors = totalFloors;
-    if(!isUpdate || req.body.numberOfParking != null)
+    if ( !isUpdate || req.body.totalArea != null ) data.totalArea = totalArea;
+    if ( !isUpdate || req.body.builtInArea != null ) data.builtInArea = builtInArea;
+    if ( !isUpdate || req.body.livingRooms != null ) data.livingRooms = livingRooms;
+    if ( !isUpdate || req.body.balconies != null ) data.balconies = balconies;
+    if ( !isUpdate || req.body.kitchen != null ) data.kitchen = kitchen;
+    if ( !isUpdate || req.body.bedrooms != null ) data.bedrooms = bedrooms;
+    if ( !isUpdate || req.body.bathrooms != null ) data.bathrooms = bathrooms;
+    if ( !isUpdate || req.body.maidrooms != null ) data.maidrooms = maidrooms;
+    if ( !isUpdate || req.body.driverRooms != null ) data.driverRooms = driverRooms;
+    if ( furnishingStatus ) data.furnishingStatus = furnishingStatus as any;
+    if ( !isUpdate || req.body.totalFloors != null ) data.totalFloors = totalFloors;
+    if ( !isUpdate || req.body.numberOfParking != null )
       data.numberOfParking = numberOfParking;
 
-    if(!isUpdate || req.body.builtYear != null) data.builtYear = builtYear;
-    if(propertyCondition) data.propertyCondition = propertyCondition as any;
-    if(developerName || !isUpdate) data.developerName = developerName;
-    if(projectName || !isUpdate) data.projectName = projectName;
-    if(ownerShipType) data.ownerShipType = ownerShipType as any;
+    if ( !isUpdate || req.body.builtYear != null ) data.builtYear = builtYear;
+    if ( propertyCondition ) data.propertyCondition = propertyCondition as any;
+    if ( developerName || !isUpdate ) data.developerName = developerName;
+    if ( projectName || !isUpdate ) data.projectName = projectName;
+    if ( ownerShipType ) data.ownerShipType = ownerShipType as any;
 
-    if(!isUpdate || req.body.price != null) data.price = price;
-    if(currency || !isUpdate) data.currency = currency;
-    if(!isUpdate || req.body.pricePerSqurFeet != null)
+    if ( !isUpdate || req.body.price != null ) data.price = price;
+    if ( currency || !isUpdate ) data.currency = currency;
+    if ( !isUpdate || req.body.pricePerSqurFeet != null )
       data.pricePerSqurFeet = pricePerSqurFeet;
-    if(!isUpdate || req.body.expectedRentYearly != null)
+    if ( !isUpdate || req.body.expectedRentYearly != null )
       data.expectedRentYearly = expectedRentYearly;
-    if(!isUpdate || req.body.expectedRentQuartely != null)
+    if ( !isUpdate || req.body.expectedRentQuartely != null )
       data.expectedRentQuartely = expectedRentQuartely;
-    if(!isUpdate || req.body.expectedRentMonthly != null)
+    if ( !isUpdate || req.body.expectedRentMonthly != null )
       data.expectedRentMonthly = expectedRentMonthly;
-    if(!isUpdate || req.body.expectedRentDaily != null)
+    if ( !isUpdate || req.body.expectedRentDaily != null )
       data.expectedRentDaily = expectedRentDaily;
-    if(!isUpdate || req.body.maintenanceFees != null)
+    if ( !isUpdate || req.body.maintenanceFees != null )
       data.maintenanceFees = maintenanceFees;
-    if(!isUpdate || req.body.serviceCharges != null)
+    if ( !isUpdate || req.body.serviceCharges != null )
       data.serviceCharges = serviceCharges;
-    if(!isUpdate || req.body.transferFees != null) data.transferFees = transferFees;
-    if(availabilityStatus) data.availabilityStatus = availabilityStatus as any;
+    if ( !isUpdate || req.body.transferFees != null ) data.transferFees = transferFees;
+    if ( availabilityStatus ) data.availabilityStatus = availabilityStatus as any;
 
-    if(Array.isArray(featuresAndAmenities))
+    if ( Array.isArray( featuresAndAmenities ) )
       data.featuresAndAmenities = featuresAndAmenities;
 
-    if(ctx.images?.length) data.images = ctx.images;
-    if(ctx.documents?.length) data.documents = ctx.documents;
-    if(this.isStr(req.body.videoTour)) data.videoTour = this.s(req.body.videoTour);
-    if(this.isStr(req.body.virtualTour))
-      data.virtualTour = this.s(req.body.virtualTour);
+    if ( ctx.images?.length ) data.images = ctx.images;
+    if ( ctx.documents?.length ) data.documents = ctx.documents;
+    if ( this.isStr( req.body.videoTour ) ) data.videoTour = this.s( req.body.videoTour );
+    if ( this.isStr( req.body.virtualTour ) )
+      data.virtualTour = this.s( req.body.virtualTour );
 
-    if(listingDate !== undefined) data.listingDate = listingDate as any;
-    if(availabilityDate !== null) data.availabilityDate = availabilityDate as any;
-    if(listingExpiryDate !== null)
+    if ( listingDate !== undefined ) data.listingDate = listingDate as any;
+    if ( availabilityDate !== null ) data.availabilityDate = availabilityDate as any;
+    if ( listingExpiryDate !== null )
       data.listingExpiryDate = listingExpiryDate as any;
-    if(rentedDate !== null) data.rentedDate = rentedDate as any;
-    if(soldDate !== null) data.soldDate = soldDate as any;
+    if ( rentedDate !== null ) data.rentedDate = rentedDate as any;
+    if ( soldDate !== null ) data.soldDate = soldDate as any;
 
-    if(Object.keys(addedBy || {}).length) data.addedBy = addedBy;
-    if(owner || !isUpdate) data.owner = owner;
-    if(referenceCode || !isUpdate) data.referenceCode = referenceCode;
-    if(verificationStatus)
+    if ( Object.keys( addedBy || {} ).length ) data.addedBy = addedBy;
+    if ( owner || !isUpdate ) data.owner = owner;
+    if ( referenceCode || !isUpdate ) data.referenceCode = referenceCode;
+    if ( verificationStatus )
       data.verificationStatus = verificationStatus as any;
-    if(priority) data.priority = priority as any;
-    if(status) data.status = status as any;
-    if(this.isStr(req.body.internalNote)) data.internalNote = internalNote;
+    if ( priority ) data.priority = priority as any;
+    if ( status ) data.status = status as any;
+    if ( this.isStr( req.body.internalNote ) ) data.internalNote = internalNote;
 
-    return {data, errors};
+    return { data, errors };
   }
 
   // --- FACET helper: Occupancy (or any) sparkline by month (last N) on a condition
@@ -1534,30 +1669,30 @@ export default class Property {
     extraMatch?: Record<string, unknown>,
   ): PipelineStage.FacetPipelineStage[] {
     const from = new Date();
-    from.setMonth(from.getMonth() - (lastN - 1), 1);
-    from.setHours(0, 0, 0, 0);
+    from.setMonth( from.getMonth() - ( lastN - 1 ), 1 );
+    from.setHours( 0, 0, 0, 0 );
 
     const stages: PipelineStage.FacetPipelineStage[] = [];
 
-    if(extraMatch && Object.keys(extraMatch).length) {
-      stages.push({$match: extraMatch});
+    if ( extraMatch && Object.keys( extraMatch ).length ) {
+      stages.push( { $match: extraMatch } );
     }
 
     stages.push(
-      {$match: {[dateField]: {$gte: from}}},
+      { $match: { [ dateField ]: { $gte: from } } },
       {
         $group: {
           _id: {
-            y: {$year: `$${dateField}`},
-            m: {$month: `$${dateField}`},
+            y: { $year: `$${ dateField }` },
+            m: { $month: `$${ dateField }` },
           },
-          cnt: {$sum: 1},
+          cnt: { $sum: 1 },
         },
       },
-      {$sort: {"_id.y": 1 as 1, "_id.m": 1 as 1}},
-      {$group: {_id: null, arr: {$push: "$cnt"}}},
-      {$project: {series: "$arr"}},
-      {$replaceRoot: {newRoot: "$series"}},
+      { $sort: { "_id.y": 1 as 1, "_id.m": 1 as 1 } },
+      { $group: { _id: null, arr: { $push: "$cnt" } } },
+      { $project: { series: "$arr" } },
+      { $replaceRoot: { newRoot: "$series" } },
     );
 
     return stages;
@@ -1570,24 +1705,24 @@ export default class Property {
     dateField: string = "updatedAt",
   ): PipelineStage.FacetPipelineStage[] {
     const from = new Date();
-    from.setDate(from.getDate() - (lastN - 1) * 7);
-    from.setHours(0, 0, 0, 0);
+    from.setDate( from.getDate() - ( lastN - 1 ) * 7 );
+    from.setHours( 0, 0, 0, 0 );
 
     return [
-      {$match: {[dateField]: {$gte: from}}},
+      { $match: { [ dateField ]: { $gte: from } } },
       {
         $group: {
           _id: {
-            y: {$isoWeekYear: `$${dateField}`},
-            w: {$isoWeek: `$${dateField}`},
+            y: { $isoWeekYear: `$${ dateField }` },
+            w: { $isoWeek: `$${ dateField }` },
           },
-          cnt: {$sum: 1},
+          cnt: { $sum: 1 },
         },
       },
-      {$sort: {"_id.y": 1 as 1, "_id.w": 1 as 1}},
-      {$group: {_id: null, arr: {$push: "$cnt"}}},
-      {$project: {series: "$arr"}},
-      {$replaceRoot: {newRoot: "$series"}},
+      { $sort: { "_id.y": 1 as 1, "_id.w": 1 as 1 } },
+      { $group: { _id: null, arr: { $push: "$cnt" } } },
+      { $project: { series: "$arr" } },
+      { $replaceRoot: { newRoot: "$series" } },
     ];
   }
 
@@ -1598,24 +1733,24 @@ export default class Property {
     months: number
   ): PipelineStage[] {
     const from = new Date();
-    from.setMonth(from.getMonth() - (months - 1), 1);
-    from.setHours(0, 0, 0, 0);
+    from.setMonth( from.getMonth() - ( months - 1 ), 1 );
+    from.setHours( 0, 0, 0, 0 );
 
     return [
-      {$match: {[dateField]: {$gte: from}}},
+      { $match: { [ dateField ]: { $gte: from } } },
       {
         $group: {
           _id: {
-            y: {$year: `$${dateField}`},
-            m: {$month: `$${dateField}`},
+            y: { $year: `$${ dateField }` },
+            m: { $month: `$${ dateField }` },
           },
-          cnt: {$sum: 1},
+          cnt: { $sum: 1 },
         },
       },
-      {$sort: {"_id.y": 1 as 1, "_id.m": 1 as 1}},
-      {$group: {_id: null, arr: {$push: "$cnt"}}},
-      {$project: {series: "$arr"}},
-      {$replaceRoot: {newRoot: "$series"}},
+      { $sort: { "_id.y": 1 as 1, "_id.m": 1 as 1 } },
+      { $group: { _id: null, arr: { $push: "$cnt" } } },
+      { $project: { series: "$arr" } },
+      { $replaceRoot: { newRoot: "$series" } },
     ];
   }
 
@@ -1626,19 +1761,19 @@ export default class Property {
     retries = 5,
     delayMs = 500
   ): Promise<void> {
-    for(let i = 1; i <= retries; i++) {
+    for ( let i = 1; i <= retries; i++ ) {
       try {
-        await fs.promises.rm(folderPath, {recursive: true, force: true});
+        await fs.promises.rm( folderPath, { recursive: true, force: true } );
         return;
-      } catch(e: any) {
-        if(e.code === "EBUSY" || e.code === "EPERM") {
-          await new Promise((r) => setTimeout(r, delayMs));
+      } catch ( e: any ) {
+        if ( e.code === "EBUSY" || e.code === "EPERM" ) {
+          await new Promise( ( r ) => setTimeout( r, delayMs ) );
         } else {
           throw e;
         }
       }
     }
-    throw new Error(`Failed to delete folder after ${retries} attempts: ${folderPath}`);
+    throw new Error( `Failed to delete folder after ${ retries } attempts: ${ folderPath }` );
   }
 
   private async moveToTheRecycleBin(
@@ -1646,14 +1781,14 @@ export default class Property {
     filePath: string
   ): Promise<void> {
     try {
-      if(!fs.existsSync(filePath)) return;
-      await fs.promises.mkdir(recycleBinPath, {recursive: true});
+      if ( !fs.existsSync( filePath ) ) return;
+      await fs.promises.mkdir( recycleBinPath, { recursive: true } );
       const targetPath = path.join(
         recycleBinPath,
-        `${Date.now()}-${path.basename(filePath)}`
+        `${ Date.now() }-${ path.basename( filePath ) }`
       );
-      await fs.promises.rename(filePath, targetPath);
-    } catch(error) {
+      await fs.promises.rename( filePath, targetPath );
+    } catch ( error ) {
       console.log(
         "Error while moving file to deleted:",
         error instanceof Error ? error.stack : error

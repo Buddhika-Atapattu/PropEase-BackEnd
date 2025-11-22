@@ -22,6 +22,7 @@
 import express, {
   Request, Response, Router, NextFunction, RequestHandler
 } from 'express';
+import {FilterQuery} from "mongoose";
 import dotenv from 'dotenv';
 import fs from 'fs';
 import * as fse from 'fs-extra';
@@ -33,7 +34,7 @@ import {randomUUID} from 'crypto';
 import {ITenant, TenantModel} from '../models/tenant.model';
 import {LeaseModel} from '../models/lease.model';
 import NotificationService from '../services/notification.service';
-import {UserModel} from '../models/user.model';
+import {UserModel, type IUser} from '../models/user.model';
 import {
   ComplaintModel,
   COMPLAINT_CATEGORIES,
@@ -98,6 +99,10 @@ export default class Tenant {
   public constructor () {
     this.insertTenant();                       // POST   /insertTenant
     this.getAllTenants();                      // GET    /get-all-tenants
+    this.getAllTenantsCount()                  // GET    /get-all-tenants-count
+    this.getAllTenantsWithPagination();        // GET    /get-all-tenants-with-pagination
+    this.getAllNoneTenantWithPagination();     // GET    /get-all-none-tenants-with-pagination
+    this.getAllNoneTenantCount();              // GET    /get-all-none-tenant-count
     this.deleteTenant();                       // DELETE /delete-tenant/:username/:deletor
     this.createComplaint();                    // POST   /create-complaint
     this.getComplaintById();                   // GET    /complaint/:complaintID
@@ -395,6 +400,368 @@ export default class Tenant {
       }
     });
   }
+
+  // ===========================================================================
+  // GET /get-all-tenants-count
+  // ===========================================================================
+  private getAllTenantsCount(): void {
+    this.router.get('/get-all-tenants-count', async (_req: Request, res: Response) => {
+      try {
+        const count = await TenantModel.countDocuments();
+        res.status(200).json({status: 'success', message: 'All tenant users count retrieved successfully!', data: count});
+        return;
+      } catch(error) {
+        console.error('get-all-tenants error:', error);
+        res.status(500).json({status: 'error', message: `Error: ${error instanceof Error ? error.message : error}`});
+        return;
+      }
+    });
+  }
+
+  // ===========================================================================
+  // GET /get-all-tenants-with-pagination
+  // ===========================================================================
+  private getAllTenantsWithPagination(): void {
+    this.router.get('/get-all-tenants-with-pagination', async (req: Request, res: Response) => {
+      try {
+        // ──────────────────────────────────────────────
+        // 1) Pagination parameters
+        // ──────────────────────────────────────────────
+        let limit: number = parseInt((req.query.limit as string) || "20", 10);
+        if(isNaN(limit) || limit < 1) limit = 20;
+        if(limit > 100) limit = 100;
+
+        let page: number;
+        let skip: number;
+
+        if(typeof req.query.start !== "undefined") {
+          // Frontend sends start = skip (0-based offset)
+          const startRaw: number = parseInt(req.query.start as string, 10);
+          const start: number = isNaN(startRaw) ? 0 : Math.max(startRaw, 0);
+
+          skip = start;
+          page = Math.floor(skip / limit) + 1; // derive human page (1-based)
+        } else {
+          // Fallback: page-based API
+          const pageRaw: number = parseInt(
+            (req.query.page as string) || "1",
+            10
+          );
+          page = isNaN(pageRaw) ? 1 : Math.max(pageRaw, 1);
+          skip = (page - 1) * limit;
+        }
+
+        // ──────────────────────────────────────────────
+        // 2) Search filter
+        // ──────────────────────────────────────────────
+        const rawSearch: string = this.s(req.query.search);
+        const filter: FilterQuery<ITenant> = {};
+
+        if(rawSearch && rawSearch.trim() !== "") {
+          const rx = new RegExp(rawSearch.trim(), "i");
+
+          filter.$or = [
+            {username: {$regex: rx}},
+            {name: {$regex: rx}},
+            {addedBy: {$regex: rx}},
+          ];
+        }
+
+        // ──────────────────────────────────────────────
+        // 3) Sorting
+        // ──────────────────────────────────────────────
+        const sortBy: string = (req.query.sortBy as string) || "createdAt";
+        const sortOrder: string = (req.query.sortOrder as string) || "desc";
+
+        const sort: Record<string, 1 | -1> = {
+          [sortBy]: sortOrder === "asc" ? 1 : -1,
+        };
+
+        // ──────────────────────────────────────────────
+        // 4) DB query
+        // ──────────────────────────────────────────────
+        const [tenants, total] = await Promise.all([
+          TenantModel.find(filter).sort(sort).skip(skip).limit(limit).lean().exec(),
+          TenantModel.countDocuments(filter),
+        ]);
+        const data = {
+          page,
+          tenants,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        }
+        // ──────────────────────────────────────────────
+        // 5) Response
+        // ──────────────────────────────────────────────
+        res.status(200).json({
+          success: true,
+          status: "success",
+          message: "All tenant users retrieved successfully!",
+          data
+        });
+        return;
+      } catch(error) {
+        console.error(error);
+        res.status(500).json({
+          success: false,
+          status: "error",
+          error: "An unknown error occurred: " + error,
+        });
+      }
+    });
+  }
+
+  // ===========================================================================
+  // GET /get-all-none-tenants-with-pagination
+  // ===========================================================================
+  private getAllNoneTenantWithPagination(): void {
+
+    this.router.get(
+      '/get-all-none-tenants-with-pagination',
+      async (req: Request, res: Response): Promise<void> => {
+
+        try {
+
+          // ──────────────────────────────────────────────
+          // 1) Pagination parameters
+          //    - limit: per-page size (1..100)
+          //    - skip:  zero-based offset
+          //    - page:  human-readable 1-based page index
+          // ──────────────────────────────────────────────
+          let limit: number = parseInt((req.query.limit as string) || '20', 10);
+
+          if(Number.isNaN(limit) || limit < 1) {
+            limit = 20;
+          }
+
+          if(limit > 100) {
+            limit = 100;
+          }
+
+          let page: number;
+          let skip: number;
+
+          if(typeof req.query.start !== 'undefined') {
+
+            // Frontend sends "start" as 0-based offset
+            const startRaw: number = parseInt(req.query.start as string, 10);
+            const start: number = Number.isNaN(startRaw)
+              ? 0
+              : Math.max(startRaw, 0);
+
+            skip = start;
+            page = Math.floor(skip / limit) + 1; // derive human 1-based page index
+
+          } else {
+
+            // Fallback: classic page-based API
+            const pageRaw: number = parseInt(
+              (req.query.page as string) || '1',
+              10,
+            );
+
+            page = Number.isNaN(pageRaw)
+              ? 1
+              : Math.max(pageRaw, 1);
+
+            skip = (page - 1) * limit;
+
+          }
+
+
+          // ──────────────────────────────────────────────
+          // 2) Build NON-TENANT base filter
+          //    - We first collect all tenant usernames
+          //    - Then filter UserModel by { username: { $nin: tenantUsernames } }
+          // ──────────────────────────────────────────────
+
+          // Get all tenant usernames only (no need for whole doc)
+          const tenantDocs = await TenantModel
+            .find({}, {username: 1, _id: 0})
+            .lean()
+            .exec();
+
+          const tenantUsernames: string[] = tenantDocs
+            .map((doc: any) => doc.username)
+            .filter(
+              (u: unknown): u is string =>
+                typeof u === 'string' && u.trim().length > 0,
+            );
+
+          const filter: FilterQuery<IUser> = {};
+
+          // Exclude all users that are already tenants
+          if(tenantUsernames.length > 0) {
+            filter.username = {$nin: tenantUsernames};
+          }
+
+
+          // ──────────────────────────────────────────────
+          // 3) Search filter (optional)
+          //    - Search is ANDed with non-tenant filter
+          // ──────────────────────────────────────────────
+
+          const rawSearch: string = this.s(req.query.search); // assuming this.s safely stringifies
+
+          if(rawSearch && rawSearch.trim() !== '') {
+
+            const rx = new RegExp(rawSearch.trim(), 'i');
+
+            // Combine with base filter: username/$nin AND (username|name|addedBy matches search)
+            filter.$or = [
+              {username: {$regex: rx}},
+              {name: {$regex: rx}},
+              {addedBy: {$regex: rx}},
+            ];
+
+          }
+
+
+          // ──────────────────────────────────────────────
+          // 4) Sorting
+          // ──────────────────────────────────────────────
+
+          const sortBy: string = (req.query.sortBy as string) || 'createdAt';
+          const sortOrder: string = (req.query.sortOrder as string) || 'desc';
+
+          const sort: Record<string, 1 | -1> = {
+            [sortBy]: sortOrder === 'asc'
+              ? 1
+              : -1,
+          };
+
+
+          // ──────────────────────────────────────────────
+          // 5) DB query
+          //    IMPORTANT: this should query UserModel (non-tenants),
+          //    not TenantModel.
+          // ──────────────────────────────────────────────
+
+          const [users, total] = await Promise.all([
+            UserModel
+              .find(filter)
+              .sort(sort)
+              .skip(skip)
+              .limit(limit)
+              .lean()
+              .exec(),
+            UserModel.countDocuments(filter),
+          ]);
+
+          const data = {
+            page,
+            users,           // ⬅ non-tenant users for this page
+            limit,
+            total,           // total non-tenant users matching filter
+            totalPages: Math.ceil(total / limit),
+          };
+
+
+          // ──────────────────────────────────────────────
+          // 6) Response
+          // ──────────────────────────────────────────────
+          res.status(200).json({
+            success: true,
+            status: 'success',
+            message: 'All non-tenant users retrieved successfully!',
+            data,
+          });
+          return;
+
+        } catch(error) {
+
+          console.error(error);
+
+          res.status(500).json({
+            success: false,
+            status: 'error',
+            error: 'An unknown error occurred: ' + error,
+          });
+
+        }
+
+      },
+    );
+
+  }
+
+  // ===========================================================================
+  // GET /get-all-none-tenants-count
+  // ===========================================================================
+  private getAllNoneTenantCount() {
+
+    this.router.get(
+      '/get-all-none-tenants-count',
+      async (req: Request, res: Response): Promise<void> => {
+
+        try {
+          // ──────────────────────────────────────────────
+          // 1) Build NON-TENANT base filter
+          //    - We first collect all tenant usernames
+          //    - Then filter UserModel by { username: { $nin: tenantUsernames } }
+          // ──────────────────────────────────────────────
+
+          // Get all tenant usernames only (no need for whole doc)
+          const tenantDocs = await TenantModel
+            .find({}, {username: 1, _id: 0})
+            .lean()
+            .exec();
+
+          const tenantUsernames: string[] = tenantDocs
+            .map((doc: any) => doc.username)
+            .filter(
+              (u: unknown): u is string =>
+                typeof u === 'string' && u.trim().length > 0,
+            );
+
+          const filter: FilterQuery<IUser> = {};
+
+          // Exclude all users that are already tenants
+          if(tenantUsernames.length > 0) {
+            filter.username = {$nin: tenantUsernames};
+          }
+
+
+          // ──────────────────────────────────────────────
+          // 2) DB query
+          //    IMPORTANT: this should query UserModel (non-tenants),
+          //    not TenantModel.
+          // ──────────────────────────────────────────────
+
+          const [total] = await Promise.all([
+            UserModel.countDocuments(filter),
+          ]);
+
+
+          // ──────────────────────────────────────────────
+          // 3) Response
+          // ──────────────────────────────────────────────
+          res.status(200).json({
+            success: true,
+            status: 'success',
+            message: 'All non-tenant users count retrieved successfully!',
+            data: total,
+          });
+          return;
+
+        } catch(error) {
+
+          console.error(error);
+
+          res.status(500).json({
+            success: false,
+            status: 'error',
+            error: 'An unknown error occurred: ' + error,
+          });
+
+        }
+
+      },
+    );
+
+  }
+
 
   // ===========================================================================
   // DELETE /delete-tenant/:username/:deletor
@@ -1128,5 +1495,57 @@ export default class Tenant {
     });
   }
 
+  //___________________________________________________________________________________
+  // HELPER METHOS
+  //___________________________________________________________________________________
+
+  // --- Narrow/convert ---
+  private isStr(v: unknown): v is string {
+    return typeof v === "string";
+  }
+
+  private s(v: unknown): string {
+    return this.isStr(v) ? v.trim() : "";
+  }
+
+  private toLower(v: unknown): string {
+    return this.s(v).toLowerCase();
+  }
+
+  private toNum(v: unknown, def = 0): number {
+    const n = Number(this.s(v));
+    return Number.isFinite(n) ? n : def;
+  }
+
+  private toNonNeg(v: unknown, def = 0): number {
+    return Math.max(0, this.toNum(v, def));
+  }
+
+  private parseJSON<T>(v: unknown, fallback: T): T {
+    try {
+      if(v == null) return fallback;
+      if(typeof v === "string") {
+        const t = v.trim();
+        if(!t) return fallback;
+        return JSON.parse(t) as T;
+      }
+      return v as T;
+    } catch {
+      return fallback;
+    }
+  }
+
+  private toDateOrNull(v: unknown): Date | null {
+    const str = this.s(v);
+    if(!str) return null;
+    const d = new Date(str);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  private toDateOrThrow(v: unknown, field: string): Date {
+    const d = this.toDateOrNull(v);
+    if(!d) throw new Error(`Invalid date for "${field}"`);
+    return d;
+  }
 
 }
