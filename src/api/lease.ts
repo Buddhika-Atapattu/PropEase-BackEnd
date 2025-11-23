@@ -175,11 +175,29 @@ export default class Lease {
   }
 
   /** Create/return lease directory path; optionally ensure (mkdir -p). */
-  private buildLeasePath( leaseID: string, ensure = false, ...segments: string[] ): string {
-    const p = this.safeJoin( this.LEASE_UPLOAD_ROOT, leaseID, ...segments );
-    if ( ensure ) fs.mkdirSync( p, { recursive: true } );
-    return p;
+  private buildLeasePath(
+    leaseID: string,
+    ensure = false,
+    ...segments: string[]
+  ): string {
+    // Build the full path (your safeJoin already protects traversal)
+    const fullPath = this.safeJoin( this.LEASE_UPLOAD_ROOT, leaseID, ...segments );
+
+    if ( ensure ) {
+      // If LAST segment looks like a file (has extension), create parent folder only
+      const looksLikeFile = !!path.extname( fullPath ); // e.g., "data.json"
+
+      const dirToCreate = looksLikeFile
+        ? path.dirname( fullPath ) // -> ".../agreement-data/"
+        : fullPath;              // -> exact folder
+
+      // Create only directories, never create file paths as folders
+      fs.mkdirSync( dirToCreate, { recursive: true } );
+    }
+
+    return fullPath;
   }
+
 
   /** Public URL under /public for lease files. */
   private buildLeaseUrl( leaseID: string, ...segments: string[] ): string {
@@ -306,6 +324,9 @@ export default class Lease {
       ] ),
       async ( req: Request<{ leaseID: string; }>, res: Response ) => {
         try {
+          // -------------------- Prep + base URL --------------------
+          const hostBaseUrl = this.getBaseUrl( req );
+
           // -------------------- Required maps/guards --------------------
           const ensureFileSig = ( obj: any ): obj is FILE =>
             obj &&
@@ -537,7 +558,7 @@ export default class Lease {
             size: tSig?.size ?? fallbackTenantSignature?.size ?? 0,
             filename: tSig?.filename ?? fallbackTenantSignature?.filename ?? "",
             URL: tSig
-              ? `${ this.buildLeaseUrl( leaseID, "signatures", "tenant", tSig.filename ) }`
+              ? `${ hostBaseUrl }/${ this.buildLeaseUrl( leaseID, "signatures", "tenant", tSig.filename ) }`
               : fallbackTenantSignature?.URL ?? "",
           };
 
@@ -555,7 +576,7 @@ export default class Lease {
             size: lSig?.size ?? fallbackLandlordSignature?.size ?? 0,
             filename: lSig?.filename ?? fallbackLandlordSignature?.filename ?? "",
             URL: lSig
-              ? `${ this.buildLeaseUrl( leaseID, "signatures", "landlord", lSig.filename ) }`
+              ? `${ hostBaseUrl }/${ this.buildLeaseUrl( leaseID, "signatures", "landlord", lSig.filename ) }`
               : fallbackLandlordSignature?.URL ?? "",
           };
 
@@ -628,8 +649,10 @@ export default class Lease {
           };
 
           // -------------------- Save JSON snapshot for PDF --------------------
-          const LEASE_JSON_PATH = this.buildLeasePath( leaseID, true, "agreement-data", "data.json" );
+          const LEASE_JSON_DIR = this.buildLeasePath( leaseID, true, "agreement-data" );
+          const LEASE_JSON_PATH = path.join( LEASE_JSON_DIR, "data.json" );
           await fs.promises.writeFile( LEASE_JSON_PATH, JSON.stringify( INSERT_DOCUMENT_DATA, null, 2 ), "utf8" );
+
 
           // -------------------- Persist in DB --------------------
           const INSERT = new LeaseModel( INSERT_DATA );
@@ -737,6 +760,10 @@ export default class Lease {
       ] ),
       async ( req: Request<{ leaseID: string; }>, res: Response ) => {
         try {
+          // -------------------- Prep + base URL --------------------
+          const hostBaseUrl = this.getBaseUrl( req );
+
+          // -------------------- Required maps/guards --------------------
           const files = req.files as { [ field: string ]: Express.Multer.File[]; } | undefined;
 
           const leaseID = this.mustString( req.params.leaseID || req.body.leaseID, "Lease ID" );
@@ -887,7 +914,6 @@ export default class Lease {
           systemMetaData.lastUpdated = new Date().toISOString();
 
           // scanned docs: merge & move new
-          const baseUrl = this.getBaseUrl( req );
           const scannedDocumentPath = this.buildLeasePath( leaseID, true, "documents" );
           const mobileScannedFolderPath = this.buildTenantPath( tenantUsername, false, "scanned", "mobile" );
 
@@ -901,13 +927,25 @@ export default class Lease {
             "Tenant uploaded scanned docs"
           );
 
+          if ( Array.isArray( tenantUploadedScanedDocumentsRemoved ) && tenantUploadedScanedDocumentsRemoved.length > 0 ) {
+            tenantUploadedScanedDocumentsRemoved.forEach( ( item ) => {
+              item.files.forEach( ( doc ) => {
+                const filename = doc.file.filename;
+                const destinationPath = path.join( scannedDocumentPath, filename );
+                if ( fs.existsSync( destinationPath ) ) {
+                  fs.unlinkSync( destinationPath );
+                }
+              } );
+            } );
+          }
+
           tenantUploadedScanedDocuments.forEach( ( item ) => {
             item.files.forEach( ( doc ) => {
               const filename = doc.file.filename;
               const sourcePath = path.join( mobileScannedFolderPath, filename );
               if ( fs.existsSync( sourcePath ) ) {
                 const destinationPath = path.join( scannedDocumentPath, filename );
-                doc.file.URL = `${ baseUrl }/${ this.buildLeaseUrl( leaseID, "documents", filename ) }`;
+                doc.file.URL = `${ hostBaseUrl }/${ this.buildLeaseUrl( leaseID, "documents", filename ) }`;
                 fs.renameSync( sourcePath, destinationPath );
               }
             } );
@@ -939,7 +977,7 @@ export default class Lease {
                   mimetype: doc.mimetype,
                   size: doc.size,
                   filename: doc.filename,
-                  URL: `${ baseUrl }/${ this.buildLeaseUrl( leaseID, "documents", doc.filename ) }`,
+                  URL: `${ hostBaseUrl }/${ this.buildLeaseUrl( leaseID, "documents", doc.filename ) }`,
                 },
               };
               newScannedFileRecord.files.push( data );
@@ -975,7 +1013,7 @@ export default class Lease {
             mimetype: tSig?.mimetype ?? tenantOldParsed?.mimetype ?? "",
             size: tSig?.size ?? tenantOldParsed?.size ?? 0,
             filename: tSig?.filename ?? tenantOldParsed?.filename ?? "",
-            URL: tSig ? `${ this.buildLeaseUrl( leaseID, "signatures", "tenant", tSig.filename ) }` : tenantOldParsed?.URL ?? "",
+            URL: tSig ? `${ hostBaseUrl }/${ this.buildLeaseUrl( leaseID, "signatures", "tenant", tSig.filename ) }` : tenantOldParsed?.URL ?? "",
           };
 
           const lSig = files?.[ "landlordSignature" ]?.[ 0 ];
@@ -999,7 +1037,7 @@ export default class Lease {
             size: lSig?.size ?? landlordOldParsed?.size ?? 0,
             filename: lSig?.filename ?? landlordOldParsed?.filename ?? "",
             URL: lSig
-              ? `${ this.buildLeaseUrl( leaseID, "signatures", "landlord", lSig.filename ) }`
+              ? `${ hostBaseUrl }/${ this.buildLeaseUrl( leaseID, "signatures", "landlord", lSig.filename ) }`
               : landlordOldParsed?.URL ?? "",
           };
 
