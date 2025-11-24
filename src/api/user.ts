@@ -8,7 +8,7 @@
 //  - Safer file handling & structured error responses.
 // ==========================================================
 
-import express, {Request, Response, NextFunction, Router} from "express";
+import express, { Request, Response, NextFunction, Router } from "express";
 import path from "path";
 import fse from "fs-extra";
 import multer from "multer";
@@ -16,20 +16,20 @@ import sharp from "sharp";
 import * as Argon2 from "argon2";
 import nodemailer from "nodemailer";
 import dotenv from "dotenv";
-import twilio, {Twilio} from "twilio";
+import twilio, { Twilio } from "twilio";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 
-import {UserModel, IUser} from "../models/user.model";
-import {TokenMap} from "../models/token.model";
-import {UserDocumentModel} from "../models/file-upload.model";
-import {PropertyModel} from "../models/property.model";
+import { UserModel, IUser } from "../models/user.model";
+import { TokenMap } from "../models/token.model";
+import { UserDocumentModel } from "../models/file-upload.model";
+import { PropertyModel } from "../models/property.model";
 import NotificationService from "../services/notification.service";
 
 // If you keep a Role helper type elsewhere, you can import it.
 // (Optional; we only rely on the actual field enum in the model.)
-import {Role} from "../types/roles";
-import {Config} from "../configs/config";
+import { Role } from "../types/roles";
+import { Config } from "../configs/config";
 
 dotenv.config();
 
@@ -72,6 +72,7 @@ export default class UserRoute {
     this.getUserDocuments();
     this.getUserDataByUsername();
     this.deleteUserByUsername();
+    this.getUserSectionByKey();
   }
 
   get route(): Router {
@@ -83,66 +84,66 @@ export default class UserRoute {
   // ==========================================================
 
   /** Hash password with Argon2 (strong default params). */
-  private async hashPassword(password: string): Promise<string> {
-    return Argon2.hash(password);
+  private async hashPassword( password: string ): Promise<string> {
+    return Argon2.hash( password );
   }
 
   /** Guard for safe single path segments (avoid traversal/odd chars). */
-  private isSafeSegment(seg: string): boolean {
-    return /^[A-Za-z0-9._-]+$/.test(seg);
+  private isSafeSegment( seg: string ): boolean {
+    return /^[A-Za-z0-9._-]+$/.test( seg );
   }
 
   /** Parse JSON safely with fallback. */
-  private parseJSON<T = unknown>(value: unknown, fallback: T): T {
+  private parseJSON<T = unknown>( value: unknown, fallback: T ): T {
     try {
-      if(typeof value !== "string") return fallback;
-      return JSON.parse(value) as T;
+      if ( typeof value !== "string" ) return fallback;
+      return JSON.parse( value ) as T;
     } catch {
       return fallback;
     }
   }
 
   /** Escape user-supplied regex parts. */
-  private escapeRegex(str: string): string {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  private escapeRegex( str: string ): string {
+    return str.replace( /[.*+?^${}()|[\]\\]/g, "\\$&" );
   }
 
   /** Email validation (basic but safe). */
-  private isEmail(v: string): boolean {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+  private isEmail( v: string ): boolean {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test( v );
   }
 
   /** Convert to boolean from string or boolean input. */
-  private toBool(v: unknown, def = false): boolean {
-    if(typeof v === "boolean") return v;
-    if(typeof v === "string") {
+  private toBool( v: unknown, def = false ): boolean {
+    if ( typeof v === "boolean" ) return v;
+    if ( typeof v === "string" ) {
       const s = v.trim().toLowerCase();
-      if(s === "true") return true;
-      if(s === "false") return false;
+      if ( s === "true" ) return true;
+      if ( s === "false" ) return false;
     }
     return def;
   }
 
   /** Convert to number safely (NaN → fallback). */
-  private toNum(v: unknown, fallback = 0): number {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : fallback;
+  private toNum( v: unknown, fallback = 0 ): number {
+    const n = Number( v );
+    return Number.isFinite( n ) ? n : fallback;
   }
 
   /** Parse date or return null. */
-  private toDate(v: unknown): Date | null {
-    if(typeof v !== "string" && !(v instanceof Date)) return null;
-    const d = new Date(v as any);
-    return Number.isNaN(d.getTime()) ? null : d;
+  private toDate( v: unknown ): Date | null {
+    if ( typeof v !== "string" && !( v instanceof Date ) ) return null;
+    const d = new Date( v as any );
+    return Number.isNaN( d.getTime() ) ? null : d;
   }
 
   /** Ensure E.164 format for Twilio sends. */
-  private ensureE164(phone: string): string {
+  private ensureE164( phone: string ): string {
     const trimmed = phone.trim();
     const e164 = /^\+[1-9]\d{7,14}$/;
-    if(!e164.test(trimmed)) {
+    if ( !e164.test( trimmed ) ) {
       throw new Error(
-        `Invalid phone format. Provide E.164 like +9477xxxxxxx (got "${phone}").`
+        `Invalid phone format. Provide E.164 like +9477xxxxxxx (got "${ phone }").`
       );
     }
     return trimmed;
@@ -152,29 +153,29 @@ export default class UserRoute {
   private async verifyPhoneNumber(
     to: string,
     otp: string
-  ): Promise<{sid: string; to: string}> {
-    const code = String(otp ?? "").trim();
-    if(code.length < 4 || code.length > 10) {
-      throw new Error(`OTP length invalid.`);
+  ): Promise<{ sid: string; to: string; }> {
+    const code = String( otp ?? "" ).trim();
+    if ( code.length < 4 || code.length > 10 ) {
+      throw new Error( `OTP length invalid.` );
     }
-    const toE164 = this.ensureE164(to);
+    const toE164 = this.ensureE164( to );
 
     try {
-      const result = await this.twilioClient.messages.create({
-        body: `Your verification code is: ${code}`,
+      const result = await this.twilioClient.messages.create( {
+        body: `Your verification code is: ${ code }`,
         from: Config.twilio.from,
         to: toE164,
-      });
-      return {sid: result.sid, to: result.to ?? toE164};
-    } catch(err: any) {
-      console.error(`[twilio] send failed: ${err?.message || err}`);
-      throw new Error("Failed to send verification SMS.");
+      } );
+      return { sid: result.sid, to: result.to ?? toE164 };
+    } catch ( err: any ) {
+      console.error( `[twilio] send failed: ${ err?.message || err }` );
+      throw new Error( "Failed to send verification SMS." );
     }
   }
 
   /** Generate a 6-digit OTP. */
   private generateOTP(): string {
-    return String(Math.floor(100000 + Math.random() * 900000));
+    return String( Math.floor( 100000 + Math.random() * 900000 ) );
   }
 
   // ==========================================================
@@ -183,33 +184,33 @@ export default class UserRoute {
   private getUserData() {
     this.router.post(
       "/verify-user",
-      async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      async ( req: Request, res: Response, next: NextFunction ): Promise<void> => {
         try {
-          const username = String(req.body.username || "").trim();
-          const password = String(req.body.password || "");
+          const username = String( req.body.username || "" ).trim();
+          const password = String( req.body.password || "" );
 
-          if(!username || !password) {
+          if ( !username || !password ) {
             res
-              .status(400)
-              .json({status: "error", message: "Username and password required"});
+              .status( 400 )
+              .json( { status: "error", message: "Username and password required" } );
             return;
           }
 
-          const user: IUser | null = await UserModel.findOne({username});
-          if(!user) {
-            res.status(401).json({status: "error", message: "Invalid username"});
+          const user: IUser | null = await UserModel.findOne( { username } );
+          if ( !user ) {
+            res.status( 401 ).json( { status: "error", message: "Invalid username" } );
             return;
           }
 
-          const isPasswordValid = await Argon2.verify(user.password, password);
-          if(!isPasswordValid) {
-            res.status(401).json({status: "error", message: "Invalid password"});
+          const isPasswordValid = await Argon2.verify( user.password, password );
+          if ( !isPasswordValid ) {
+            res.status( 401 ).json( { status: "error", message: "Invalid password" } );
             return;
           }
 
           // JWT payload
           const payload = {
-            sub: String(user._id),
+            sub: String( user._id ),
             username: user.username,
             role: user.role as Role,
           };
@@ -217,25 +218,25 @@ export default class UserRoute {
           const token = jwt.sign(
             payload,
             process.env.JWT_SECRET || "defaultsecret",
-            {expiresIn: "30d"}
+            { expiresIn: "30d" }
           );
 
           // Remove password from the returned user
-          const plain = user.toObject ? user.toObject() : (user as any);
-          const {password: _omit, ...userWithoutPassword} = plain;
+          const plain = user.toObject ? user.toObject() : ( user as any );
+          const { password: _omit, ...userWithoutPassword } = plain;
 
-          res.status(200).json({
+          res.status( 200 ).json( {
             status: "success",
             message: "User verified successfully!",
             token,
             user: userWithoutPassword,
-          });
-        } catch(error) {
-          console.error("[verify-user] error:", error);
+          } );
+        } catch ( error ) {
+          console.error( "[verify-user] error:", error );
           res
-            .status(500)
-            .json({status: "error", message: "Error verifying user"});
-          next(error);
+            .status( 500 )
+            .json( { status: "error", message: "Error verifying user" } );
+          next( error );
         }
       }
     );
@@ -249,7 +250,7 @@ export default class UserRoute {
     const storage = multer.memoryStorage();
 
     // Accept images only
-    const allowedTypes = new Set([
+    const allowedTypes = new Set( [
       "image/jpeg",
       "image/png",
       "image/webp",
@@ -258,129 +259,129 @@ export default class UserRoute {
       "image/x-icon",
       "image/vnd.microsoft.icon",
       "image/ico",
-    ]);
+    ] );
 
-    const upload = multer({
+    const upload = multer( {
       storage,
-      limits: {fileSize: 20 * 1024 * 1024}, // 20MB
-      fileFilter: (_req, file, cb) => {
-        if(allowedTypes.has(file.mimetype)) cb(null, true);
-        else cb(new Error("Only image files are allowed"));
+      limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
+      fileFilter: ( _req, file, cb ) => {
+        if ( allowedTypes.has( file.mimetype ) ) cb( null, true );
+        else cb( new Error( "Only image files are allowed" ) );
       },
-    });
+    } );
 
     this.router.post(
       "/create-user",
-      upload.fields([{name: "userimage", maxCount: 1}]),
-      async (req: Request, res: Response): Promise<void> => {
+      upload.fields( [ { name: "userimage", maxCount: 1 } ] ),
+      async ( req: Request, res: Response ): Promise<void> => {
         try {
           const files = req.files as Record<
             string,
             Express.Multer.File[] | undefined
           >;
-          const image = files?.userimage?.[0];
+          const image = files?.userimage?.[ 0 ];
 
           // Required strings
-          const username = String(req.body.username || "").trim();
-          const name = String(req.body.name || "").trim();
-          const email = String(req.body.email || "").trim();
-          const passRaw = String(req.body.userPassword || "").trim();
-          const role = String(req.body.role || "user").trim();
-          const creator = String(req.body.creator || "system").trim();
+          const username = String( req.body.username || "" ).trim();
+          const name = String( req.body.name || "" ).trim();
+          const email = String( req.body.email || "" ).trim();
+          const passRaw = String( req.body.userPassword || "" ).trim();
+          const role = String( req.body.role || "user" ).trim();
+          const creator = String( req.body.creator || "system" ).trim();
 
           // Required numerics / dates
-          const age = this.toNum(req.body.age, NaN);
-          const dateOfBirth = this.toDate(req.body.dateOfBirth);
+          const age = this.toNum( req.body.age, NaN );
+          const dateOfBirth = this.toDate( req.body.dateOfBirth );
 
           // Optional
-          const phoneNumber = String(req.body.phoneNumber || "").trim();
-          const gender = String(req.body.gender || "").trim();
-          const bio = String(req.body.bio || "").trim();
+          const phoneNumber = String( req.body.phoneNumber || "" ).trim();
+          const gender = String( req.body.gender || "" ).trim();
+          const bio = String( req.body.bio || "" ).trim();
 
           // Basic validation aligned with the model
-          if(!username || !this.isSafeSegment(username)) {
+          if ( !username || !this.isSafeSegment( username ) ) {
             res
-              .status(400)
-              .json({status: "error", message: "Invalid username"});
+              .status( 400 )
+              .json( { status: "error", message: "Invalid username" } );
             return;
           }
-          if(!name) {
-            res.status(400).json({status: "error", message: "Name is required"});
+          if ( !name ) {
+            res.status( 400 ).json( { status: "error", message: "Name is required" } );
             return;
           }
-          if(!email || !this.isEmail(email)) {
+          if ( !email || !this.isEmail( email ) ) {
             res
-              .status(400)
-              .json({status: "error", message: "A valid email is required"});
+              .status( 400 )
+              .json( { status: "error", message: "A valid email is required" } );
             return;
           }
-          if(!passRaw) {
+          if ( !passRaw ) {
             res
-              .status(400)
-              .json({status: "error", message: "Password is required"});
+              .status( 400 )
+              .json( { status: "error", message: "Password is required" } );
             return;
           }
-          if(!dateOfBirth) {
+          if ( !dateOfBirth ) {
             res
-              .status(400)
-              .json({status: "error", message: "Valid dateOfBirth is required"});
+              .status( 400 )
+              .json( { status: "error", message: "Valid dateOfBirth is required" } );
             return;
           }
-          if(!Number.isFinite(age)) {
+          if ( !Number.isFinite( age ) ) {
             res
-              .status(400)
-              .json({status: "error", message: "Valid age is required"});
+              .status( 400 )
+              .json( { status: "error", message: "Valid age is required" } );
             return;
           }
-          if(!image) {
+          if ( !image ) {
             res
-              .status(400)
-              .json({status: "error", message: "Profile image is required"});
+              .status( 400 )
+              .json( { status: "error", message: "Profile image is required" } );
             return;
           }
 
           // Ensure unique username before disk writes
-          if(await UserModel.exists({username})) {
+          if ( await UserModel.exists( { username } ) ) {
             res
-              .status(409)
-              .json({status: "error", message: "Username already exists"});
+              .status( 409 )
+              .json( { status: "error", message: "Username already exists" } );
             return;
           }
 
           // Compute where to write the final image
-          const imagePath = path.join(this.DEFAULT_PATH, username, "image.webp");
-          await fse.ensureDir(path.dirname(imagePath));
-          await sharp(image.buffer).webp({quality: 80}).toFile(imagePath);
+          const imagePath = path.join( this.DEFAULT_PATH, username, "image.webp" );
+          await fse.ensureDir( path.dirname( imagePath ) );
+          await sharp( image.buffer ).webp( { quality: 80 } ).toFile( imagePath );
 
-          const baseUrl = `${req.protocol}://${req.get("host")}`;
-          const publicImageUrl = `${baseUrl}/${this.DEFAULT_URL}/${encodeURIComponent(
+          const baseUrl = `${ req.protocol }://${ req.get( "host" ) }`;
+          const publicImageUrl = `${ baseUrl }/${ this.DEFAULT_URL }/${ encodeURIComponent(
             username
-          )}/image.webp`;
+          ) }/image.webp`;
 
           // Read structured inputs
-          const access = this.parseJSON(req.body.access, undefined) as
-            | IUser["access"]
+          const access = this.parseJSON( req.body.access, undefined ) as
+            | IUser[ "access" ]
             | undefined;
 
           // Optional email verification payload
           const verifyEmailObj = this.parseJSON<{
             token?: string;
             expires?: string;
-          }>(req.body.verifyEmail, {});
+          }>( req.body.verifyEmail, {} );
 
           // If you want to send email verification now, do it before user save.
-          if(verifyEmailObj.token) {
+          if ( verifyEmailObj.token ) {
             const ok = await this.sendVerificationEmail(
               email,
               verifyEmailObj.token
             );
-            if(!ok) {
+            if ( !ok ) {
               res
-                .status(502)
-                .json({
+                .status( 502 )
+                .json( {
                   status: "error",
                   message: "Failed to send verification email",
-                });
+                } );
               return;
             }
           }
@@ -388,35 +389,35 @@ export default class UserRoute {
           // Prepare OTP (if you want to start with an OTP flow)
           const otp = this.generateOTP();
           // Optional custom TTL seconds; otherwise 5 minutes
-          const otpTtlSecs = this.toNum(req.body.otpValidTime, 300);
-          const otpExpires = new Date(Date.now() + otpTtlSecs * 1000);
+          const otpTtlSecs = this.toNum( req.body.otpValidTime, 300 );
+          const otpExpires = new Date( Date.now() + otpTtlSecs * 1000 );
 
           // Hash password
-          const password = await this.hashPassword(passRaw);
+          const password = await this.hashPassword( passRaw );
 
           // Build address (required in model)
           const address = {
-            street: String(req.body.street || "").trim(),
-            houseNumber: String(req.body.houseNumber || "").trim(),
-            city: String(req.body.city || "").trim(),
-            postcode: String(req.body.postcode || "").trim(),
-            country: String(req.body.country || "").trim() || undefined,
+            street: String( req.body.street || "" ).trim(),
+            houseNumber: String( req.body.houseNumber || "" ).trim(),
+            city: String( req.body.city || "" ).trim(),
+            postcode: String( req.body.postcode || "" ).trim(),
+            country: String( req.body.country || "" ).trim() || undefined,
             stateOrProvince:
-              String(req.body.stateOrProvince || "").trim() || undefined,
+              String( req.body.stateOrProvince || "" ).trim() || undefined,
           };
-          if(!address.street || !address.houseNumber || !address.city || !address.postcode) {
+          if ( !address.street || !address.houseNumber || !address.city || !address.postcode ) {
             res
-              .status(400)
-              .json({
+              .status( 400 )
+              .json( {
                 status: "error",
                 message:
                   "Address fields street, houseNumber, city, postcode are required",
-              });
+              } );
             return;
           }
 
           // Create user document (aligned with the schema)
-          const newUser = new UserModel({
+          const newUser = new UserModel( {
             name,
             username,
             email,
@@ -428,7 +429,7 @@ export default class UserRoute {
             phoneNumber,
             role, // must be one of model enums
             image: publicImageUrl,
-            isActive: this.toBool(req.body.isActive, true),
+            isActive: this.toBool( req.body.isActive, true ),
             address,
             access: access ?? {
               role,
@@ -440,26 +441,26 @@ export default class UserRoute {
             emailVerified: false,
             emailVerificationToken: verifyEmailObj.token || undefined,
             emailVerificationTokenExpires: verifyEmailObj.expires
-              ? new Date(verifyEmailObj.expires)
+              ? new Date( verifyEmailObj.expires )
               : undefined,
-            autoDelete: this.toBool(req.body.autoDelete, true),
+            autoDelete: this.toBool( req.body.autoDelete, true ),
             creator,
-          });
+          } );
 
           await newUser.save();
 
           // Broadcast to back-office roles (best-effort)
           const notificationService = new NotificationService();
-          const io = req.app.get("io") as import("socket.io").Server;
+          const io = req.app.get( "io" ) as import( "socket.io" ).Server;
 
           await notificationService.createNotification(
             {
               title: "New User",
-              body: `User ${newUser.name || newUser.username} has registered.`,
+              body: `User ${ newUser.name || newUser.username } has registered.`,
               type: "create",
               severity: "info",
-              audience: {mode: "role", roles: ["admin", "manager", "operator"]},
-              channels: ["inapp", "email"],
+              audience: { mode: "role", roles: [ "admin", "manager", "operator" ] },
+              channels: [ "inapp", "email" ],
               metadata: {
                 refId: newUser.username,
                 data: {
@@ -471,21 +472,21 @@ export default class UserRoute {
 
               },
             },
-            (rooms, payload) =>
-              rooms.forEach((room) => io.to(room).emit("notification.new", payload))
+            ( rooms, payload ) =>
+              rooms.forEach( ( room ) => io.to( room ).emit( "notification.new", payload ) )
           );
 
-          res.status(201).json({
+          res.status( 201 ).json( {
             status: "success",
             message: "User created successfully",
             user: newUser,
-          });
-        } catch(error: any) {
-          console.error("[create-user] error:", error?.message || error);
-          res.status(500).json({
+          } );
+        } catch ( error: any ) {
+          console.error( "[create-user] error:", error?.message || error );
+          res.status( 500 ).json( {
             status: "error",
-            message: `Failed to create user: ${error?.message || "Internal error"}`,
-          });
+            message: `Failed to create user: ${ error?.message || "Internal error" }`,
+          } );
         }
       }
     );
@@ -496,7 +497,7 @@ export default class UserRoute {
   // ==========================================================
   private updateUser(): void {
     const storage = multer.memoryStorage();
-    const allowedTypes = new Set([
+    const allowedTypes = new Set( [
       "image/jpeg",
       "image/png",
       "image/webp",
@@ -505,33 +506,33 @@ export default class UserRoute {
       "image/x-icon",
       "image/vnd.microsoft.icon",
       "image/ico",
-    ]);
+    ] );
 
-    const upload = multer({
+    const upload = multer( {
       storage,
-      limits: {fileSize: 5 * 1024 * 1024},
-      fileFilter: (_req, file, cb) => {
-        if(allowedTypes.has(file.mimetype)) cb(null, true);
-        else cb(new Error("Only image files are allowed"));
+      limits: { fileSize: 5 * 1024 * 1024 },
+      fileFilter: ( _req, file, cb ) => {
+        if ( allowedTypes.has( file.mimetype ) ) cb( null, true );
+        else cb( new Error( "Only image files are allowed" ) );
       },
-    });
+    } );
 
     this.router.put(
       "/user-update/:username",
-      upload.fields([{name: "userimage", maxCount: 1}]),
-      async (req: Request<{username: string}>, res: Response): Promise<void> => {
+      upload.fields( [ { name: "userimage", maxCount: 1 } ] ),
+      async ( req: Request<{ username: string; }>, res: Response ): Promise<void> => {
         try {
-          const username = String(req.params.username || "").trim();
-          if(!username || !this.isSafeSegment(username)) {
+          const username = String( req.params.username || "" ).trim();
+          if ( !username || !this.isSafeSegment( username ) ) {
             res
-              .status(400)
-              .json({status: "error", message: "Invalid username"});
+              .status( 400 )
+              .json( { status: "error", message: "Invalid username" } );
             return;
           }
 
-          const user = await UserModel.findOne({username});
-          if(!user) {
-            res.status(404).json({status: "error", message: "User not found"});
+          const user = await UserModel.findOne( { username } );
+          if ( !user ) {
+            res.status( 404 ).json( { status: "error", message: "User not found" } );
             return;
           }
 
@@ -539,75 +540,75 @@ export default class UserRoute {
             string,
             Express.Multer.File[] | undefined
           >;
-          const image = files?.userimage?.[0];
+          const image = files?.userimage?.[ 0 ];
 
-          const baseUrl = `${req.protocol}://${req.get("host")}`;
+          const baseUrl = `${ req.protocol }://${ req.get( "host" ) }`;
           let imageUrl = user.image;
 
           // If there is a new image -> convert to webp and replace
-          if(image) {
-            const imagePath = path.join(this.DEFAULT_PATH, username, "image.webp");
-            await fse.ensureDir(path.dirname(imagePath));
-            await fse.remove(imagePath).catch(() => {});
-            await sharp(image.buffer).webp({quality: 80}).toFile(imagePath);
-            imageUrl = `${baseUrl}/${this.DEFAULT_URL}/${encodeURIComponent(
+          if ( image ) {
+            const imagePath = path.join( this.DEFAULT_PATH, username, "image.webp" );
+            await fse.ensureDir( path.dirname( imagePath ) );
+            await fse.remove( imagePath ).catch( () => {} );
+            await sharp( image.buffer ).webp( { quality: 80 } ).toFile( imagePath );
+            imageUrl = `${ baseUrl }/${ this.DEFAULT_URL }/${ encodeURIComponent(
               username
-            )}/image.webp`;
+            ) }/image.webp`;
           }
 
           const body = req.body as Record<string, any>;
 
           // Prepare updates (only set provided fields)
-          const updates: Record<string, any> = {updatedAt: new Date()};
+          const updates: Record<string, any> = { updatedAt: new Date() };
 
           // Immutable identity key
-          updates["username"] = username;
+          updates[ "username" ] = username;
 
-          if("name" in body) updates["name"] = String(body.name || "").trim();
+          if ( "name" in body ) updates[ "name" ] = String( body.name || "" ).trim();
 
-          if("email" in body) {
-            const newEmail = String(body.email || "").trim();
-            if(!this.isEmail(newEmail)) {
+          if ( "email" in body ) {
+            const newEmail = String( body.email || "" ).trim();
+            if ( !this.isEmail( newEmail ) ) {
               res
-                .status(400)
-                .json({status: "error", message: "Invalid email format"});
+                .status( 400 )
+                .json( { status: "error", message: "Invalid email format" } );
               return;
             }
-            updates["email"] = newEmail;
+            updates[ "email" ] = newEmail;
           }
 
-          if("dateOfBirth" in body) {
-            const dob = this.toDate(body.dateOfBirth);
-            if(!dob) {
+          if ( "dateOfBirth" in body ) {
+            const dob = this.toDate( body.dateOfBirth );
+            if ( !dob ) {
               res
-                .status(400)
-                .json({status: "error", message: "Invalid dateOfBirth"});
+                .status( 400 )
+                .json( { status: "error", message: "Invalid dateOfBirth" } );
               return;
             }
-            updates["dateOfBirth"] = dob;
+            updates[ "dateOfBirth" ] = dob;
           }
 
-          if("age" in body) {
-            const n = this.toNum(body.age, NaN);
-            if(!Number.isFinite(n)) {
+          if ( "age" in body ) {
+            const n = this.toNum( body.age, NaN );
+            if ( !Number.isFinite( n ) ) {
               res
-                .status(400)
-                .json({status: "error", message: "Invalid age"});
+                .status( 400 )
+                .json( { status: "error", message: "Invalid age" } );
               return;
             }
-            updates["age"] = n;
+            updates[ "age" ] = n;
           }
 
-          if("gender" in body) updates["gender"] = String(body.gender || "").trim();
-          if("bio" in body) updates["bio"] = String(body.bio || "").trim();
-          if("phoneNumber" in body)
-            updates["phoneNumber"] = String(body.phoneNumber || "").trim();
+          if ( "gender" in body ) updates[ "gender" ] = String( body.gender || "" ).trim();
+          if ( "bio" in body ) updates[ "bio" ] = String( body.bio || "" ).trim();
+          if ( "phoneNumber" in body )
+            updates[ "phoneNumber" ] = String( body.phoneNumber || "" ).trim();
 
           // image (replace if uploaded)
-          updates["image"] = imageUrl;
+          updates[ "image" ] = imageUrl;
 
-          if("role" in body) updates["role"] = String(body.role || "").trim();
-          if("isActive" in body) updates["isActive"] = this.toBool(body.isActive);
+          if ( "role" in body ) updates[ "role" ] = String( body.role || "" ).trim();
+          if ( "isActive" in body ) updates[ "isActive" ] = this.toBool( body.isActive );
 
           // address (merge fields)
           const addrKeys = [
@@ -619,68 +620,68 @@ export default class UserRoute {
             "stateOrProvince",
           ] as const;
           const addr: Record<string, any> = {};
-          for(const k of addrKeys) {
-            if(k in body) addr[k] = String(body[k] ?? "").trim();
+          for ( const k of addrKeys ) {
+            if ( k in body ) addr[ k ] = String( body[ k ] ?? "" ).trim();
           }
-          if(Object.keys(addr).length > 0) {
-            updates["address"] = {...(user.address || {}), ...addr};
+          if ( Object.keys( addr ).length > 0 ) {
+            updates[ "address" ] = { ...( user.address || {} ), ...addr };
           }
 
           // Access: expect JSON or object
-          if("access" in body) {
-            const access = this.parseJSON<IUser["access"]>(body.access, user.access);
-            updates["access"] = access;
+          if ( "access" in body ) {
+            const access = this.parseJSON<IUser[ "access" ]>( body.access, user.access );
+            updates[ "access" ] = access;
           }
 
-          if("creator" in body)
-            updates["creator"] = String(body.creator || "").trim();
-          if("updator" in body)
-            updates["updator"] = String(body.updator || "").trim();
+          if ( "creator" in body )
+            updates[ "creator" ] = String( body.creator || "" ).trim();
+          if ( "updator" in body )
+            updates[ "updator" ] = String( body.updator || "" ).trim();
 
           // Optional password change
-          if("password" in body && typeof body.password === "string") {
+          if ( "password" in body && typeof body.password === "string" ) {
             const pw = body.password.trim();
-            if(pw) {
-              updates["password"] = await this.hashPassword(pw);
+            if ( pw ) {
+              updates[ "password" ] = await this.hashPassword( pw );
             }
           }
 
           // Optional: email change triggers new verify token/expiry
-          if("emailVerificationToken" in body) {
-            updates["emailVerificationToken"] = String(
+          if ( "emailVerificationToken" in body ) {
+            updates[ "emailVerificationToken" ] = String(
               body.emailVerificationToken || ""
             ).trim();
           }
-          if("emailVerificationTokenExpires" in body) {
-            const exp = this.toDate(body.emailVerificationTokenExpires);
-            if(exp) updates["emailVerificationTokenExpires"] = exp;
+          if ( "emailVerificationTokenExpires" in body ) {
+            const exp = this.toDate( body.emailVerificationTokenExpires );
+            if ( exp ) updates[ "emailVerificationTokenExpires" ] = exp;
           }
 
           const updatedUser = await UserModel.findOneAndUpdate(
-            {username},
-            {$set: updates},
-            {new: true, upsert: false}
+            { username },
+            { $set: updates },
+            { new: true, upsert: false }
           );
 
-          if(!updatedUser) {
+          if ( !updatedUser ) {
             res
-              .status(404)
-              .json({status: "error", message: "User not found or update failed"});
+              .status( 404 )
+              .json( { status: "error", message: "User not found or update failed" } );
             return;
           }
 
           // Notify back-office (best-effort)
           const notificationService = new NotificationService();
-          const io = req.app.get("io") as import("socket.io").Server;
+          const io = req.app.get( "io" ) as import( "socket.io" ).Server;
 
           await notificationService.createNotification(
             {
               title: "Update User",
-              body: `User ${updatedUser.name || updatedUser.username} has been updated.`,
+              body: `User ${ updatedUser.name || updatedUser.username } has been updated.`,
               type: "update",
               severity: "info",
-              audience: {mode: "role", roles: ["admin", "manager", "operator"]},
-              channels: ["inapp", "email"],
+              audience: { mode: "role", roles: [ "admin", "manager", "operator" ] },
+              channels: [ "inapp", "email" ],
               metadata: {
                 refId: updatedUser.username,
                 data: {
@@ -688,26 +689,26 @@ export default class UserRoute {
                   role: updatedUser.role,
                   updatedAt: new Date(),
                   updatedBy:
-                    (typeof body.updator === "string"
+                    ( typeof body.updator === "string"
                       ? body.updator.trim()
-                      : undefined) || "system",
+                      : undefined ) || "system",
                 }
               },
             },
-            (rooms, payload) =>
-              rooms.forEach((room) => io.to(room).emit("notification.new", payload))
+            ( rooms, payload ) =>
+              rooms.forEach( ( room ) => io.to( room ).emit( "notification.new", payload ) )
           );
 
-          res.status(200).json({
+          res.status( 200 ).json( {
             status: "success",
             message: "User updated successfully",
             user: updatedUser,
-          });
-        } catch(error: any) {
-          console.error("[user-update] error:", error?.message || error);
+          } );
+        } catch ( error: any ) {
+          console.error( "[user-update] error:", error?.message || error );
           res
-            .status(500)
-            .json({status: "error", message: error?.message || "Server error"});
+            .status( 500 )
+            .json( { status: "error", message: error?.message || "Server error" } );
         }
       }
     );
@@ -717,72 +718,72 @@ export default class UserRoute {
   // Listing & search
   // ==========================================================
   private getAllUsers() {
-    this.router.get("/users", async (_req: Request, res: Response) => {
+    this.router.get( "/users", async ( _req: Request, res: Response ) => {
       try {
-        const users = await UserModel.find({}, {password: 0}).sort({
+        const users = await UserModel.find( {}, { password: 0 } ).sort( {
           createdAt: -1,
-        });
-        res.status(200).json(users);
-      } catch(error) {
-        res.status(500).json({error: `Failed to fetch users: ${error}`});
+        } );
+        res.status( 200 ).json( users );
+      } catch ( error ) {
+        res.status( 500 ).json( { error: `Failed to fetch users: ${ error }` } );
       }
-    });
+    } );
   }
 
   private getAllUserCount() {
-    this.router.get("/users-count", async (_req: Request, res: Response) => {
+    this.router.get( "/users-count", async ( _req: Request, res: Response ) => {
       try {
         const data = await UserModel.countDocuments();
-        res.status(200).json({
+        res.status( 200 ).json( {
           success: true,
           status: 'success',
-          message: `Total number of users are ${data}`,
+          message: `Total number of users are ${ data }`,
           data
-        });
-      } catch(error) {
-        res.status(500).json({success: false, status: 'error', error: `Failed to fetch users: ${error}`});
+        } );
+      } catch ( error ) {
+        res.status( 500 ).json( { success: false, status: 'error', error: `Failed to fetch users: ${ error }` } );
       }
-    });
+    } );
   }
 
   private getAllUsersWithPagination() {
     this.router.get(
       "/users-with-pagination/:start/:limit",
-      async (req: Request, res: Response) => {
+      async ( req: Request, res: Response ) => {
         try {
-          const start = this.toNum(req.params.start, 0);
-          const limit = this.toNum(req.params.limit, 10);
-          const search = String(req.query.search || "").trim();
+          const start = this.toNum( req.params.start, 0 );
+          const limit = this.toNum( req.params.limit, 10 );
+          const search = String( req.query.search || "" ).trim();
 
-          const safeStart = Math.max(0, start);
-          const safeLimit = Math.max(1, Math.min(limit, 100));
+          const safeStart = Math.max( 0, start );
+          const safeLimit = Math.max( 1, Math.min( limit, 100 ) );
 
           const filter: any = {};
-          if(search) {
-            const rx = new RegExp(this.escapeRegex(search), "i");
-            filter.$or = [{name: rx}, {username: rx}, {email: rx}];
+          if ( search ) {
+            const rx = new RegExp( this.escapeRegex( search ), "i" );
+            filter.$or = [ { name: rx }, { username: rx }, { email: rx } ];
           }
 
-          const count = await UserModel.countDocuments(filter);
-          const users = await UserModel.find(filter, {password: 0})
-            .sort({createdAt: -1})
-            .skip(safeStart)
-            .limit(safeLimit)
+          const count = await UserModel.countDocuments( filter );
+          const users = await UserModel.find( filter, { password: 0 } )
+            .sort( { createdAt: -1 } )
+            .skip( safeStart )
+            .limit( safeLimit )
             .lean();
 
-          res.status(200).json({
+          res.status( 200 ).json( {
             count,
             start: safeStart,
-            end: Math.min(safeStart + safeLimit, count),
+            end: Math.min( safeStart + safeLimit, count ),
             limit: safeLimit,
             success: true,
             status: 'success',
             message: 'Users fetch successful!',
             data: users,
-          });
-        } catch(error) {
-          console.error("Pagination error:", error);
-          res.status(500).json({message: "Internal server error: " + error});
+          } );
+        } catch ( error ) {
+          console.error( "Pagination error:", error );
+          res.status( 500 ).json( { message: "Internal server error: " + error } );
         }
       }
     );
@@ -791,19 +792,19 @@ export default class UserRoute {
   private findUserByUsername() {
     this.router.get(
       "/user-username/:username",
-      async (req: Request<{username: string}>, res: Response) => {
+      async ( req: Request<{ username: string; }>, res: Response ) => {
         try {
-          const username = String(req.params.username || "").trim();
-          if(!username) {
-            res.status(400).json({status: "error", message: "Username required"});
+          const username = String( req.params.username || "" ).trim();
+          if ( !username ) {
+            res.status( 400 ).json( { status: "error", message: "Username required" } );
             return;
           }
-          const exists = await UserModel.exists({username});
-          const user = await UserModel.findOne({username: username})
-          res.status(200).json({status: exists ? "true" : "false", message: 'User found!', data: user, user: user});
-        } catch(error) {
-          console.error("findUserByUsername:", error);
-          res.status(500).json({status: "error", message: "Server error"});
+          const exists = await UserModel.exists( { username } );
+          const user = await UserModel.findOne( { username: username } );
+          res.status( 200 ).json( { status: exists ? "true" : "false", message: 'User found!', data: user, user: user } );
+        } catch ( error ) {
+          console.error( "findUserByUsername:", error );
+          res.status( 500 ).json( { status: "error", message: "Server error" } );
         }
       }
     );
@@ -812,20 +813,20 @@ export default class UserRoute {
   private findUserByEmail() {
     this.router.get(
       "/user-email/:email",
-      async (req: Request<{email: string}>, res: Response) => {
+      async ( req: Request<{ email: string; }>, res: Response ) => {
         try {
-          const email = decodeURIComponent(req.params.email ?? "").trim();
-          if(!this.isEmail(email)) {
-            res.status(400).json({status: "error", message: "Invalid email"});
+          const email = decodeURIComponent( req.params.email ?? "" ).trim();
+          if ( !this.isEmail( email ) ) {
+            res.status( 400 ).json( { status: "error", message: "Invalid email" } );
             return;
           }
-          const user = await UserModel.findOne({
-            email: {$regex: `^${this.escapeRegex(email)}$`, $options: "i"},
-          });
-          res.status(200).json({status: user ? "true" : "false"});
-        } catch(error) {
-          console.error("findUserByEmail:", error);
-          res.status(500).json({status: "error", message: "Server error"});
+          const user = await UserModel.findOne( {
+            email: { $regex: `^${ this.escapeRegex( email ) }$`, $options: "i" },
+          } );
+          res.status( 200 ).json( { status: user ? "true" : "false" } );
+        } catch ( error ) {
+          console.error( "findUserByEmail:", error );
+          res.status( 500 ).json( { status: "error", message: "Server error" } );
         }
       }
     );
@@ -834,30 +835,30 @@ export default class UserRoute {
   private findUserByPhone() {
     this.router.get(
       "/user-phone/:phone",
-      async (req: Request<{phone: string}>, res: Response) => {
+      async ( req: Request<{ phone: string; }>, res: Response ) => {
         try {
-          const phoneNumber = String(req.params.phone || "").trim();
+          const phoneNumber = String( req.params.phone || "" ).trim();
           const phoneRegex = /^(?:\+?[1-9]\d{1,3}|0)[\d\s\-()]{7,20}$/;
-          if(!phoneRegex.test(phoneNumber)) {
+          if ( !phoneRegex.test( phoneNumber ) ) {
             res
-              .status(400)
-              .json({status: "error", message: "Invalid phone number format"});
+              .status( 400 )
+              .json( { status: "error", message: "Invalid phone number format" } );
             return;
           }
-          const user = await UserModel.findOne({
+          const user = await UserModel.findOne( {
             phoneNumber: {
-              $regex: `^${this.escapeRegex(phoneNumber)}$`,
+              $regex: `^${ this.escapeRegex( phoneNumber ) }$`,
               $options: "i",
             },
-          });
-          res.status(200).json({
+          } );
+          res.status( 200 ).json( {
             status: user ? "success" : "error",
             message: user ? "Phone number exists!" : "Phone number does not exist!",
             data: user ?? null,
-          });
-        } catch(error) {
-          console.error("findUserByPhone:", error);
-          res.status(500).json({status: "error", message: "Server error"});
+          } );
+        } catch ( error ) {
+          console.error( "findUserByPhone:", error );
+          res.status( 500 ).json( { status: "error", message: "Server error" } );
         }
       }
     );
@@ -870,35 +871,35 @@ export default class UserRoute {
     // NOTE: route spelling kept to match your original path `/emailverifycation/...`
     this.router.get(
       "/emailverifycation/:token",
-      async (req: Request<{token: string}>, res: Response) => {
+      async ( req: Request<{ token: string; }>, res: Response ) => {
         try {
           const token = req.params.token;
-          const user = await UserModel.findOne({
+          const user = await UserModel.findOne( {
             emailVerificationToken: token,
-            emailVerificationTokenExpires: {$gt: new Date()},
-          });
+            emailVerificationTokenExpires: { $gt: new Date() },
+          } );
 
-          if(!user) {
+          if ( !user ) {
             res
-              .status(400)
+              .status( 400 )
               .sendFile(
-                path.join(__dirname, "../../public/error/emailExpire.html"),
-                (error) => error && console.error(error)
+                path.join( __dirname, "../../public/error/emailExpire.html" ),
+                ( error ) => error && console.error( error )
               );
             return;
           }
 
           user.emailVerified = true;
-          delete (user as any).emailVerificationToken;
-          delete (user as any).emailVerificationTokenExpires;
+          delete ( user as any ).emailVerificationToken;
+          delete ( user as any ).emailVerificationTokenExpires;
           user.autoDelete = false;
           await user.save();
 
           // Redirect to your frontend
-          res.redirect(process.env.FRONTEND_ORIGIN || "http://localhost:4200");
-        } catch(e) {
-          console.error("[emailverifycation] error:", e);
-          res.status(500).send("Server error");
+          res.redirect( process.env.FRONTEND_ORIGIN || "http://localhost:4200" );
+        } catch ( e ) {
+          console.error( "[emailverifycation] error:", e );
+          res.status( 500 ).send( "Server error" );
         }
       }
     );
@@ -908,34 +909,34 @@ export default class UserRoute {
     userEmail: string,
     token: string
   ): Promise<boolean> {
-    const verifyLink = `http://localhost:3000/api-user/emailverifycation/${token}`;
+    const verifyLink = `http://localhost:3000/api-user/emailverifycation/${ token }`;
     const html = `
       <div style="max-width:600px;margin:auto;border:1px solid #e0e0e0;border-radius:8px;padding:20px;font-family:Arial,sans-serif">
         <h2 style="text-align:center;color:#007bff">Verify Your Email Address</h2>
         <p>Hi there,</p>
         <p>Thanks for registering. Click below to verify your email:</p>
         <div style="text-align:center;margin:30px 0">
-          <a href="${verifyLink}" style="background:#007bff;color:#fff;padding:12px 24px;text-decoration:none;border-radius:5px">Verify Email</a>
+          <a href="${ verifyLink }" style="background:#007bff;color:#fff;padding:12px 24px;text-decoration:none;border-radius:5px">Verify Email</a>
         </div>
         <p>If the button doesn't work, copy this link:</p>
-        <p style="word-break:break-word">${verifyLink}</p>
+        <p style="word-break:break-word">${ verifyLink }</p>
       </div>
     `;
 
-    const transporter = nodemailer.createTransport({
+    const transporter = nodemailer.createTransport( {
       service: "gmail",
       auth: {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS,
       },
-    });
+    } );
 
-    const sent = await transporter.sendMail({
+    const sent = await transporter.sendMail( {
       from: '"PropEase Real Estate" <no-reply@propease.com>',
       to: userEmail,
       subject: "Verify Your Email",
       html,
-    });
+    } );
 
     return !!sent;
   }
@@ -946,36 +947,36 @@ export default class UserRoute {
   private generateToken() {
     this.router.post(
       "/generate-token",
-      async (req: Request, res: Response): Promise<void> => {
+      async ( req: Request, res: Response ): Promise<void> => {
         try {
-          const username = String(req.body.username || "").trim();
-          if(!username) {
-            res.status(400).json({status: "error", message: "Invalid username"});
+          const username = String( req.body.username || "" ).trim();
+          if ( !username ) {
+            res.status( 400 ).json( { status: "error", message: "Invalid username" } );
             return;
           }
 
-          const token = crypto.randomBytes(32).toString("hex");
-          const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 10 minutes
+          const token = crypto.randomBytes( 32 ).toString( "hex" );
+          const expiresAt = new Date( Date.now() + 30 * 60 * 1000 ); // 10 minutes
 
-          const saved = await TokenMap.create({
+          const saved = await TokenMap.create( {
             token,
             username,
             type: "view",
             expiresAt,
-          });
-          if(!saved) throw new Error("Failed to persist token");
+          } );
+          if ( !saved ) throw new Error( "Failed to persist token" );
 
-          res.status(201).json({
+          res.status( 201 ).json( {
             status: "success",
             message: "Token generated successfully",
             token: saved.token,
-          });
-        } catch(error) {
-          console.error("[generate-token] error:", error);
-          res.status(500).json({
+          } );
+        } catch ( error ) {
+          console.error( "[generate-token] error:", error );
+          res.status( 500 ).json( {
             status: "error",
             message: "Server error occurred",
-          });
+          } );
         }
       }
     );
@@ -984,37 +985,37 @@ export default class UserRoute {
   private getUserByToken() {
     this.router.get(
       "/user-token/:token",
-      async (req: Request<{token: string}>, res: Response): Promise<void> => {
+      async ( req: Request<{ token: string; }>, res: Response ): Promise<void> => {
         try {
-          const token = String(req.params.token || "");
-          if(!token) {
-            res.status(400).json({status: "error", message: "Token required"});
+          const token = String( req.params.token || "" );
+          if ( !token ) {
+            res.status( 400 ).json( { status: "error", message: "Token required" } );
             return;
           }
 
-          const record = await TokenMap.findOne({token});
-          if(!record || record.expiresAt <= new Date()) {
-            res.status(404).json({status: "error", message: "Token not found/expired"});
+          const record = await TokenMap.findOne( { token } );
+          if ( !record || record.expiresAt <= new Date() ) {
+            res.status( 404 ).json( { status: "error", message: "Token not found/expired" } );
             return;
           }
 
-          const user = await UserModel.findOne({username: record.username});
-          if(!user) {
-            res.status(404).json({status: "error", message: "User not found"});
+          const user = await UserModel.findOne( { username: record.username } );
+          if ( !user ) {
+            res.status( 404 ).json( { status: "error", message: "User not found" } );
             return;
           }
 
-          res.status(200).json({
+          res.status( 200 ).json( {
             status: "success",
             message: "User found",
             user,
-          });
-        } catch(error) {
-          console.error("[user-token] error:", error);
-          res.status(500).json({
+          } );
+        } catch ( error ) {
+          console.error( "[user-token] error:", error );
+          res.status( 500 ).json( {
             status: "error",
             message: "Server error occurred",
-          });
+          } );
         }
       }
     );
@@ -1024,7 +1025,7 @@ export default class UserRoute {
   // User document upload & retrieval
   // ==========================================================
   private uploadDocument(): void {
-    const allowedTypes = new Set<string>([
+    const allowedTypes = new Set<string>( [
       // Word
       "application/msword",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1056,98 +1057,98 @@ export default class UserRoute {
       "image/svg+xml",
       "image/x-icon",
       "image/vnd.microsoft.icon",
-    ]);
+    ] );
 
-    const storage = multer.diskStorage({
-      destination: async (req, _file, cb) => {
+    const storage = multer.diskStorage( {
+      destination: async ( req, _file, cb ) => {
         try {
-          const username = String(req.params.username || "").trim();
-          if(!username || !this.isSafeSegment(username)) {
-            cb(new Error("Username is required/invalid"), "");
+          const username = String( req.params.username || "" ).trim();
+          if ( !username || !this.isSafeSegment( username ) ) {
+            cb( new Error( "Username is required/invalid" ), "" );
             return;
           }
-          const uploadPath = path.join(this.DEFAULT_PATH, username, "documents");
-          await fse.ensureDir(uploadPath);
-          cb(null, uploadPath);
-        } catch(e: any) {
-          cb(e instanceof Error ? e : new Error(String(e)), "");
+          const uploadPath = path.join( this.DEFAULT_PATH, username, "documents" );
+          await fse.ensureDir( uploadPath );
+          cb( null, uploadPath );
+        } catch ( e: any ) {
+          cb( e instanceof Error ? e : new Error( String( e ) ), "" );
         }
       },
-      filename: (_req, file, cb) => {
-        const original = path.basename(file.originalname).replace(/\s+/g, "_");
-        const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-        cb(null, `${unique}-${original}`);
+      filename: ( _req, file, cb ) => {
+        const original = path.basename( file.originalname ).replace( /\s+/g, "_" );
+        const unique = `${ Date.now() }-${ Math.round( Math.random() * 1e9 ) }`;
+        cb( null, `${ unique }-${ original }` );
       },
-    });
+    } );
 
-    const upload = multer({
+    const upload = multer( {
       storage,
-      limits: {fileSize: 20 * 1024 * 1024, files: 10},
-      fileFilter: (_req, file, cb) => {
-        if(allowedTypes.has(file.mimetype)) cb(null, true);
-        else cb(new Error(`File type not allowed: ${file.mimetype}`));
+      limits: { fileSize: 20 * 1024 * 1024, files: 10 },
+      fileFilter: ( _req, file, cb ) => {
+        if ( allowedTypes.has( file.mimetype ) ) cb( null, true );
+        else cb( new Error( `File type not allowed: ${ file.mimetype }` ) );
       },
-    });
+    } );
 
     this.router.post(
       "/user-document-upload/:username",
-      upload.array("files", 10),
-      async (req: Request<{username: string}>, res: Response): Promise<void> => {
+      upload.array( "files", 10 ),
+      async ( req: Request<{ username: string; }>, res: Response ): Promise<void> => {
         try {
           const files = req.files as Express.Multer.File[] | undefined;
-          if(!files?.length) {
-            res.status(400).json({status: "error", message: "No files uploaded"});
+          if ( !files?.length ) {
+            res.status( 400 ).json( { status: "error", message: "No files uploaded" } );
             return;
           }
 
-          const username = String(req.params.username || "").trim();
-          if(!username || !this.isSafeSegment(username)) {
+          const username = String( req.params.username || "" ).trim();
+          if ( !username || !this.isSafeSegment( username ) ) {
             res
-              .status(400)
-              .json({status: "error", message: "Invalid username format"});
+              .status( 400 )
+              .json( { status: "error", message: "Invalid username format" } );
             return;
           }
 
-          if(!(await UserModel.exists({username}))) {
-            await Promise.all(files.map((f) => fse.remove(f.path).catch(() => {})));
-            res.status(404).json({status: "error", message: "User not found"});
+          if ( !( await UserModel.exists( { username } ) ) ) {
+            await Promise.all( files.map( ( f ) => fse.remove( f.path ).catch( () => {} ) ) );
+            res.status( 404 ).json( { status: "error", message: "User not found" } );
             return;
           }
 
-          const baseUrl = `${req.protocol}://${req.get("host")}`;
-          const uploader = String(req.body?.uploader || "system").trim();
+          const baseUrl = `${ req.protocol }://${ req.get( "host" ) }`;
+          const uploader = String( req.body?.uploader || "system" ).trim();
 
-          const savedFiles = files.map((file) => ({
+          const savedFiles = files.map( ( file ) => ( {
             originalName: file.originalname,
             storedName: file.filename,
             mimeType: file.mimetype,
             size: file.size,
             path: file.path, // internal path (omit if you prefer)
-            extension: path.extname(file.originalname),
-            download: `${username}/documents/${file.filename}`,
-            URL: `${baseUrl}/${this.DEFAULT_URL}/${encodeURIComponent(
+            extension: path.extname( file.originalname ),
+            download: `${ username }/documents/${ file.filename }`,
+            URL: `${ baseUrl }/${ this.DEFAULT_URL }/${ encodeURIComponent(
               username
-            )}/documents/${encodeURIComponent(file.filename)}`,
+            ) }/documents/${ encodeURIComponent( file.filename ) }`,
             uploader,
             uploadDate: new Date(),
-          }));
+          } ) );
 
           const doc = await UserDocumentModel.findOneAndUpdate(
-            {username},
-            {$push: {files: {$each: savedFiles}}},
-            {upsert: true, new: true}
+            { username },
+            { $push: { files: { $each: savedFiles } } },
+            { upsert: true, new: true }
           );
 
-          if(!doc) {
-            res.status(500).json({status: "error", message: "Failed to save files"});
+          if ( !doc ) {
+            res.status( 500 ).json( { status: "error", message: "Failed to save files" } );
             return;
           }
 
-          res.status(200).json({
+          res.status( 200 ).json( {
             status: "success",
             message: "Files uploaded successfully",
             fileCount: files.length,
-            uploadedFiles: savedFiles.map((f) => ({
+            uploadedFiles: savedFiles.map( ( f ) => ( {
               originalName: f.originalName,
               storedName: f.storedName,
               mimeType: f.mimeType,
@@ -1156,14 +1157,14 @@ export default class UserRoute {
               URL: f.URL,
               uploader: f.uploader,
               uploadedAt: f.uploadDate,
-            })),
-          });
-        } catch(error: any) {
-          console.error("[user-document-upload] error:", error?.message || error);
-          res.status(500).json({
+            } ) ),
+          } );
+        } catch ( error: any ) {
+          console.error( "[user-document-upload] error:", error?.message || error );
+          res.status( 500 ).json( {
             status: "error",
             message: error?.message || "Server error",
-          });
+          } );
         }
       }
     );
@@ -1172,24 +1173,24 @@ export default class UserRoute {
   private getUserDocuments() {
     this.router.get(
       "/uploads/:username/documents",
-      async (req: Request<{username: string}>, res: Response) => {
+      async ( req: Request<{ username: string; }>, res: Response ) => {
         try {
-          const username = String(req.params.username || "").trim();
-          if(!username) throw new Error("Username is required");
-          const user = await UserDocumentModel.findOne({username}).sort({
+          const username = String( req.params.username || "" ).trim();
+          if ( !username ) throw new Error( "Username is required" );
+          const user = await UserDocumentModel.findOne( { username } ).sort( {
             updatedAt: -1,
-          });
-          if(!user) throw new Error("User not found");
-          res.status(200).json({
+          } );
+          if ( !user ) throw new Error( "User not found" );
+          res.status( 200 ).json( {
             status: "success",
             message: "Files retrieved successfully",
             data: user.files,
-          });
-        } catch(error) {
-          console.error("getUserDocuments:", error);
+          } );
+        } catch ( error ) {
+          console.error( "getUserDocuments:", error );
           res
-            .status(500)
-            .json({status: "error", message: "Server error: " + error});
+            .status( 500 )
+            .json( { status: "error", message: "Server error: " + error } );
         }
       }
     );
@@ -1201,19 +1202,19 @@ export default class UserRoute {
   private getUserDataByUsername() {
     this.router.get(
       "/user-data/:username",
-      async (req: Request<{username: string}>, res: Response) => {
+      async ( req: Request<{ username: string; }>, res: Response ) => {
         try {
-          const username = String(req.params.username || "").trim();
-          if(!username) throw new Error("Username is required");
-          const user = await UserModel.findOne({username}, {password: 0});
-          if(!user) throw new Error("User not found");
-          res.status(200).json({
+          const username = String( req.params.username || "" ).trim();
+          if ( !username ) throw new Error( "Username is required" );
+          const user = await UserModel.findOne( { username }, { password: 0 } );
+          if ( !user ) throw new Error( "User not found" );
+          res.status( 200 ).json( {
             status: "success",
             message: "User found",
             data: user,
-          });
-        } catch(error) {
-          res.status(500).json({status: "error", message: String(error)});
+          } );
+        } catch ( error ) {
+          res.status( 500 ).json( { status: "error", message: String( error ) } );
         }
       }
     );
@@ -1226,7 +1227,7 @@ export default class UserRoute {
     this.router.delete(
       "/user-delete/:username/:deletedBy",
       async (
-        req: Request<{username: string; deletedBy: string}>,
+        req: Request<{ username: string; deletedBy: string; }>,
         res: Response
       ): Promise<void> => {
         try {
@@ -1240,123 +1241,189 @@ export default class UserRoute {
             ""
           ).trim();
 
-          if(!username) throw new Error("Username is required");
-          if(!deletedBy) throw new Error("Deletor is required");
-          if(!this.isSafeSegment(username)) {
+          if ( !username ) throw new Error( "Username is required" );
+          if ( !deletedBy ) throw new Error( "Deletor is required" );
+          if ( !this.isSafeSegment( username ) ) {
             res
-              .status(400)
-              .json({status: "error", message: "Invalid username format"});
+              .status( 400 )
+              .json( { status: "error", message: "Invalid username format" } );
             return;
           }
 
-          const baseUrl = `${req.protocol}://${req.get("host")}`;
+          const baseUrl = `${ req.protocol }://${ req.get( "host" ) }`;
 
-          const userDoc = await UserModel.findOne({username}).lean();
-          const recycleUserDir = path.join(this.RECYCLE_PATH, username);
+          const userDoc = await UserModel.findOne( { username } ).lean();
+          const recycleUserDir = path.join( this.RECYCLE_PATH, username );
           const userImagePath = path.join(
             this.DEFAULT_PATH,
             username,
             "image.webp"
           );
           const snapshot = userDoc;
-          const userDocsPath = path.join(this.DEFAULT_PATH, username, "documents");
-          const deletedCopyDir = path.join(this.DEFAULT_PATH, "deleted", username);
-          const deletedCopyImage = path.join(deletedCopyDir, "image.webp");
-          const deletedImageURL = `${baseUrl}/${this.DEFAULT_URL}/deleted/${encodeURIComponent(
+          const userDocsPath = path.join( this.DEFAULT_PATH, username, "documents" );
+          const deletedCopyDir = path.join( this.DEFAULT_PATH, "deleted", username );
+          const deletedCopyImage = path.join( deletedCopyDir, "image.webp" );
+          const deletedImageURL = `${ baseUrl }/${ this.DEFAULT_URL }/deleted/${ encodeURIComponent(
             username
-          )}/image.webp`;
+          ) }/image.webp`;
 
-          await fse.ensureDir(recycleUserDir);
+          await fse.ensureDir( recycleUserDir );
 
           // Save snapshot to recyclebin
-          if(userDoc) {
-            await fse.writeJson(path.join(recycleUserDir, "data.json"), userDoc, {
+          if ( userDoc ) {
+            await fse.writeJson( path.join( recycleUserDir, "data.json" ), userDoc, {
               spaces: 2,
-            });
+            } );
           }
 
           // Keep a "deleted preview" copy under /uploads/users/deleted/<username>/
-          if(await fse.pathExists(userImagePath)) {
-            await fse.ensureDir(deletedCopyDir);
-            await fse.copy(userImagePath, deletedCopyImage, {overwrite: true});
+          if ( await fse.pathExists( userImagePath ) ) {
+            await fse.ensureDir( deletedCopyDir );
+            await fse.copy( userImagePath, deletedCopyImage, { overwrite: true } );
           }
 
           // Move image to recyclebin
-          if(await fse.pathExists(userImagePath)) {
-            await fse.copy(userImagePath, path.join(recycleUserDir, "image.webp"), {
+          if ( await fse.pathExists( userImagePath ) ) {
+            await fse.copy( userImagePath, path.join( recycleUserDir, "image.webp" ), {
               overwrite: true,
-            });
-            await fse.remove(userImagePath);
+            } );
+            await fse.remove( userImagePath );
           }
 
           // Move documents to recyclebin
-          if(await fse.pathExists(userDocsPath)) {
-            await fse.copy(userDocsPath, path.join(recycleUserDir, "documents"), {
+          if ( await fse.pathExists( userDocsPath ) ) {
+            await fse.copy( userDocsPath, path.join( recycleUserDir, "documents" ), {
               overwrite: true,
-            });
-            await fse.remove(userDocsPath);
+            } );
+            await fse.remove( userDocsPath );
           }
 
           // Clean example relations (optional; adjust for your app)
-          await PropertyModel.updateMany({owner: username}, {$unset: {owner: 1}});
+          await PropertyModel.updateMany( { owner: username }, { $unset: { owner: 1 } } );
           await PropertyModel.updateMany(
-            {"addedBy.username": username},
-            {$unset: {addedBy: {} as any}}
+            { "addedBy.username": username },
+            { $unset: { addedBy: {} as any } }
           );
 
           // Notify back-office
-          if(userDoc) {
+          if ( userDoc ) {
             const notificationService = new NotificationService();
-            const io = req.app.get("io") as import("socket.io").Server;
+            const io = req.app.get( "io" ) as import( "socket.io" ).Server;
 
             await notificationService.createNotification(
               {
                 title: "Delete User",
-                body: `User ${userDoc.name ?? username} has been deleted.`,
+                body: `User ${ userDoc.name ?? username } has been deleted.`,
                 type: "delete",
                 severity: "warning",
-                audience: {mode: "role", roles: ["admin", "manager", "operator"]},
-                channels: ["inapp", "email"],
+                audience: { mode: "role", roles: [ "admin", "manager", "operator" ] },
+                channels: [ "inapp", "email" ],
                 metadata: {
                   refId: username,
                   data: {
                     snapshot,
                     image: deletedImageURL,
-                    userId: String(userDoc._id ?? ""),
+                    userId: String( userDoc._id ?? "" ),
                     deletedBy,
                     deletedAt: new Date().toISOString(),
-                    recyclebinUrl: `${this.RECYCLE_URL}/${encodeURIComponent(
+                    recyclebinUrl: `${ this.RECYCLE_URL }/${ encodeURIComponent(
                       username
-                    )}/`
+                    ) }/`
                   }
                 },
               },
-              (rooms, payload) =>
-                rooms.forEach((r) => io.to(r).emit("notification.new", payload))
+              ( rooms, payload ) =>
+                rooms.forEach( ( r ) => io.to( r ).emit( "notification.new", payload ) )
             );
           }
 
           // Remove from DB last
-          const deleted = await UserModel.findOneAndDelete({username}).lean();
-          if(!deleted) {
-            res.status(404).json({status: "error", message: "User not found"});
+          const deleted = await UserModel.findOneAndDelete( { username } ).lean();
+          if ( !deleted ) {
+            res.status( 404 ).json( { status: "error", message: "User not found" } );
             return;
           }
 
-          res.status(200).json({
+          res.status( 200 ).json( {
             status: "success",
             message: "User deleted successfully",
             data: {
               username,
-              recyclebin: path.join(this.RECYCLE_URL, username, "/"),
+              recyclebin: path.join( this.RECYCLE_URL, username, "/" ),
               deletedImageURL,
             },
-          });
-        } catch(err: any) {
-          console.error("[user-delete] error:", err?.message || err);
+          } );
+        } catch ( err: any ) {
+          console.error( "[user-delete] error:", err?.message || err );
           res
-            .status(500)
-            .json({status: "error", message: err?.message || "Internal error"});
+            .status( 500 )
+            .json( { status: "error", message: err?.message || "Internal error" } );
+        }
+      }
+    );
+  }
+
+  // ==========================================================
+  // Get user section by key
+  // ==========================================================
+  private getUserSectionByKey() {
+    this.router.get(
+      "/user-section-key/:username/:key",
+      async ( req: Request<{ username: string; key: string; }>, res: Response ) => {
+        try {
+          const username = String( req.params.username || "" ).trim();
+
+          const key = String( req.params.key || "" ).trim();
+
+          if ( !username || !key ) {
+            res
+              .status( 400 )
+              .json( { status: "error", message: "Username and key are required" } );
+            return;
+          }
+
+          const NOT_ALLOWED_KEYS = new Set<string>( [
+            "_id",
+            "createdAt",
+            "updatedAt",
+            "username",
+            "password",
+            "access",
+            "isActive",
+            "emailVerified",
+            "emailVerificationToken",
+            "emailVerificationTokenExpires",
+            "otpVerifycation",
+            "otpTokenExpires",
+            "otpToken",
+          ] );
+
+          if ( NOT_ALLOWED_KEYS.has( key ) ) {
+            res
+              .status( 400 )
+              .json( { status: "error", message: "Access to the requested key is not allowed" } );
+            return;
+          }
+
+          const projection: any = {};
+
+          projection[ key ] = 1;
+          projection[ "_id" ] = 0;
+
+          const user = await UserModel.findOne( { username }, projection ).lean().exec();
+
+          if ( !user ) {
+            res.status( 404 ).json( { status: "error", message: "User not found" } );
+            return;
+          }
+          res.status( 200 ).json( {
+            status: "success",
+            message: "User section retrieved",
+            data: {section:user},
+          } );
+        } catch ( error ) {
+          console.error( "getUserSectionByKey:", error );
+          res.status( 500 ).json( { status: "error", message: "Server error" } );
         }
       }
     );
