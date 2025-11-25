@@ -467,26 +467,17 @@ export default class Property {
     this.router.get(
       "/get-single-property-section-by-id/:id",
       async (
-        req: Request<{ id: string; }, any, any, { section?: string; }>,
+        req: Request<{ id: string; }, unknown, unknown, { sections?: string; }>,
         res: Response
       ): Promise<void> => {
         try {
-          // -------- 1) Read & sanitise inputs --------
-          const rawId = req.params.id;
-          const rawSection = req.query.section;
+          // ─────────────────────────────────────────────
+          // 1) Read & sanitise inputs
+          // ─────────────────────────────────────────────
+          const rawId: string = req.params.id;
+          const rawSections: string | undefined = req.query.sections;
 
-          const id = this.s( rawId );
-          const section = typeof rawSection === "string" ? this.s( rawSection ) : "";
-
-          if ( !section ) {
-            res.status( 400 ).json( {
-              success: false,
-              status: "error",
-              message: "Invalid property section!",
-              data: null,
-            } );
-            return;
-          }
+          const id: string = this.s( rawId ); // your sanitiser
 
           if ( !id ) {
             res.status( 400 ).json( {
@@ -498,31 +489,68 @@ export default class Property {
             return;
           }
 
-          // Optional but strongly recommended: whitelist allowed sections
-          const allowedSections: string[] = [
-            "images",
-            "title",
-            "type",
-            "listing",
-          ];
-
-          if ( !allowedSections.includes( section ) ) {
+          if ( !rawSections ) {
             res.status( 400 ).json( {
               success: false,
               status: "error",
-              message: "Requested section is not allowed!",
+              message:
+                'At least one section must be provided in the "sections" query parameter.',
               data: null,
             } );
             return;
           }
 
-          const filter: FilterQuery<IProperty> = {};
+          // Example: "title,images,address"
+          // -> ["title","images","address"] (sanitised + lowercased)
+          const requestedSections: string[] = rawSections
+            .split( "," )
+            .map( ( s ) => this.s( s ).toLowerCase() )
+            .filter( ( s ) => s.length > 0 );
 
-          // -------- 2) Query only one section from MongoDB --------
-          // Dynamic projection: { [section]: 1 } means "include this field"
+          if ( requestedSections.length === 0 ) {
+            res.status( 400 ).json( {
+              success: false,
+              status: "error",
+              message: "Invalid property section list!",
+              data: null,
+            } );
+            return;
+          }
+
+          // ─────────────────────────────────────────────
+          // 2) Whitelist not allowed sections
+          // ─────────────────────────────────────────────
+          const notAllowedSections: string[] = [
+            "internalNote",
+            "status",
+            "verificationStatus",
+            "owner",
+            "addedBy", // add more allowed fields here
+          ];
+
+          const safeSections: string[] = requestedSections.filter( ( section ) =>
+            !notAllowedSections.includes( section )
+          );
+
+          if ( safeSections.length === 0 ) {
+            res.status( 400 ).json( {
+              success: false,
+              status: "error",
+              message: "Requested section(s) are not allowed!",
+              data: null,
+            } );
+            return;
+          }
+
+          // ─────────────────────────────────────────────
+          // 3) Build projection & query MongoDB
+          // ─────────────────────────────────────────────
+          // "title images address -_id"
+          const projectionString: string = `${ safeSections.join( " " ) } -_id`;
+
           const property = await PropertyModel
             .findOne( { id } )
-            .select( `${ section } -_id` ) // include `section`, exclude `_id`
+            .select( projectionString )
             .lean()
             .exec();
 
@@ -536,27 +564,39 @@ export default class Property {
             return;
           }
 
-          // If document exists but section field is missing
-          if ( typeof property[ section as keyof typeof property ] === "undefined" ) {
+          // ─────────────────────────────────────────────
+          // 4) Build response object only with found sections
+          // ─────────────────────────────────────────────
+          const values: Record<string, unknown> = {};
+
+          for ( const section of safeSections ) {
+            const value = ( property as Record<string, unknown> )[ section ];
+            if ( typeof value !== "undefined" ) {
+              values[ section ] = value;
+            }
+          }
+
+          if ( Object.keys( values ).length === 0 ) {
             res.status( 404 ).json( {
               success: false,
               status: "error",
-              message: "Requested section not found on this property!",
+              message: "Requested section(s) not found on this property!",
               data: null,
             } );
             return;
           }
 
-
-          // -------- 3) Success response (only that section) --------
+          // ─────────────────────────────────────────────
+          // 5) Success response
+          // ─────────────────────────────────────────────
           res.status( 200 ).json( {
             success: true,
             status: "success",
-            message: "Property section fetched successfully.",
+            message: "Property section(s) fetched successfully.",
             data: {
               id,
-              section,
-              value: property[ section as keyof typeof property ],
+              sections: safeSections,
+              values,
             },
           } );
           return;
@@ -565,7 +605,7 @@ export default class Property {
           res.status( 500 ).json( {
             success: false,
             status: "error",
-            message: "Error occurred while fetching property section.",
+            message: "Error occurred while fetching property section(s).",
             data: null,
           } );
           return;
@@ -573,6 +613,7 @@ export default class Property {
       }
     );
   }
+
 
 
   // --------------------------------- DELETE ----------------------------------

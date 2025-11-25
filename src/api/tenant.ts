@@ -1127,7 +1127,7 @@ export default class Tenant {
   // GET /complaints-count/tenant/:username
   // ===========================================================================
   private getAllComplaintsCountByTenantUsername(): void {
-    this.router.get( '/complaints/tenant/:username', async ( req: Request<{ username: string; }>, res: Response ) => {
+    this.router.get( '/complaints-count/tenant/:username', async ( req: Request<{ username: string; }>, res: Response ) => {
       try {
         const username = ( req.params.username || '' ).toString().trim();
         if ( !username ) { res.status( 400 ).json( { success: false, message: 'username is required' } ); return; }
