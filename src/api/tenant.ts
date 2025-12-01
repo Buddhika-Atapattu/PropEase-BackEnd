@@ -19,29 +19,34 @@
 // • Electron-friendly: file responses may include relPath under "public/..."
 // ============================================================================
 
-import express, {
-  Request, Response, Router, NextFunction, RequestHandler
-} from 'express';
-import { FilterQuery } from "mongoose";
+import { randomUUID } from 'crypto';
 import dotenv from 'dotenv';
+import express, {
+  NextFunction,
+  Request,
+  RequestHandler,
+  Response, Router
+} from 'express';
 import fs from 'fs';
 import * as fse from 'fs-extra';
-import path from 'path';
-import multer from 'multer';
+import { FilterQuery } from "mongoose";
 import type { FileFilterCallback } from 'multer';
-import { randomUUID } from 'crypto';
+import multer from 'multer';
+import path from 'path';
 
-import { ITenant, TenantModel } from '../models/tenant.model';
-import { LeaseModel } from '../models/lease.model';
-import NotificationService from '../services/notification.service';
-import { UserModel, type IUser } from '../models/user.model';
 import {
-  ComplaintModel,
   COMPLAINT_CATEGORIES,
-  type ComplaintAudience,
+  ComplaintModel,
   DEFINED_AUDIENCES,
   IComplaint,
+  type ComplaintAudience,
 } from '../models/complaint.model';
+import { LeaseModel, type LeasePayload } from '../models/lease.model';
+import { ITenant, TenantModel } from '../models/tenant.model';
+import { UserModel, type IUser } from '../models/user.model';
+import NotificationService from '../services/notification.service';
+import type { PaginationMeta } from '../types/api-message';
+import { ApiResponseBuilder } from '../utils/api-combiner.builder';
 
 dotenv.config();
 
@@ -243,12 +248,12 @@ export default class Tenant {
     try {
       const s = ( raw ?? '' ).toString().trim();
       if ( !s ) {
-        res.status( 400 ).json( { success: false, message: `${ label } is missing or empty` } );
+        ApiResponseBuilder.notFound( res, `${ label } is missing or empty` );
         return null;
       }
       return JSON.parse( s ) as T;
     } catch ( e ) {
-      res.status( 400 ).json( { success: false, message: `${ label } is not valid JSON` } );
+      ApiResponseBuilder.validationError( res, `${ label } is not valid JSON` );
       return null;
     }
   }
@@ -285,11 +290,10 @@ export default class Tenant {
           if ( err.code === 'LIMIT_FILE_SIZE' ) message = 'One or more files exceed the 10MB size limit.';
           else if ( err.code === 'LIMIT_FILE_COUNT' ) message = 'Too many files. Maximum 10 attachments allowed.';
           else if ( err.code === 'LIMIT_UNEXPECTED_FILE' ) message = 'Unexpected or unsupported file received.';
-          res.status( 400 ).json( { success: false, message, errors: { code: err.code, field: ( err as any ).field } } );
+          ApiResponseBuilder.badRequest( res, message );
           return;
         }
-
-        res.status( 400 ).json( { success: false, message: err?.message || 'Upload failed' } );
+        ApiResponseBuilder.conflict( res, err?.message || 'Upload failed' );
         return;
       } );
     };
@@ -314,13 +318,13 @@ export default class Tenant {
         const addedBy = ( req.body.addedBy || '' ).trim();
 
         // Validate
-        if ( !username ) { res.status( 400 ).json( { status: 'error', message: 'Username required!' } ); return; }
-        if ( !name ) { res.status( 400 ).json( { status: 'error', message: 'Name required!' } ); return; }
-        if ( !image ) { res.status( 400 ).json( { status: 'error', message: 'Image required!' } ); return; }
-        if ( !phoneNumber ) { res.status( 400 ).json( { status: 'error', message: 'Phone number required!' } ); return; }
-        if ( !email ) { res.status( 400 ).json( { status: 'error', message: 'Email required!' } ); return; }
-        if ( !gender ) { res.status( 400 ).json( { status: 'error', message: 'Gender required!' } ); return; }
-        if ( !addedBy ) { res.status( 400 ).json( { status: 'error', message: 'Added by required!' } ); return; }
+        if ( !username ) { ApiResponseBuilder.validationError( res, 'Username is required!' ); return; }
+        if ( !name ) { ApiResponseBuilder.validationError( res, 'Name required!' ); return; }
+        if ( !image ) { ApiResponseBuilder.validationError( res, 'Image required!' ); return; }
+        if ( !phoneNumber ) { ApiResponseBuilder.validationError( res, 'Phone number required!' ); return; }
+        if ( !email ) { ApiResponseBuilder.validationError( res, 'Email required!' ); return; }
+        if ( !gender ) { ApiResponseBuilder.validationError( res, 'Gender required!' ); return; }
+        if ( !addedBy ) { ApiResponseBuilder.validationError( res, 'Added by required!' ); return; }
 
         // Clear any previous recyclebin bucket for this user (fresh start)
         const recycleBinForTenant = this.safeJoin( this.TENANT_RECYCLE_ROOT, username );
@@ -373,11 +377,11 @@ export default class Tenant {
           );
         } catch { /* non-fatal */ }
 
-        res.status( 200 ).json( { status: 'success', message: 'Tenant added successfully', data: tenantDoc } );
+        ApiResponseBuilder.ok( res, 'tenant', tenantDoc, 'Tenant added successfully' );
         return;
       } catch ( error ) {
         console.error( 'insertTenant error:', error );
-        res.status( 500 ).json( { status: 'error', message: `Error: ${ error instanceof Error ? error.message : error }` } );
+        ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
@@ -390,16 +394,17 @@ export default class Tenant {
   private getAllTenants(): void {
     this.router.get( '/get-all-tenants', async ( _req: Request, res: Response ) => {
       try {
-        const tenants = await TenantModel.find().lean();
+        const tenants = await TenantModel.find<ITenant>().lean() as unknown as ITenant[];
         if ( !tenants || tenants.length === 0 ) {
-          res.status( 404 ).json( { status: 'error', message: 'No tenants found' } );
+          ApiResponseBuilder.notFound( res, 'No tenants found' );
           return;
         }
-        res.status( 200 ).json( { status: 'success', message: 'Tenants fetched successfully', data: tenants } );
+
+        ApiResponseBuilder.ok( res, 'tenants', tenants, 'Tenants fetched successfully' );
         return;
       } catch ( error ) {
         console.error( 'get-all-tenants error:', error );
-        res.status( 500 ).json( { status: 'error', message: `Error: ${ error instanceof Error ? error.message : error }` } );
+        ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
@@ -411,12 +416,18 @@ export default class Tenant {
   private getAllTenantsCount(): void {
     this.router.get( '/get-all-tenants-count', async ( _req: Request, res: Response ) => {
       try {
-        const count = await TenantModel.countDocuments();
-        res.status( 200 ).json( { status: 'success', message: 'All tenant users count retrieved successfully!', data: count } );
+        const total = await TenantModel.countDocuments();
+
+        ApiResponseBuilder.ok(
+          res,
+          'other',
+          {},
+          'All tenant users count retrieved successfully!',
+          { pagination: { total } } );
         return;
       } catch ( error ) {
         console.error( 'get-all-tenants error:', error );
-        res.status( 500 ).json( { status: 'error', message: `Error: ${ error instanceof Error ? error.message : error }` } );
+        ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
@@ -485,33 +496,58 @@ export default class Tenant {
         // 4) DB query
         // ──────────────────────────────────────────────
         const [ tenants, total ] = await Promise.all( [
-          TenantModel.find( filter ).sort( sort ).skip( skip ).limit( limit ).lean().exec(),
+          TenantModel
+            .find( filter )
+            .sort( sort )
+            .skip( skip )
+            .limit( limit )
+            .lean<ITenant>()
+            .exec() as unknown as ITenant[],
           TenantModel.countDocuments( filter ),
         ] );
-        const data = {
-          page,
-          tenants,
-          limit,
-          total,
-          totalPages: Math.ceil( total / limit ),
+
+        // 1) Total pages (0 if no records)
+        const totalPages: number = total > 0 ? Math.ceil( total / limit ) : 0;
+
+        // 2) Zero-based page index (used internally)
+        const index: number = page > 0 ? page - 1 : 0;
+
+        // 3) If there are no results, normalize start/end to 0
+        const hasResults: boolean = total > 0;
+
+        // 4) Start = first record index for this page (0-based)
+        const start: number = hasResults ? skip : 0;
+
+        // 5) End = last record index for this page (0-based, inclusive)
+        const end: number = hasResults
+
+          ? Math.min( skip + tenants.length - 1, total - 1 )
+          : 0;
+
+        // 6) Construct pagination meta
+        const pagination: PaginationMeta = {
+          index,                     // 0,1,2…
+          limit,                     // page size
+          total,                     // total records in DB
+          start,                     // 0-based first record index
+          end,                       // 0-based last record index
+          // Correct logic: based on CURRENT page
+          hasNext: page < totalPages,
+          hasPrevious: page > 1 && totalPages > 0
         };
+
+        if ( rawSearch && rawSearch.trim() !== '' ) {
+          pagination.search = rawSearch.trim();  // always string here
+        }
+
         // ──────────────────────────────────────────────
         // 5) Response
         // ──────────────────────────────────────────────
-        res.status( 200 ).json( {
-          success: true,
-          status: "success",
-          message: "All tenant users retrieved successfully!",
-          data
-        } );
+        ApiResponseBuilder.ok( res, 'tenants', tenants, 'All tenant users retrieved successfully!', { pagination } );
         return;
       } catch ( error ) {
         console.error( error );
-        res.status( 500 ).json( {
-          success: false,
-          status: "error",
-          error: "An unknown error occurred: " + error,
-        } );
+        ApiResponseBuilder.internalError( res, error );
       }
     } );
   }
@@ -648,8 +684,8 @@ export default class Tenant {
               .sort( sort )
               .skip( skip )
               .limit( limit )
-              .lean()
-              .exec(),
+              .lean<IUser>()
+              .exec() as unknown as IUser[],
             UserModel.countDocuments( filter ),
           ] );
 
@@ -662,26 +698,58 @@ export default class Tenant {
           };
 
 
+          // 1) Total pages (0 if no records)
+          const totalPages: number = total > 0 ? Math.ceil( total / limit ) : 0;
+
+          // 2) Zero-based page index (used internally)
+          const index: number = page > 0 ? page - 1 : 0;
+
+          // 3) If there are no results, normalize start/end to 0
+          const hasResults: boolean = total > 0;
+
+          // 4) Start = first record index for this page (0-based)
+          const start: number = hasResults ? skip : 0;
+
+          // 5) End = last record index for this page (0-based, inclusive)
+          const end: number = hasResults
+
+            ? Math.min( skip + users.length - 1, total - 1 )
+            : 0;
+
+          // 6) Construct pagination meta
+          const pagination: PaginationMeta = {
+            index,                     // 0,1,2…
+            limit,                     // page size
+            total,                     // total records in DB
+            start,                     // 0-based first record index
+            end,                       // 0-based last record index
+            // Correct logic: based on CURRENT page
+            hasNext: page < totalPages,
+            hasPrevious: page > 1 && totalPages > 0
+          };
+
+          if ( rawSearch && rawSearch.trim() !== '' ) {
+            pagination.search = rawSearch.trim();  // always string here
+          }
+
+
           // ──────────────────────────────────────────────
           // 6) Response
           // ──────────────────────────────────────────────
-          res.status( 200 ).json( {
-            success: true,
-            status: 'success',
-            message: 'All non-tenant users retrieved successfully!',
-            data,
-          } );
+          ApiResponseBuilder.ok(
+            res,
+            'users',
+            users,
+            'All non-tenant users retrieved successfully!',
+            { pagination }
+          );
           return;
 
         } catch ( error ) {
 
           console.error( error );
 
-          res.status( 500 ).json( {
-            success: false,
-            status: 'error',
-            error: 'An unknown error occurred: ' + error,
-          } );
+          ApiResponseBuilder.internalError( res, error );
 
         }
 
@@ -741,23 +809,20 @@ export default class Tenant {
           // ──────────────────────────────────────────────
           // 3) Response
           // ──────────────────────────────────────────────
-          res.status( 200 ).json( {
-            success: true,
-            status: 'success',
-            message: 'All non-tenant users count retrieved successfully!',
-            data: total,
-          } );
+          ApiResponseBuilder.ok(
+            res,
+            'other',
+            {},
+            'All non-tenant users count retrieved successfully!',
+            { pagination: { total } }
+          );
           return;
 
         } catch ( error ) {
 
           console.error( error );
 
-          res.status( 500 ).json( {
-            success: false,
-            status: 'error',
-            error: 'An unknown error occurred: ' + error,
-          } );
+          ApiResponseBuilder.internalError( res, error );
 
         }
 
@@ -781,17 +846,19 @@ export default class Tenant {
           // Params
           const username = ( req.params.username || '' ).trim();
           const deletor = ( req.params.deletor || '' ).trim();
-          if ( !username ) { res.status( 400 ).json( { status: 'error', message: 'Username required!' } ); return; }
-          if ( !deletor ) { res.status( 400 ).json( { status: 'error', message: 'Deletor required!' } ); return; }
+          if ( !username ) { ApiResponseBuilder.validationError( res, 'Username is required' ); return; }
+          if ( !deletor ) { ApiResponseBuilder.validationError( res, 'Deletor is required' ); return; }
 
           // Validate tenant + deletor
           const tenantDoc = await TenantModel.findOne( { username } );
-          if ( !tenantDoc ) { res.status( 404 ).json( { status: 'error', message: 'Tenant not found!' } ); return; }
+          if ( !tenantDoc ) { ApiResponseBuilder.notFound( res, 'Tenant not found' ); return; }
           const deletorDoc = await UserModel.findOne( { username: deletor } );
-          if ( !deletorDoc ) { res.status( 404 ).json( { status: 'error', message: 'Deletor not found!' } ); return; }
+          if ( !deletorDoc ) { ApiResponseBuilder.notFound( res, 'Deletor is required' ); return; }
 
           // Load leases
-          const leases = await LeaseModel.find( { 'tenantInformation.tenantUsername': username } ).lean();
+          const leases = await LeaseModel.find( { 'tenantInformation.tenantUsername': username } )
+            .lean<LeasePayload>()
+            .exec() as unknown as LeasePayload[];
           const snapshot = { tenant: tenantDoc, leases };
 
           // Prepare recyclebin
@@ -875,15 +942,13 @@ export default class Tenant {
           // Finally delete the tenant row
           await TenantModel.findOneAndDelete( { username } );
 
-          res.status( 200 ).json( {
-            status: 'success',
-            message: 'Tenant and related lease records moved to recyclebin and removed from DB.',
-          } );
+
+          ApiResponseBuilder.noContent( res, 'Tenant and related lease records moved to recyclebin and removed from DB.' );
           return;
         } catch ( error ) {
           console.error( 'delete-tenant error:', error );
           const message = error instanceof Error ? error.message : 'Unexpected error occurred during tenant deletion.';
-          res.status( 500 ).json( { status: 'error', message } );
+          ApiResponseBuilder.internalError( res, message );
           return;
         }
       },
@@ -906,19 +971,22 @@ export default class Tenant {
       try {
         // 1) Parse and validate body
         const raw = ( req.body?.data ?? '' ).toString().trim();
-        if ( !raw ) { res.status( 400 ).json( { success: false, message: 'Missing data payload' } ); return; }
+        if ( !raw ) {
+          ApiResponseBuilder.validationError( res, 'Missing data payload!' );
+          return;
+        }
 
         let payload: any;
         try {
           payload = JSON.parse( raw );
         } catch {
-          res.status( 400 ).json( { success: false, message: 'Invalid JSON in data payload' } );
+          ApiResponseBuilder.conflict( res, 'Invalid JSON in data payload' );
           return;
         }
 
         const attachmentCountStr = ( req.body?.attachmentCount ?? '' ).toString().trim();
         if ( !attachmentCountStr || isNaN( Number( attachmentCountStr ) ) ) {
-          res.status( 400 ).json( { success: false, message: 'attachmentCount must be a valid number' } );
+          ApiResponseBuilder.validationError( res, 'attachmentCount must be a valid number' );
           return;
         }
         const expectedCount = Number( attachmentCountStr );
@@ -938,14 +1006,41 @@ export default class Tenant {
         const tenantName = ( payload.tenantName ?? '' ).toString().trim() || undefined;
         const propertyName = ( payload.propertyName ?? '' ).toString().trim() || undefined;
         const assigneeName = ( payload.assigneeName ?? '' ).toString().trim() || undefined;
+        if ( !tenantId ) {
+          ApiResponseBuilder.validationError( res, 'tenantId is required' );
+          return;
+        }
 
-        if ( !tenantId ) { res.status( 400 ).json( { success: false, message: 'tenantId is required' } ); return; }
-        if ( !propertyId ) { res.status( 400 ).json( { success: false, message: 'propertyId is required' } ); return; }
-        if ( !title ) { res.status( 400 ).json( { success: false, message: 'title is required' } ); return; }
-        if ( !leaseId ) { res.status( 400 ).json( { success: false, message: 'leaseId is required' } ); return; }
-        if ( !description ) { res.status( 400 ).json( { success: false, message: 'description is required' } ); return; }
-        if ( !this.isValidCategory( category ) ) { res.status( 400 ).json( { success: false, message: 'Invalid category' } ); return; }
-        if ( !this.isValidPriority( priority ) ) { res.status( 400 ).json( { success: false, message: 'Invalid priority' } ); return; }
+        if ( !propertyId ) {
+          ApiResponseBuilder.validationError( res, 'propertyId is required' );
+          return;
+        }
+
+        if ( !title ) {
+          ApiResponseBuilder.validationError( res, 'title is required' );
+          return;
+        }
+
+        if ( !leaseId ) {
+          ApiResponseBuilder.validationError( res, 'leaseId is required' );
+          return;
+        }
+
+        if ( !description ) {
+          ApiResponseBuilder.validationError( res, 'description is required' );
+          return;
+        }
+
+        if ( !this.isValidCategory( category ) ) {
+          ApiResponseBuilder.validationError( res, 'Invalid category' );
+          return;
+        }
+
+        if ( !this.isValidPriority( priority ) ) {
+          ApiResponseBuilder.validationError( res, 'Invalid priority' );
+          return;
+        }
+
 
         // 3) Create complaint doc (authoritative code)
         const code = ( payload.code ?? '' ).toString().trim() || this.generateCode();
@@ -978,10 +1073,7 @@ export default class Tenant {
         const files = filesMap[ 'attachments' ] || [];
 
         if ( files.length !== expectedCount ) {
-          res.status( 400 ).json( {
-            success: false,
-            message: `attachmentCount mismatch: expected ${ expectedCount }, received ${ files.length }`,
-          } );
+          ApiResponseBuilder.validationError( res, `attachmentCount mismatch: expected ${ expectedCount }, received ${ files.length }` );
           return;
         }
 
@@ -993,7 +1085,7 @@ export default class Tenant {
           for ( const f of files ) {
             // Defense-in-depth (fileFilter already validated)
             if ( !this.isAllowedAttachmentType( f.mimetype ) ) {
-              res.status( 400 ).json( { success: false, message: `Unsupported file type: ${ f.mimetype }` } );
+              ApiResponseBuilder.validationError( res, `Unsupported file type: ${ f.mimetype }` );
               return;
             }
 
@@ -1040,15 +1132,11 @@ export default class Tenant {
           );
         } catch { /* ignore */ }
 
-        res.status( 201 ).json( { success: true, message: 'Complaint created', data: response, meta: leaseId ? { leaseId } : undefined } );
+        ApiResponseBuilder.ok( res, 'complaint', doc, 'Complaint created!' );
         return;
       } catch ( error: any ) {
         console.error( 'create-complaint error:', error );
-        res.status( 500 ).json( {
-          success: false,
-          message: 'Internal server error while creating complaint',
-          errors: { reason: error?.message || 'Unknown error' },
-        } );
+        ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
@@ -1062,16 +1150,17 @@ export default class Tenant {
     this.router.get( '/complaint/:complaintID', async ( req: Request<{ complaintID: string; }>, res: Response ) => {
       try {
         const complaintID = ( req.params.complaintID || '' ).toString().trim();
-        if ( !complaintID ) { res.status( 400 ).json( { success: false, message: 'complaintID is required' } ); return; }
+        if ( !complaintID ) { ApiResponseBuilder.validationError( res, 'Complaint ID is required!' ); return; }
 
-        const complaintDoc = await ComplaintModel.findOne( { code: complaintID } ).lean();
-        if ( !complaintDoc ) { res.status( 404 ).json( { success: false, message: 'Complaint not found' } ); return; }
+        const complaintDoc = await ComplaintModel.findOne( { code: complaintID } ).lean<IComplaint>();
 
-        res.status( 200 ).json( { success: true, message: 'Complaint fetched successfully', data: complaintDoc } );
+        if ( !complaintDoc ) { ApiResponseBuilder.notFound( res, 'Complaint does not found!' ); return; }
+
+        ApiResponseBuilder.ok( res, 'complaint', complaintDoc, 'Complaint fetched successfully!' );
         return;
       } catch ( error ) {
         console.error( 'get-complaint-by-id error:', error );
-        res.status( 500 ).json( { success: false, message: 'Internal server error while fetching complaint', errors: { reason: error || 'Unknown error' } } );
+        ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
@@ -1085,7 +1174,10 @@ export default class Tenant {
     this.router.get( '/complaints/tenant/:username', async ( req: Request<{ username: string; }>, res: Response ) => {
       try {
         const username = ( req.params.username || '' ).toString().trim();
-        if ( !username ) { res.status( 400 ).json( { success: false, message: 'username is required' } ); return; }
+        if ( !username ) {
+          ApiResponseBuilder.validationError( res, 'Username is required' );
+          return;
+        }
 
         const start = req.query.start ? parseInt( req.query.start as string, 10 ) : 0;
 
@@ -1109,15 +1201,54 @@ export default class Tenant {
         // const complaints = await ComplaintModel.find({tenantId: username}).lean();
 
         const [ complaints, total ] = await Promise.all( [
-          ComplaintModel.find( { ...filter, tenantId: username } ).sort( { createdAt: -1 } ).skip( start ).limit( limit ).lean().exec(),
+          ComplaintModel.find( { ...filter, tenantId: username } ).sort( { createdAt: -1 } ).skip( start ).limit( limit ).lean<IComplaint>().exec() as unknown as IComplaint[],
           ComplaintModel.countDocuments( { ...filter, tenantId: username } ),
         ] );
 
-        res.status( 200 ).json( { status: 'success', message: 'Complaints fetched successfully', data: { complaints, total } } );
+        // 1) Total pages (0 if no records)
+        const totalPages: number = total > 0 ? Math.ceil( total / limit ) : 0;
+
+        // 2) Zero-based page index (0,1,2…)
+        const index: number = total > 0 ? Math.floor( start / limit ) : 0;
+
+        // 3) Do we have any results at all?
+        const hasResults: boolean = total > 0;
+
+        // 4) End index (0-based, inclusive)
+        const end: number = hasResults
+          ? Math.min( start + complaints.length - 1, total - 1 )
+          : 0;
+
+        // 5) Has next/previous
+        const hasNext: boolean = index + 1 < totalPages;
+        const hasPrevious: boolean = index > 0 && totalPages > 0;
+
+        // 6) Build meta
+        const pagination: PaginationMeta = {
+          index,
+          limit,
+          total,
+          start,
+          end,
+          hasNext,
+          hasPrevious
+        };
+
+        if ( search && search.trim() !== '' ) {
+          pagination.search = search.trim();
+        }
+
+
+
+        // ──────────────────────────────────────────────
+        // Response
+        // ──────────────────────────────────────────────
+        ApiResponseBuilder.ok( res, 'complaints', complaints, 'All leases retrieved successfully!', { pagination } );
+
         return;
       } catch ( error ) {
         console.error( 'get-all-complaints-by-tenant-username error:', error );
-        res.status( 500 ).json( { status: 'error', message: 'Internal server error while fetching complaints', errors: { reason: error || 'Unknown error' } } );
+        ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
@@ -1130,15 +1261,18 @@ export default class Tenant {
     this.router.get( '/complaints-count/tenant/:username', async ( req: Request<{ username: string; }>, res: Response ) => {
       try {
         const username = ( req.params.username || '' ).toString().trim();
-        if ( !username ) { res.status( 400 ).json( { success: false, message: 'username is required' } ); return; }
+        if ( !username ) {
+          ApiResponseBuilder.validationError( res, 'Username is required' );
+          return;
+        }
 
         const total = await ComplaintModel.countDocuments( { tenantId: username } );
 
-        res.status( 200 ).json( { status: 'success', message: 'Complaints count fetched successfully', data: { total } } );
+        ApiResponseBuilder.ok( res, 'other', {}, 'Complaints total fetched successfully', { pagination: { total } } );
         return;
       } catch ( error ) {
         console.error( 'get-all-complaints-by-tenant-username error:', error );
-        res.status( 500 ).json( { status: 'error', message: 'Internal server error while fetching complaints count', errors: { reason: error || 'Unknown error' } } );
+        ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
@@ -1176,26 +1310,49 @@ export default class Tenant {
             .sort( { createdAt: -1 } )
             .skip( start )
             .limit( limit )
-            .lean()
-            .exec(),
+            .lean<IComplaint>()
+            .exec() as unknown as IComplaint[],
           ComplaintModel.countDocuments( { ...filter } )
         ] );
 
-        res.status( 200 ).json( {
-          success: true,
-          status: 'success',
-          message: 'Complaints fetched successfully',
-          data: { items, total }
-        } );
+        // 1) Total pages (0 if no records)
+        const totalPages: number = total > 0 ? Math.ceil( total / limit ) : 0;
+
+        // 2) Zero-based page index (0,1,2…)
+        const index: number = total > 0 ? Math.floor( start / limit ) : 0;
+
+        // 3) Do we have any results at all?
+        const hasResults: boolean = total > 0;
+
+        // 4) End index (0-based, inclusive)
+        const end: number = hasResults
+          ? Math.min( start + items.length - 1, total - 1 )
+          : 0;
+
+        // 5) Has next/previous
+        const hasNext: boolean = index + 1 < totalPages;
+        const hasPrevious: boolean = index > 0 && totalPages > 0;
+
+        // 6) Build meta
+        const pagination: PaginationMeta = {
+          index,
+          limit,
+          total,
+          start,
+          end,
+          hasNext,
+          hasPrevious
+        };
+
+        if ( search && search.trim() !== '' ) {
+          pagination.search = search.trim();
+        }
+
+        ApiResponseBuilder.ok( res, 'complaints', items, 'Complaints fetched successful', { pagination } );
         return;
       } catch ( error ) {
         console.error( 'get-all-complaints:', error );
-        res.status( 500 ).json( {
-          success: false,
-          status: 'error',
-          message: 'Internal server error while fetching complaints',
-          errors: { reason: ( error as Error )?.message ?? 'Unknown error' }
-        } );
+        ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
@@ -1210,21 +1367,12 @@ export default class Tenant {
         // Fetch sorted (newest first)
         const total = await ComplaintModel.countDocuments( {} );
 
-        res.status( 200 ).json( {
-          success: true,
-          status: 'success',
-          message: 'Complaints count fetched successfully',
-          data: { total }
-        } );
+
+        ApiResponseBuilder.ok( res, 'other', {}, 'Complaints total fetched successfully', { pagination: { total } } );
         return;
       } catch ( error ) {
         console.error( 'get-all-complaints:', error );
-        res.status( 500 ).json( {
-          success: false,
-          status: 'error',
-          message: 'Internal server error while fetching complaints',
-          errors: { reason: ( error as Error )?.message ?? 'Unknown error' }
-        } );
+        ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
@@ -1247,11 +1395,7 @@ export default class Tenant {
           const section = req.params.section?.trim().toLowerCase();
 
           if ( !section ) {
-            res.status( 400 ).json( {
-              success: false,
-              status: 'error',
-              message: 'Section is invalid!',
-            } );
+            ApiResponseBuilder.validationError( res, 'Section is invalid!' );
             return;
           }
 
@@ -1267,30 +1411,18 @@ export default class Tenant {
           // 3) Fetch correct data
           // -----------------------------
           const [ complaints, total ] = await Promise.all( [
-            ComplaintModel.find( {}, projection ).lean(),
+            ComplaintModel.find( {}, projection ).lean<IComplaint>().exec() as unknown as IComplaint[],
             ComplaintModel.countDocuments(),
           ] );
 
           // -----------------------------
           // 4) Return success
           // -----------------------------
-          res.status( 200 ).json( {
-            success: true,
-            status: 'success',
-            message: 'Complaints fetched successfully by section',
-            data: { total, complaints },
-          } );
+          ApiResponseBuilder.ok( res, 'complaints', complaints, 'Complaints fetched successfully by section', { pagination: { total } } );
         } catch ( error ) {
           console.error( 'get-all-complaints:', error );
 
-          res.status( 500 ).json( {
-            success: false,
-            status: 'error',
-            message: 'Internal server error while fetching complaints',
-            errors: {
-              reason: ( error as Error )?.message ?? 'Unknown error',
-            },
-          } );
+          ApiResponseBuilder.internalError( res, error );
 
           return;
         }
@@ -1337,24 +1469,38 @@ export default class Tenant {
         const image = ( complaintRef.image ?? '' ).toString().trim();
         const audience = ( ( complaintRef.audience ?? 'all' ) as ComplaintAudience );
 
-        if ( !tenantID ) { res.status( 400 ).json( { success: false, message: 'Tenant ID is missing' } ); return; }
-        if ( !code ) { res.status( 400 ).json( { success: false, message: 'Complaint ID is missing' } ); return; }
-        if ( !byUserId || !byName ) { res.status( 400 ).json( { success: false, message: 'byUserId and byName are required' } ); return; }
+        if ( !tenantID ) {
+          ApiResponseBuilder.validationError( res, 'Tenant ID is missing' );
+          return;
+        }
+        if ( !code ) {
+          ApiResponseBuilder.validationError( res, 'Complaint ID is missing' );
+          return;
+        }
+        if ( !byUserId || !byName ) {
+          ApiResponseBuilder.validationError( res, 'byUserId and byName are required' );
+          return;
+        }
         if ( !DEFINED_AUDIENCES.includes( audience ) ) {
-          res.status( 400 ).json( { success: false, message: 'audience must be internal | tenant | all' } ); return;
+          ApiResponseBuilder.validationError( res, 'audience must be internal | tenant | all' );
+          return;
         }
 
         // 2) Validate text content
         const rawComment = ( req.body?.comment ?? '' ).toString().trim();
-        if ( !rawComment ) { res.status( 400 ).json( { success: false, message: 'Comment cannot be empty' } ); return; }
+        if ( !rawComment ) {
+          ApiResponseBuilder.validationError( res, 'Comment cannot be empty' );
+          return;
+        }
         if ( rawComment.length > 5000 ) {
-          res.status( 400 ).json( { success: false, message: 'Comment is too long (max 5000 chars)' } ); return;
+          ApiResponseBuilder.validationError( res, 'Comment is too long (max 5000 chars)' );
+          return;
         }
 
         // 3) Validate attachment count vs actual uploads
         const attachmentCountStr = ( req.body?.attachmentCount ?? '' ).toString().trim();
         if ( !attachmentCountStr || isNaN( Number( attachmentCountStr ) ) ) {
-          res.status( 400 ).json( { success: false, message: 'attachmentCount must be a valid number' } );
+          ApiResponseBuilder.validationError( res, 'AttachmentCount must be a valid number' );
           return;
         }
         const expectedCount = Number( attachmentCountStr );
@@ -1363,16 +1509,16 @@ export default class Tenant {
         const files = filesMap[ 'attachments' ] || [];
 
         if ( files.length !== expectedCount ) {
-          res.status( 400 ).json( {
-            success: false,
-            message: `attachmentCount mismatch: expected ${ expectedCount }, received ${ files.length }`,
-          } );
+          ApiResponseBuilder.validationError( res, `AttachmentCount mismatch: expected ${ expectedCount }, received ${ files.length }` );
           return;
         }
 
         // 4) Confirm complaint existence early (cheap query)
         const exists = await ComplaintModel.exists( { code } );
-        if ( !exists ) { res.status( 404 ).json( { success: false, message: `Complaint not found for code: ${ code }` } ); return; }
+        if ( !exists ) {
+          ApiResponseBuilder.validationError( res, `Complaint not found for code: ${ code }` );
+          return;
+        }
 
         // 5) Write files (if any) to comments folder
         const baseDir = this.safeJoin( this.UPLOADS_ROOT, 'tenants', tenantID, 'complaints', code, 'comments' );
@@ -1390,7 +1536,7 @@ export default class Tenant {
         for ( const f of files ) {
           // Defense-in-depth (fileFilter already validated)
           if ( !this.isAllowedAttachmentType( f.mimetype ) ) {
-            res.status( 400 ).json( { success: false, message: `Unsupported file type: ${ f.mimetype }` } );
+            ApiResponseBuilder.validationError( res, `Unsupported file type: ${ f.mimetype }` );
             return;
           }
 
@@ -1440,6 +1586,7 @@ export default class Tenant {
           // Rollback files if DB write failed (race/removed complaint)
           for ( const p of written ) { await fse.remove( p ).catch( () => void 0 ); }
           res.status( 404 ).json( { success: false, message: `Complaint not found for code: ${ code }` } );
+          ApiResponseBuilder.validationError( res, `Complaint not found for code: ${ code }` );
           return;
         }
 
@@ -1460,24 +1607,14 @@ export default class Tenant {
           ( rooms, payload ) => rooms.forEach( room => io?.to( room ).emit( 'notification.new', payload ) ),
         );
 
-        res.status( 200 ).json( {
-          success: true,
-          status: 'success',
-          message: 'Comment posted successfully',
-          data: {
-            code,
-            comment: created,
-          },
-        } );
+        ApiResponseBuilder.ok( res, 'other', {
+          code,
+          comment: created,
+        }, 'Comment posted successfully' );
         return;
       } catch ( error ) {
         console.error( 'post-comments:', error );
-        res.status( 500 ).json( {
-          success: false,
-          status: 'error',
-          message: 'Internal server error while posting comment',
-          errors: { reason: ( error as Error )?.message ?? 'Unknown error' }
-        } );
+        ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
@@ -1557,7 +1694,10 @@ export default class Tenant {
     ) => {
       try {
         const code = ( req.params.code || '' ).toString().trim();
-        if ( !code ) { res.status( 400 ).json( { success: false, message: 'Invalid complaint code' } ); return; }
+        if ( !code ) {
+          ApiResponseBuilder.validationError( res, 'Invalid complaint code' );
+          return;
+        }
 
         const limit = this.parseLimit( req.query.limit, 10, 1, 50 );
         const cursor = this.decodeCursor( ( req.query.cursor as string ) || null );
@@ -1602,7 +1742,7 @@ export default class Tenant {
         ];
 
         // Run aggregation
-        const items = await ComplaintModel.aggregate( pipeline ).exec();
+        const items = await ComplaintModel.aggregate<IComplaint>( pipeline ).exec();
 
         // Compute nextCursor + hasMore
         let nextCursor: string | undefined;
@@ -1610,6 +1750,9 @@ export default class Tenant {
 
         if ( items.length > 0 ) {
           const last = items[ items.length - 1 ];
+
+          if ( !last ) return;
+
           const createdAt: Date = new Date( last.createdAt );
           const id = ( last as any )._id;
           nextCursor = this.encodeCursor( createdAt, id );
@@ -1639,24 +1782,27 @@ export default class Tenant {
             { $project: { _id: 1 } }
           ];
 
-          const more = await ComplaintModel.aggregate( morePipeline ).exec();
+          const more = await ComplaintModel.aggregate<IComplaint>( morePipeline ).exec();
           hasMore = more.length > 0;
         }
 
-        res.status( 200 ).json( {
-          success: true,
-          items,
-          nextCursor,
-          hasMore,
-        } );
+
+        ApiResponseBuilder.ok(
+          res,
+          'other',
+          { comments: items },
+          'Data fetched successfull',
+          {
+            pagination: {
+              hasMore,
+              nextCursor,
+            }
+          }
+        );
         return;
       } catch ( error ) {
         console.error( 'get-comments:', error );
-        res.status( 500 ).json( {
-          success: false,
-          message: 'Internal server error while fetching comments',
-          errors: { reason: ( error as Error )?.message ?? 'Unknown error' }
-        } );
+        ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );

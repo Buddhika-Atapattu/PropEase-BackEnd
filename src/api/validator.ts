@@ -1,9 +1,10 @@
-import express, {Request, Response, Router} from "express";
-import {promises as dns} from "dns";
+import express, { Request, Response, Router } from "express";
+import { promises as dns } from "dns";
 import dotenv from "dotenv";
 // If you actually use CryptoService elsewhere in this file, keep it;
 // otherwise you can safely remove the import + instance to avoid dead code.
-import {CryptoService} from "../services/crypto.service";
+import { CryptoService } from "../services/crypto.service";
+import { ApiResponseBuilder } from '../utils/api-combiner.builder';
 
 dotenv.config();
 
@@ -41,79 +42,60 @@ export default class Validator {
   private emailValidator() {
     this.router.get(
       "/email-validator/:email",
-      async (req: Request<{email: string}>, res: Response<ValidationResponse>): Promise<any> => {
+      async ( req: Request<{ email: string; }>, res: Response<ValidationResponse> ): Promise<any> => {
         try {
           // Params can be URL-encoded; decode and normalize carefully
           const raw = req.params?.email ?? "";
-          const safeEmail = decodeURIComponent(raw).toLowerCase().trim();
+          const safeEmail = decodeURIComponent( raw ).toLowerCase().trim();
 
           // Early validations
-          if(!safeEmail) {
-            return res.status(400).json({
-              status: "error",
-              message: "Email is required in the path parameter.",
-              data: {email: raw},
-            });
+          if ( !safeEmail ) {
+
+            ApiResponseBuilder.validationError( res, "Email is required in the path parameter." );
           }
 
-          if(!this.isEmailFormatValid(safeEmail)) {
-            return res.status(400).json({
-              status: "error",
-              message: "Invalid email format.",
-              data: {email: safeEmail, validation: {format: false, mx: false}},
-            });
-          }
+          if ( !this.isEmailFormatValid( safeEmail ) ) {
+            ApiResponseBuilder.validationError( res, "Invalid email format." );
+            return;
+          } 
 
           // Extract domain safely
-          const domain = this.extractDomain(safeEmail);
-          if(!domain) {
-            return res.status(400).json({
-              status: "error",
-              message: "Email domain is missing or malformed.",
-              data: {email: safeEmail, validation: {format: true, mx: false}},
-            });
+          const domain = this.extractDomain( safeEmail );
+          if ( !domain ) {
+            ApiResponseBuilder.validationError( res, "Email domain is missing or malformed." );
+            return;
           }
 
           // MX lookup (deliverability hint)
-          const hasMXRecord = await this.hasValidMXRecord(domain);
+          const hasMXRecord = await this.hasValidMXRecord( domain );
 
-          if(!hasMXRecord) {
-            return res.status(400).json({
-              status: "error",
-              message: "Email domain has no MX records.",
-              data: {email: safeEmail, validation: {format: true, mx: false}, domain},
-            });
+          if ( !hasMXRecord ) {
+            ApiResponseBuilder.validationError( res, "Email domain has no MX records." );
+            return;
           }
-
-          return res.status(200).json({
-            status: "success",
-            message: "Email appears valid.",
-            data: {email: safeEmail, validation: {format: true, mx: true}, domain},
-          });
-        } catch(error) {
-          const msg = error instanceof Error ? error.message : String(error);
-          return res.status(500).json({
-            status: "error",
-            message: "Internal Server Error",
-            data: {error: msg},
-          });
+          ApiResponseBuilder.ok( res, 'other', { email: safeEmail, validation: { format: true, mx: true }, domain }, "Email appears valid." );
+        } catch ( error ) {
+          console.error( error );
+          const msg = error instanceof Error ? error.message : String( error );
+          ApiResponseBuilder.internalError( res, msg );
+          return;
         }
       }
     );
   }
 
   /** Lightweight RFC-ish format check; avoids `.trim()` on undefined. */
-  private isEmailFormatValid(email: string): boolean {
+  private isEmailFormatValid( email: string ): boolean {
     // Keep it pragmatic; you already normalize to lowercase & trim earlier.
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    return typeof email === "string" && emailRegex.test(email);
+    return typeof email === "string" && emailRegex.test( email );
   }
 
   /** Safely extract the domain part ("a@b.c" -> "b.c"). Returns undefined if malformed. */
-  private extractDomain(email: string): string | undefined {
-    const at = email.lastIndexOf("@");
-    if(at <= 0 || at === email.length - 1) return undefined;
-    const domain = email.slice(at + 1).trim();
+  private extractDomain( email: string ): string | undefined {
+    const at = email.lastIndexOf( "@" );
+    if ( at <= 0 || at === email.length - 1 ) return undefined;
+    const domain = email.slice( at + 1 ).trim();
     return domain || undefined;
   }
 
@@ -121,10 +103,10 @@ export default class Validator {
    * MX lookup via dns.promises. Guarded so TypeScript never sees string|undefined.
    * Returns false on any error (NXDOMAIN, ENOTFOUND, timeout, etc.).
    */
-  private async hasValidMXRecord(domain: string): Promise<boolean> {
+  private async hasValidMXRecord( domain: string ): Promise<boolean> {
     try {
-      const records = await dns.resolveMx(domain);
-      return Array.isArray(records) && records.length > 0;
+      const records = await dns.resolveMx( domain );
+      return Array.isArray( records ) && records.length > 0;
     } catch {
       return false;
     }

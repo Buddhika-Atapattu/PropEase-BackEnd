@@ -7,52 +7,53 @@
 // - Beginner-friendly comments included
 // ============================================================================
 
-import express, { Request, Response, Router } from "express";
-import { FilterQuery } from "mongoose";
-import dotenv from "dotenv";
-import fs from "fs";
-import path from "path";
-import multer from "multer";
 import axios from "axios";
-import * as libre from "libreoffice-convert"; // (kept if you later reuse for docs)
-import { promisify } from "util";
-import * as puppeteer from "puppeteer";
+import dotenv from "dotenv";
 import ejs from "ejs";
+import express, { Request, Response, Router } from "express";
+import fs from "fs";
+import * as libre from "libreoffice-convert"; // (kept if you later reuse for docs)
+import { FilterQuery } from "mongoose";
+import multer from "multer";
 import * as os from "os";
+import path from "path";
+import * as puppeteer from "puppeteer";
 import QRCode from "qrcode";
+import { promisify } from "util";
 
 import {
-  LeaseModel,
-  TenantInformation,
-  CoTenant,
-  Address,
-  EmergencyContact,
-  CurrencyFormat,
-  PaymentFrequency,
-  PaymentMethod,
-  SecurityDeposit,
-  RentDueDate,
-  LatePaymentPenalty,
-  UtilityResponsibility,
-  NoticePeriod,
-  LeaseAgreement,
-  RulesAndRegulations,
-  Signatures,
-  SystemMetadata,
-  LeaseType,
-  CountryCodes,
   AddedBy,
+  Address,
+  CoTenant,
+  CountryCodes,
+  CurrencyFormat,
+  EmergencyContact,
   FILE,
-  TokenViceData,
-  ScannedFileRecordJSON,
+  LatePaymentPenalty,
+  LeaseAgreement,
+  LeaseModel,
   LeasePayload,
   LeasePayloadWithProperty,
+  NoticePeriod,
+  PaymentFrequency,
+  PaymentMethod,
+  RentDueDate,
+  RulesAndRegulations,
+  ScannedFileRecordJSON,
+  SecurityDeposit,
+  Signatures,
+  SystemMetadata,
+  TenantInformation,
+  TokenViceData,
+  UtilityResponsibility
 } from "../models/lease.model";
 
 import { Property, PropertyModel, type IProperty } from '../models/property.model';
-import { UserModel } from "../models/user.model";
+import { UserModel, type IUser } from "../models/user.model";
 import { CryptoService } from "../services/crypto.service";
 import NotificationService from "../services/notification.service";
+import { PaginationMeta } from "../types/api-message";
+import { ApiResponseBuilder } from '../utils/api-combiner.builder';
 
 dotenv.config();
 
@@ -479,11 +480,6 @@ export default class Lease {
           const scannedDocumentPath = this.buildLeasePath( leaseID, true, "documents" );
           const mobileScannedFolderPath = this.buildTenantPath( tenantUsername, false, "scanned", "mobile" );
 
-          // removed tokens (currently not mutating the ledger file — kept for future)
-          const tenantUploadedScanedDocumentsRemoved: ScannedFileRecordJSON[] = this.mustJSON(
-            req.body.tenantUploadedScanedDocumentsRemoved,
-            "Removed scanned docs"
-          );
 
           const tenantUploadedScanedDocuments: ScannedFileRecordJSON[] = this.mustJSON(
             req.body.tenantUploadedScanedDocuments,
@@ -685,18 +681,11 @@ export default class Lease {
             ( rooms, payload ) => rooms.forEach( ( room ) => io.to( room ).emit( "notification.new", payload ) )
           );
 
-          res.status( 200 ).json( {
-            status: "success",
-            message: "Agreement has been created successfully!",
-            data: INSERT,
-          } );
+          ApiResponseBuilder.ok( res, 'lease', INSERT, 'Agreement has been created successfully!' );
           return;
         } catch ( error ) {
           console.log( "Error in register lease agreement:", error );
-          res.status( 500 ).json( {
-            status: "error",
-            error: error instanceof Error ? error.message : "An unknown error occurred.",
-          } );
+          ApiResponseBuilder.internalError( res, error );
           return;
         }
       }
@@ -767,7 +756,7 @@ export default class Lease {
           const files = req.files as { [ field: string ]: Express.Multer.File[]; } | undefined;
 
           const leaseID = this.mustString( req.params.leaseID || req.body.leaseID, "Lease ID" );
-          const leaseAgreementDB = await LeaseModel.findOne( { leaseID } );
+          const leaseAgreementDB = await LeaseModel.findOne( { leaseID } ).lean<LeasePayload>().exec();
           if ( !leaseAgreementDB ) throw new Error( "Lease agreement not found!" );
 
           // Tenant
@@ -1118,7 +1107,7 @@ export default class Lease {
           await fs.promises.writeFile( JSON_CURR, JSON.stringify( UPDATE_DOCUMENT_DATA, null, 2 ), "utf8" );
 
           // DB update
-          const result = await LeaseModel.updateOne( { leaseID }, { $set: UPDATE_DATA } );
+          const result: LeasePayload = await LeaseModel.updateOne( { leaseID }, { $set: UPDATE_DATA } ).lean<LeasePayload>();
 
           // notify
           const notificationService = new NotificationService();
@@ -1147,18 +1136,12 @@ export default class Lease {
             ( rooms, payload ) => rooms.forEach( ( room ) => io.to( room ).emit( "notification.new", payload ) )
           );
 
-          res.status( 200 ).json( {
-            status: "success",
-            message: "Agreement has been updated successfully!",
-            data: result,
-          } );
+
+          ApiResponseBuilder.ok( res, 'lease', result, 'Lease updated successfully!' );
           return;
         } catch ( error ) {
           console.log( "Error in update lease agreement:", error );
-          res.status( 500 ).json( {
-            status: "error",
-            error: error instanceof Error ? error.message : "An unknown error occurred.",
-          } );
+          ApiResponseBuilder.internalError( res, error );
           return;
         }
       }
@@ -1174,22 +1157,14 @@ export default class Lease {
     this.router.get( "/preview-lease-agreement/:leaseID", async ( req: Request<{ leaseID: string; }>, res: Response ) => {
       try {
         const leaseID = this.mustString( req.params.leaseID, "Lease ID" );
-        const leaseData = await LeaseModel.findOne( { leaseID } );
+        const leaseData: LeasePayload | null = await LeaseModel.findOne( { leaseID } ).lean<LeasePayload>().exec();
         if ( !leaseData ) {
-          res.status( 404 ).json( {
-            success: false,
-            status: 'error',
-            message: 'Lease not found!'
-          } );
+          ApiResponseBuilder.notFound( res, 'Lease not found!' );
           return;
         }
-        const property = await PropertyModel.findOne( { id: leaseData.leaseID } );
+        const property: IProperty | null = await PropertyModel.findOne( { id: leaseData.leaseID } ).lean<IProperty>().exec();
         if ( !property ) {
-          res.status( 404 ).json( {
-            success: false,
-            status: 'error',
-            message: 'Property not found!'
-          } );
+          ApiResponseBuilder.validationError( res, 'Property not found!' );
           return;
         }
 
@@ -1197,16 +1172,13 @@ export default class Lease {
           ...leaseData,
           property,
         };
-        // const jsonPath = this.safeJoin(this.LEASE_UPLOAD_ROOT, leaseID, "data.json");
-        // if(!fs.existsSync(jsonPath)) throw new Error("Agreement data not found!");
-        // const fileContent = await fs.promises.readFile(jsonPath, "utf8");
-        // const JSON_DATA: LeasePayload = JSON.parse(fileContent);
-        // Render the EJS file and pass JSON_DATA as "data"
+
         res.render( "lease-agreement-pdf.ejs", { data: leaseWithProperty } );
         return;
       } catch ( error ) {
         console.log( "Error in preview lease agreement:", error );
-        res.status( 500 ).json( { status: "error", error: error instanceof Error ? error.message : "Unknown error" } );
+        const message = error instanceof Error ? error.message : "Unknown error";
+        ApiResponseBuilder.internalError( res, message );
         return;
       }
     } );
@@ -1283,22 +1255,14 @@ export default class Lease {
         const { leaseID, type, generator } = req.params;
         if ( !leaseID || !type || !generator ) throw new Error( "Missing parameters" );
 
-        const leaseData = await LeaseModel.findOne( { leaseID } ).lean();
+        const leaseData: LeasePayload | null = await LeaseModel.findOne( { leaseID } ).lean<LeasePayload>().exec();
         if ( !leaseData ) {
-          res.status( 400 ).json( {
-            success: false,
-            status: 'error',
-            message: 'Lease not found!'
-          } );
+          ApiResponseBuilder.notFound( res, 'Lease not found!' );
           return;
         }
-        const propertyDoc = await PropertyModel.findOne( { id: leaseData.propertyID } ).lean();
+        const propertyDoc: IProperty | null = await PropertyModel.findOne( { id: leaseData.propertyID } ).lean<IProperty>().exec();
         if ( !propertyDoc ) {
-          res.status( 400 ).json( {
-            success: false,
-            status: 'error',
-            message: 'Property not found!'
-          } );
+          ApiResponseBuilder.notFound( res, 'Property not found!' );
           return;
         }
 
@@ -1397,10 +1361,7 @@ export default class Lease {
         return;
       } catch ( error ) {
         console.error( "Error generating PDF:", error );
-        res.status( 500 ).json( {
-          status: "error",
-          error: error instanceof Error ? error.message : String( error ),
-        } );
+        ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
@@ -1488,16 +1449,17 @@ export default class Lease {
     this.router.get( "/lease-agreement/:leaseID", async ( req: Request<{ leaseID: string; }>, res: Response ) => {
       try {
         const leaseID = this.mustString( req.params.leaseID, "Lease ID" );
-        const data = await LeaseModel.findOne( { leaseID } ).lean();
+        const data = await LeaseModel.findOne( { leaseID } ).lean<LeasePayload>().exec();
         if ( !data ) {
-          res.status( 404 ).json( { status: "error", message: `No lease agreements found for this lease ID (${ leaseID }).` } );
+          ApiResponseBuilder.validationError( res, `No lease agreements found for this lease ID (${ leaseID }).` );
           return;
         }
-        res.status( 200 ).json( { status: "success", message: "Lease agreements retrieved successfully!", data } );
+
+        ApiResponseBuilder.ok( res, 'lease', data, `Lease agreements retrieved successfully!` );
         return;
       } catch ( error ) {
         console.log( "Error in get lease by id:", error );
-        res.status( 500 ).json( { status: "error", error: error instanceof Error ? error.message : "Unknown error" } );
+        ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
@@ -1514,29 +1476,23 @@ export default class Lease {
         const safeUsername = this.sanitizeIdentifier( req.params.username );
         if ( !safeUsername ) throw new Error( "Username is required!" );
 
-        const leaseAgreements = await LeaseModel.find( {
+        const leaseAgreements: LeasePayload[] = await LeaseModel.find( {
           "tenantInformation.tenantUsername": safeUsername,
         } )
           .sort( { "systemMetadata.lastUpdated": -1 } )
-          .lean();
+          .lean<LeasePayload>().exec() as unknown as LeasePayload[];
 
         if ( !leaseAgreements || leaseAgreements.length === 0 ) {
-          res.status( 404 ).json( { status: "error", message: "No lease agreements found for this user." } );
+          ApiResponseBuilder.validationError( res, `No lease agreements found for this user.` );
           return;
         }
 
-        res.status( 200 ).json( {
-          status: "success",
-          message: "Lease agreements retrieved successfully!",
-          data: leaseAgreements,
-        } );
+        ApiResponseBuilder.ok( res, 'leases', leaseAgreements, `Lease agreements retrieved successfully!` );
+
         return;
       } catch ( error ) {
         console.log( "Error in get all lease agreements:", error );
-        res.status( 500 ).json( {
-          status: "error",
-          error: error instanceof Error ? error.message : "Unknown error",
-        } );
+        ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
@@ -1562,22 +1518,18 @@ export default class Lease {
           { leaseID: safeLeaseID },
           { "systemMetadata.validationStatus": validationStatus, "systemMetadata.lastUpdated": lastUpdated },
           { new: true }
-        ).lean();
+        ).lean<LeasePayload>();
 
         if ( !leaseAgreement ) {
-          res.status( 404 ).json( { status: "error", message: "No lease agreement found for this lease ID." } );
+          ApiResponseBuilder.notFound( res, "No lease agreement found for this lease ID." );
           return;
         }
 
-        res.status( 200 ).json( {
-          status: "success",
-          message: "Lease agreement has been updated successfully!",
-          data: leaseAgreement,
-        } );
+        ApiResponseBuilder.ok( res, 'lease', leaseAgreement, "Lease agreement has been updated successfully!" );
         return;
       } catch ( error ) {
         console.log( "Error in update lease validation status:", error );
-        res.status( 500 ).json( { status: "error", error: error instanceof Error ? error.message : "Unknown error" } );
+        ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
@@ -1590,20 +1542,20 @@ export default class Lease {
 
   private getAllLeases(): void {
     this.router.get(
-      "/all-leases",
+      '/all-leases',
       async ( req: Request, res: Response ): Promise<void> => {
         try {
           // ──────────────────────────────────────────────
           // 1) Pagination parameters
           // ──────────────────────────────────────────────
-          let limit: number = parseInt( ( req.query.limit as string ) || "20", 10 );
+          let limit: number = parseInt( ( req.query.limit as string ) || '20', 10 );
           if ( isNaN( limit ) || limit < 1 ) limit = 20;
           if ( limit > 100 ) limit = 100;
 
           let page: number;
           let skip: number;
 
-          if ( typeof req.query.start !== "undefined" ) {
+          if ( typeof req.query.start !== 'undefined' ) {
             // Frontend sends start = skip (0-based offset)
             const startRaw: number = parseInt( req.query.start as string, 10 );
             const start: number = isNaN( startRaw ) ? 0 : Math.max( startRaw, 0 );
@@ -1612,76 +1564,146 @@ export default class Lease {
             page = Math.floor( skip / limit ) + 1; // derive human page (1-based)
           } else {
             // Fallback: page-based API
-            const pageRaw: number = parseInt(
-              ( req.query.page as string ) || "1",
-              10
-            );
+            const pageRaw: number = parseInt( ( req.query.page as string ) || '1', 10 );
             page = isNaN( pageRaw ) ? 1 : Math.max( pageRaw, 1 );
             skip = ( page - 1 ) * limit;
           }
 
           // ──────────────────────────────────────────────
-          // 2) Search filter
+          // 2) Search filter (lease + property-aware)
           // ──────────────────────────────────────────────
           const rawSearch: string = this.s( req.query.search );
-          const filter: FilterQuery<LeasePayload> = {};
+          const leaseFilter: FilterQuery<LeasePayload> = {};
+          const propertyFilter: FilterQuery<IProperty> = {};
 
-          if ( rawSearch && rawSearch.trim() !== "" ) {
-            const rx = new RegExp( rawSearch.trim(), "i" );
+          // We will build an $or array for leases
+          const leaseOr: FilterQuery<LeasePayload>[] = [];
 
-            filter.$or = [
+          if ( rawSearch && rawSearch.trim() !== '' ) {
+            const rx = new RegExp( rawSearch.trim(), 'i' );
+
+            // 2.1 Lease direct text search
+            leaseOr.push(
               { leaseID: { $regex: rx } },
               { propertyID: { $regex: rx } },
-              { "tenantInformation.tenantUsername": { $regex: rx } },
-              { "tenantInformation.fullName": { $regex: rx } },
+              { 'tenantInformation.tenantUsername': { $regex: rx } },
+              { 'tenantInformation.fullName': { $regex: rx } }
+            );
+
+            // 2.2 Property text search
+            propertyFilter.$or = [
+              { id: { $regex: rx } },
+              { title: { $regex: rx } },
+              { type: { $regex: rx } },
+              { developerName: { $regex: rx } },
+              { projectName: { $regex: rx } },
+              { featuresAndAmenities: { $regex: rx } },
+              { 'address.houseNumber': { $regex: rx } },
+              { 'address.street': { $regex: rx } },
+              { 'address.city': { $regex: rx } },
+              { 'address.stateOrProvince': { $regex: rx } },
+              { 'address.country': { $regex: rx } }
             ];
+
+            // 2.3 Use property results to extend lease search
+            const matchedPropertiesRaw: IProperty[] = await PropertyModel.find(
+              propertyFilter,
+              { id: 1, _id: 0 } // only bring `id`
+            )
+              .lean<IProperty>()
+              .exec() as unknown as IProperty[];
+
+            // Tell TS: "this array only has an `id` field that we care about"
+            const matchedProperties = matchedPropertiesRaw as Array<{ id?: unknown; }>;
+
+
+            const propertyIds: string[] = matchedProperties
+              .map( ( p ) => p.id )
+              .filter( ( id ): id is string => typeof id === 'string' && id.trim().length > 0 );
+
+            if ( propertyIds.length > 0 ) {
+              // Add a condition: lease.propertyID is in the matched property list
+              leaseOr.push( { propertyID: { $in: propertyIds } } );
+            }
+          }
+
+          // Apply $or only if we actually have conditions
+          if ( leaseOr.length > 0 ) {
+            leaseFilter.$or = leaseOr;
           }
 
           // ──────────────────────────────────────────────
           // 3) Sorting
           // ──────────────────────────────────────────────
-          const sortBy: string = ( req.query.sortBy as string ) || "createdAt";
-          const sortOrder: string = ( req.query.sortOrder as string ) || "desc";
+          const sortBy: string = ( req.query.sortBy as string ) || 'createdAt';
+          const sortOrder: string = ( req.query.sortOrder as string ) || 'desc';
 
           const sort: Record<string, 1 | -1> = {
-            [ sortBy ]: sortOrder === "asc" ? 1 : -1,
+            [ sortBy ]: sortOrder === 'asc' ? 1 : -1
           };
 
           // ──────────────────────────────────────────────
-          // 4) DB query
+          // 4) DB query (leases only, but property-aware)
           // ──────────────────────────────────────────────
           const [ leases, total ] = await Promise.all( [
-            LeaseModel.find( filter ).sort( sort ).skip( skip ).limit( limit ).lean().exec(),
-            LeaseModel.countDocuments( filter ),
+            LeaseModel.find( leaseFilter )
+              .sort( sort )
+              .skip( skip )
+              .limit( limit )
+              .lean<LeasePayload>()
+              .exec() as unknown as LeasePayload[],
+            LeaseModel.countDocuments( leaseFilter )
           ] );
-          const data = {
-            leases,
-            page,
-            limit,
-            total,
-            totalPages: Math.ceil( total / limit ),
+
+          // 1) Total pages (0 if no records)
+          const totalPages: number = total > 0 ? Math.ceil( total / limit ) : 0;
+
+          // 2) Zero-based page index (used internally)
+          const index: number = page > 0 ? page - 1 : 0;
+
+          // 3) If there are no results, normalize start/end to 0
+          const hasResults: boolean = total > 0;
+
+          // 4) Start = first record index for this page (0-based)
+          const start: number = hasResults ? skip : 0;
+
+          // 5) End = last record index for this page (0-based, inclusive)
+          const end: number = hasResults
+            ? Math.min( skip + leases.length - 1, total - 1 )
+            : 0;
+
+          // 6) Construct pagination meta
+          const pagination: PaginationMeta = {
+            index,                     // 0,1,2…
+            limit,                     // page size
+            total,                     // total records in DB
+            start,                     // 0-based first record index
+            end,                       // 0-based last record index
+            // Correct logic: based on CURRENT page
+            hasNext: page < totalPages,
+            hasPrevious: page > 1 && totalPages > 0
           };
+
+          if ( rawSearch && rawSearch.trim() !== '' ) {
+            pagination.search = rawSearch.trim();  // always string here
+          }
+
+
           // ──────────────────────────────────────────────
           // 5) Response
           // ──────────────────────────────────────────────
-          res.status( 200 ).json( {
-            success: true,
-            status: "success",
-            message: "All leases retrieved successfully!",
-            data
-          } );
+          ApiResponseBuilder.ok( res, 'leases', leases, 'All leases retrieved successfully!', { pagination } );
+
           return;
         } catch ( error ) {
           console.error( error );
-          res.status( 500 ).json( {
-            success: false,
-            status: "error",
-            error: "An unknown error occurred: " + error,
-          } );
+          ApiResponseBuilder.internalError( res, error );
+          return;
         }
       }
     );
   }
+
 
 
 
@@ -1693,15 +1715,13 @@ export default class Lease {
     this.router.get( "/get-lease-count", async ( _req: Request, res: Response ) => {
       try {
         const data = await LeaseModel.countDocuments();
-        res.status( 200 ).json( {
-          success: true,
-          status: 'success',
-          message: `Total number of leases are ${ data }`,
-          data
-        } );
+        const pagination: PaginationMeta = {
+          total: data,
+        };
+        ApiResponseBuilder.ok( res, 'other', {}, `Total number of leases are ${ data }`, { pagination } );
       } catch ( error ) {
-        console.log( error );
-        res.status( 500 ).json( { success: false, status: 'error', error: `Failed to fetch leases: ${ error }` } );
+        console.error( error );
+        ApiResponseBuilder.internalError( res, error );
       }
     } );
   }
@@ -1740,11 +1760,11 @@ export default class Lease {
         // -----------------------------
         // Get list of leased propertyIDs
         // -----------------------------
-        const leaseProperties = await LeaseModel
+        const leaseProperties: LeasePayload[] = await LeaseModel
           .find()
           .select( { propertyID: 1, _id: 0 } )
-          .lean()
-          .exec();
+          .lean<LeasePayload>()
+          .exec() as unknown as LeasePayload[];
 
         const leasedPropertyIds: string[] = leaseProperties.map( item => item.propertyID );
 
@@ -1788,26 +1808,57 @@ export default class Lease {
         // Query properties + count
         // -----------------------------
         const [ properties, total ] = await Promise.all( [
-          PropertyModel.find( filter ).sort( sort ).skip( skip ).limit( limit ).lean().exec(),
+          PropertyModel.find( filter )
+            .sort( sort )
+            .skip( skip )
+            .limit( limit )
+            .lean<IProperty>()
+            .exec() as unknown as IProperty[],
           PropertyModel.countDocuments( filter )
         ] );
 
-        res.status( 200 ).json( {
-          success: true,
-          status: "success",
-          message: `Total number of properties without lease: ${ total }`,
-          data: { properties, total }
-        } );
+        // 1) Total pages (0 if no records)
+        const totalPages: number = total > 0 ? Math.ceil( total / limit ) : 0;
+
+        // 2) Zero-based page index (used internally)
+        const index: number = page > 0 ? page - 1 : 0;
+
+        // 3) If there are no results, normalize start/end to 0
+        const hasResults: boolean = total > 0;
+
+        // 4) Start = first record index for this page (0-based)
+        const start: number = hasResults ? skip : 0;
+
+        // 5) End = last record index for this page (0-based, inclusive)
+        const end: number = hasResults
+          ? Math.min( skip + properties.length - 1, total - 1 )
+          : 0;
+
+        // 6) Construct pagination meta
+        const pagination: PaginationMeta = {
+          index,                     // 0,1,2…
+          limit,                     // page size
+          total,                     // total records in DB
+          start,                     // 0-based first record index
+          end,                       // 0-based last record index
+          // Correct logic: based on CURRENT page
+          hasNext: page < totalPages,
+          hasPrevious: page > 1 && totalPages > 0,
+          hasResults,
+        };
+
+        if ( rawSearch && rawSearch.trim() !== '' ) {
+          pagination.search = rawSearch.trim();  // always string here
+        }
+
+        // `Total number of properties without lease: ${ total }`
+
+        ApiResponseBuilder.ok( res, 'properties', properties, `Total number of properties without lease: ${ total }` );
         return;
 
       } catch ( error ) {
         console.error( "ERROR (get-properties-that-does-not-have-lease):", error );
-
-        res.status( 500 ).json( {
-          success: false,
-          status: "error",
-          error: `Failed to fetch properties: ${ error }`
-        } );
+        ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
@@ -1823,13 +1874,17 @@ export default class Lease {
         // -----------------------------
         // Get list of leased propertyIDs
         // -----------------------------
-        const leaseProperties = await LeaseModel
+        type LeasePropertyPick = { propertyID?: string | null; };
+        const leaseProperties: LeasePropertyPick[] = await LeaseModel
           .find()
           .select( { propertyID: 1, _id: 0 } )
-          .lean()
-          .exec();
+          .lean<LeasePropertyPick>()
+          .exec() as unknown as LeasePropertyPick[];
 
-        const leasedPropertyIds: string[] = leaseProperties.map( item => item.propertyID );
+        const leasedPropertyIds: string[] = leaseProperties
+          .map( item => item.propertyID )
+          .filter( ( id ): id is string => typeof id === 'string' && id.trim().length > 0 )
+          .map( id => id.trim() );
 
         // -----------------------------
         // Base filter: Exclude leased properties
@@ -1843,22 +1898,17 @@ export default class Lease {
         // -----------------------------
         const total = await PropertyModel.countDocuments( filter );
 
-        res.status( 200 ).json( {
-          success: true,
-          status: "success",
-          message: `Total number of properties without lease: ${ total }`,
-          data: { total }
-        } );
+
+        const pagination: PaginationMeta = {
+          total,
+        };
+
+        ApiResponseBuilder.ok( res, 'other', {}, `Total number of properties without lease: ${ total }`, { pagination } );
         return;
 
       } catch ( error ) {
         console.error( "ERROR (get-properties-that-does-not-have-lease):", error );
-
-        res.status( 500 ).json( {
-          success: false,
-          status: "error",
-          error: `Failed to fetch properties: ${ error }`
-        } );
+        ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
@@ -1875,16 +1925,16 @@ export default class Lease {
       try {
         const safeUsername = this.sanitizeIdentifier( req.params.username );
         if ( !safeUsername ) throw new Error( "Username is required!" );
-        const user = await UserModel.findOne( { username: safeUsername } ).lean();
+        const user = await UserModel.findOne( { username: safeUsername } ).lean<IUser>();
         if ( !user ) {
-          res.status( 404 ).json( { status: "error", message: "User not found!" } );
+          ApiResponseBuilder.notFound( res, 'User not found!' );
           return;
         }
-        res.status( 200 ).json( { status: "success", message: "User retrieved successfully!", data: user } );
+        ApiResponseBuilder.ok( res, 'user', user, "User retrieved successfully!" );
         return;
       } catch ( error ) {
         console.log( error );
-        res.status( 500 ).json( { status: "error", error: "An unknown error occurred: " + ( error as any ) } );
+        ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );

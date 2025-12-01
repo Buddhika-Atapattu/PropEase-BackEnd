@@ -1,24 +1,26 @@
 // File: src/api/property.ts
 // Class-based Property API with all helpers encapsulated as private methods/fields
 
-import express, { Request, Response, Router } from "express";
-import type { PipelineStage } from "mongoose";
 import dotenv from "dotenv";
-import multer from "multer";
-import sharp from "sharp";
-import path from "path";
+import express, { Request, Response, Router } from "express";
 import fs from "fs";
 import fse from "fs-extra";
-import NotificationService from "../services/notification.service";
-import { FilterQuery } from 'mongoose';
+import type { PipelineStage } from "mongoose";
+import multer from "multer";
+import path from "path";
+import sharp from "sharp";
+import { ComplaintModel, ComplaintStatus } from '../models/complaint.model';
 import {
-  PropertyModel,
-  IProperty,
+  AddedBy,
   Address,
   CountryDetails,
-  AddedBy,
   GoogleMapLocation,
+  IProperty,
+  PropertyModel,
 } from "../models/property.model";
+import NotificationService from "../services/notification.service";
+import type { PaginationMeta } from "../types/api-message";
+import { ApiResponseBuilder } from '../utils/api-combiner.builder';
 
 dotenv.config();
 
@@ -101,7 +103,6 @@ export default class Property {
     this.router = express.Router();
 
     // Base CRUD routes (existing)
-    this.test();
     this.insertProperty();
     this.getAllPropertiesWithPagination();
     this.getSinglePropertyById();
@@ -128,11 +129,6 @@ export default class Property {
 
   /* =============================== ROUTES =================================== */
 
-  private test() {
-    this.router.get( "/test", ( _req, res ) => {
-      res.status( 200 ).json( { status: "success", message: "Property API is working" } );
-    } );
-  }
 
   // ------------------------------ INSERT -------------------------------------
   private insertProperty(): void {
@@ -212,7 +208,7 @@ export default class Property {
         try {
           const propertyID = this.s( req.params.propertyID );
           if ( !propertyID ) {
-            res.status( 400 ).json( { status: "error", message: "Property ID missing in URL." } );
+            ApiResponseBuilder.notFound( res, "Property ID missing in URL." );
             return;
           }
 
@@ -275,7 +271,7 @@ export default class Property {
             await this.deleteFolderWithRetry(
               path.join( this.DEFAULT_UPLOAD_PATH, propertyID, "tempImages" )
             );
-            res.status( 400 ).json( { status: "fail", message: "Validation failed", errors } );
+            ApiResponseBuilder.validationError( res, `Validation failed ${ errors }` );
             return;
           }
 
@@ -304,10 +300,10 @@ export default class Property {
             ( rooms, payload ) => rooms.forEach( ( r ) => io.to( r ).emit( "notification.new", payload ) )
           );
 
-          res.status( 201 ).json( { status: "success", message: "Property inserted successfully", data: inserted } );
-        } catch ( err: any ) {
-          console.error( "[insert-property] error:", err );
-          res.status( 500 ).json( { status: "error", message: err?.message || "Internal server error" } );
+          ApiResponseBuilder.created( res, "Property inserted successfully", data );
+        } catch ( error: any ) {
+          console.error( "[insert-property] error:", error );
+          ApiResponseBuilder.internalError( res, error );
         }
       }
     );
@@ -322,7 +318,7 @@ export default class Property {
           const start = Math.max( 0, parseInt( req.params.start, 10 ) );
           const end = Math.max( 1, parseInt( req.params.end, 10 ) );
           if ( Number.isNaN( start ) || Number.isNaN( end ) )
-            throw new Error( "Invalid start or end parameters." );
+            ApiResponseBuilder.badRequest( res, "Invalid start or end parameters." );
 
           const rawSearch = this.s( req.query.search );
           const rawFilter = this.s( req.query.filter );
@@ -402,7 +398,7 @@ export default class Property {
 
           const match = and.length ? { $and: and } : {};
 
-          const properties = await PropertyModel.aggregate( [
+          const properties = await PropertyModel.aggregate<IProperty>( [
             { $match: match },
             {
               $addFields: {
@@ -423,16 +419,43 @@ export default class Property {
             { $limit: end - start },
           ] );
 
-          const totalCount = await PropertyModel.countDocuments( match );
+          const total = await PropertyModel.countDocuments( match );
 
-          res.status( 200 ).json( {
-            status: "success",
-            message: "Properties fetched successfully.",
-            data: { properties, count: totalCount },
-          } );
+          const limit = start - end;
+
+          const page = Math.floor( start / limit ) + 1;
+
+          // 1) Total pages (0 if no records)
+          const totalPages: number = total > 0 ? Math.ceil( total / ( limit ) ) : 0;
+
+          // 2) Zero-based page index (used internally)
+          const index: number = page > 0 ? page - 1 : 0;
+
+          // 3) If there are no results, normalize start/end to 0
+          const hasResults: boolean = total > 0;
+
+          // 6) Construct pagination meta
+          const pagination: PaginationMeta = {
+            index,                     // 0,1,2…
+            limit,                     // page size
+            total,                     // total records in DB
+            start,                     // 0-based first record index
+            end,                       // 0-based last record index
+            // Correct logic: based on CURRENT page
+            hasNext: page < totalPages,
+            hasPrevious: page > 1 && totalPages > 0,
+            hasResults,
+          };
+
+          if ( rawSearch && rawSearch.trim() !== '' ) {
+            pagination.search = rawSearch.trim();  // always string here
+          }
+
+          ApiResponseBuilder.ok( res, 'properties', properties, 'Properties fetched successfully.', { pagination } );
+
         } catch ( error ) {
           console.error( "[get-all-properties-with-pagination] error:", error );
-          res.status( 500 ).json( { status: "error", message: "Error occurred while fetching properties." } );
+          ApiResponseBuilder.internalError( res, error );
         }
       }
     );
@@ -445,17 +468,22 @@ export default class Property {
       async ( req: Request<{ id: string; }>, res: Response ) => {
         try {
           const id = this.s( req.params.id );
-          if ( !id ) throw new Error( "Property ID is required." );
-          const property = await PropertyModel.findOne( { id } );
-          if ( !property ) throw new Error( "Property not found." );
-          res.status( 200 ).json( {
-            status: "success",
-            message: "Property fetched successfully.",
-            data: property,
-          } );
+
+          if ( !id ) { ApiResponseBuilder.validationError( res, 'Property ID is required!' ); }
+
+          const property: IProperty | null = await PropertyModel.findOne( { id } ).lean<IProperty>();
+
+          if ( !property ) { ApiResponseBuilder.notFound( res, 'Property Not Found!' ); }
+
+          if ( property ) {
+            ApiResponseBuilder.ok( res, 'property', property, 'Property fetched successfully.' );
+          }
+          else {
+            ApiResponseBuilder.notFound( res, 'Property Not Found!' );
+          }
         } catch ( error ) {
           console.error( "[get-single-property] error:", error );
-          res.status( 500 ).json( { status: "error", message: "Error occurred while fetching property." } );
+          ApiResponseBuilder.internalError( res, error );
         }
       }
     );
@@ -480,23 +508,13 @@ export default class Property {
           const id: string = this.s( rawId ); // your sanitiser
 
           if ( !id ) {
-            res.status( 400 ).json( {
-              success: false,
-              status: "error",
-              message: "Property ID is required!",
-              data: null,
-            } );
+            ApiResponseBuilder.validationError( res, "Property ID is required!" );
             return;
           }
 
           if ( !rawSections ) {
-            res.status( 400 ).json( {
-              success: false,
-              status: "error",
-              message:
-                'At least one section must be provided in the "sections" query parameter.',
-              data: null,
-            } );
+
+            ApiResponseBuilder.validationError( res, 'At least one section must be provided in the "sections" query parameter.' );
             return;
           }
 
@@ -508,12 +526,7 @@ export default class Property {
             .filter( ( s ) => s.length > 0 );
 
           if ( requestedSections.length === 0 ) {
-            res.status( 400 ).json( {
-              success: false,
-              status: "error",
-              message: "Invalid property section list!",
-              data: null,
-            } );
+            ApiResponseBuilder.validationError( res, "Invalid property section list!" );
             return;
           }
 
@@ -533,12 +546,7 @@ export default class Property {
           );
 
           if ( safeSections.length === 0 ) {
-            res.status( 400 ).json( {
-              success: false,
-              status: "error",
-              message: "Requested section(s) are not allowed!",
-              data: null,
-            } );
+            ApiResponseBuilder.validationError( res, "Requested section(s) are not allowed!" );
             return;
           }
 
@@ -548,19 +556,14 @@ export default class Property {
           // "title images address -_id"
           const projectionString: string = `${ safeSections.join( " " ) } -_id`;
 
-          const property = await PropertyModel
+          const property: IProperty | null = await PropertyModel
             .findOne( { id } )
             .select( projectionString )
-            .lean()
+            .lean<IProperty>()
             .exec();
 
           if ( !property ) {
-            res.status( 404 ).json( {
-              success: false,
-              status: "error",
-              message: "Property not found!",
-              data: null,
-            } );
+            ApiResponseBuilder.notFound( res, 'Property Not Found!' );
             return;
           }
 
@@ -570,44 +573,30 @@ export default class Property {
           const values: Record<string, unknown> = {};
 
           for ( const section of safeSections ) {
-            const value = ( property as Record<string, unknown> )[ section ];
+            const value = property[ section as keyof IProperty ];
             if ( typeof value !== "undefined" ) {
               values[ section ] = value;
             }
           }
 
           if ( Object.keys( values ).length === 0 ) {
-            res.status( 404 ).json( {
-              success: false,
-              status: "error",
-              message: "Requested section(s) not found on this property!",
-              data: null,
-            } );
+            ApiResponseBuilder.notFound( res, 'Requested section(s) not found on this property!' );
             return;
           }
 
           // ─────────────────────────────────────────────
           // 5) Success response
           // ─────────────────────────────────────────────
-          res.status( 200 ).json( {
-            success: true,
-            status: "success",
-            message: "Property section(s) fetched successfully.",
-            data: {
-              id,
-              sections: safeSections,
-              values,
-            },
-          } );
+          const sections = {
+            id,
+            sections: safeSections,
+            values,
+          };
+          ApiResponseBuilder.ok( res, 'other', sections, 'Property section(s) fetched successfully.' );
           return;
         } catch ( error ) {
           console.error( "[get-single-property-section-by-id] error:", error );
-          res.status( 500 ).json( {
-            success: false,
-            status: "error",
-            message: "Error occurred while fetching property section(s).",
-            data: null,
-          } );
+          ApiResponseBuilder.internalError( res, error );
           return;
         }
       }
@@ -625,11 +614,11 @@ export default class Property {
           const safeID = this.s( req.params.id );
           const urlUsername = this.s( req.params.username );
           if ( !safeID ) {
-            res.status( 400 ).json( { success: false, status: "error", message: "Property ID is required." } );
+            ApiResponseBuilder.validationError( res, "Property ID is required." );
             return;
           }
           if ( !urlUsername ) {
-            res.status( 400 ).json( { success: false, status: "error", message: "Property deletor is required." } );
+            ApiResponseBuilder.validationError( res, "Property deletor is required." );
             return;
           }
 
@@ -637,9 +626,9 @@ export default class Property {
           const actorUsername: string =
             ( req.user?.username as string | undefined )?.trim() || urlUsername;
 
-          const property = await PropertyModel.findOne( { id: safeID } ).lean();
+          const property = await PropertyModel.findOne( { id: safeID } ).lean<IProperty>();
           if ( !property ) {
-            res.status( 404 ).json( { success: false, status: "error", message: "Property not found." } );
+            ApiResponseBuilder.notFound( res, 'Property not found.' );
             return;
           }
 
@@ -692,20 +681,17 @@ export default class Property {
             console.warn( "[delete-property] notification failed:", notifyErr );
           }
 
-          const delRes = await PropertyModel.deleteOne( { id: safeID } );
+          const delRes = await PropertyModel.deleteOne( { id: safeID } ).lean();
           if ( delRes.deletedCount !== 1 ) {
-            res.status( 409 ).json( {
-              success: false,
-              status: "error",
-              message: "Delete conflict: document was not removed from DB.",
-            } );
+            ApiResponseBuilder.conflict( res, "Delete conflict: document was not removed from DB." );
             return;
           }
 
-          res.status( 200 ).json( { success: true, status: "success", message: "Property deleted.", data: null } );
+          ApiResponseBuilder.noContent( res, "Property deleted." );
+
         } catch ( error: any ) {
           console.error( "[delete-property] error:", error?.message || error );
-          res.status( 500 ).json( { success: false, status: "error", message: "Error occurred while deleting property." } );
+          ApiResponseBuilder.internalError( res, error );
         }
       }
     );
@@ -780,7 +766,7 @@ export default class Property {
         try {
           const propertyID = this.s( req.params.id || req.body.id );
           if ( !propertyID ) {
-            res.status( 400 ).json( { status: "error", message: "Property ID is required in URL or body." } );
+            ApiResponseBuilder.validationError( res, "Property ID is required in URL or body." );
             return;
           }
 
@@ -798,10 +784,7 @@ export default class Property {
             []
           );
           if ( !Array.isArray( existingImages ) || !Array.isArray( existingDocs ) ) {
-            res.status( 400 ).json( {
-              status: "fail",
-              message: "existingImages / existingDocuments must be arrays",
-            } );
+            ApiResponseBuilder.badRequest( res, "existingImages / existingDocuments must be arrays" );
             return;
           }
 
@@ -922,7 +905,7 @@ export default class Property {
             await this.deleteFolderWithRetry(
               path.join( this.DEFAULT_UPLOAD_PATH, propertyID, "tempImages" )
             );
-            res.status( 400 ).json( { status: "fail", message: "Validation failed", errors } );
+            ApiResponseBuilder.validationError( res, `Validation failed: ${ errors }` );
             return;
           }
 
@@ -930,9 +913,10 @@ export default class Property {
             { id: propertyID },
             { $set: data },
             { new: true }
-          );
+          ).lean<IProperty>();
+
           if ( !updated ) {
-            res.status( 404 ).json( { status: "error", message: "Property not found or update failed." } );
+            ApiResponseBuilder.notFound( res, "Property not found or update failed." );
             return;
           }
 
@@ -962,7 +946,7 @@ export default class Property {
             console.warn( "[update-property] notification failed:", e );
           }
 
-          res.status( 200 ).json( { status: "success", message: "Property updated successfully.", data: updated } );
+          ApiResponseBuilder.ok( res, 'property', updated, 'Property updated successfully.' );
 
           await Promise.all( conversions );
           await this.deleteFolderWithRetry(
@@ -970,7 +954,7 @@ export default class Property {
           );
         } catch ( error: any ) {
           console.error( "[update-property] error:", error?.stack || error );
-          res.status( 500 ).json( { status: "error", message: "Error occurred while updating property." } );
+          ApiResponseBuilder.internalError( res, error );
         }
       }
     );
@@ -978,16 +962,16 @@ export default class Property {
 
   // ------------------------------- GET ALL -----------------------------------
   private getAllProperties(): void {
-    this.router.get( "/get-all-properties/", async ( _req, res ) => {
+    this.router.get( "/get-all-properties/", async ( req: Request, res: Response ): Promise<void> => {
       try {
-        const properties = await PropertyModel.find().sort( { createdAt: -1 } );
-        res.status( 200 ).json( {
-          status: "success",
-          message: "Properties fetched successfully.",
-          data: properties,
-        } );
-      } catch {
-        res.status( 500 ).json( { status: "error", message: "Error fetching properties." } );
+        const properties: IProperty[] = await PropertyModel
+          .find()
+          .sort( { createdAt: -1 } )
+          .lean<IProperty>().exec() as unknown as IProperty[];
+
+        ApiResponseBuilder.ok( res, 'properties', properties, "Properties fetched successfully." );
+      } catch ( error ) {
+        ApiResponseBuilder.internalError( res, error );
       }
     } );
   }
@@ -995,16 +979,19 @@ export default class Property {
   // ------------------------------- GET ALL COUNT -----------------------------------
 
   private getAllPropertiesCount(): void {
-    this.router.get( "/get-all-properties-count/", async ( _req, res ) => {
+    this.router.get( "/get-all-properties-count/", async ( req: Request, res: Response ): Promise<void> => {
       try {
-        const count = await PropertyModel.countDocuments();
-        res.status( 200 ).json( {
-          status: "success",
-          message: "Properties fetched successfully.",
-          data: count,
-        } );
-      } catch {
-        res.status( 500 ).json( { status: "error", message: "Error fetching properties." } );
+        const total = await PropertyModel.countDocuments();
+
+        const pagination: PaginationMeta = {
+          total,
+        };
+
+        return ApiResponseBuilder.ok( res, 'other', {}, 'Properties total fetched successfully.', { pagination } );
+
+      } catch ( error ) {
+
+        return ApiResponseBuilder.internalError( res, error );
       }
     } );
   }
@@ -1085,14 +1072,11 @@ export default class Property {
         const occupancyPct = total > 0 ? Math.round( ( occ / total ) * 100 ) : 0;
         const series = Array.isArray( agg?.series ) ? agg.series : [];
 
-        res.status( 200 ).json( {
-          status: "success",
-          message: "Portfolio summary",
-          data: { totalProperties: total, occupancyPct, series },
-        } );
-      } catch ( e ) {
-        console.error( "[dashboard/portfolio-summary] error:", e );
-        res.status( 500 ).json( { status: "error", message: "Failed to build portfolio summary" } );
+
+        return ApiResponseBuilder.ok( res, 'other', { totalProperties: total, occupancyPct, series }, "Portfolio summary" );
+      } catch ( error ) {
+        console.error( "[dashboard/portfolio-summary] error:", error );
+        return ApiResponseBuilder.internalError( res, error );
       }
     } );
   }
@@ -1102,7 +1086,7 @@ export default class Property {
     this.router.get( "/dashboard/country-distribution", async ( req, res ) => {
       try {
         const match = this.buildScopeMatch( req );
-        const rows = await PropertyModel.aggregate( [
+        const rows = await PropertyModel.aggregate<IProperty>( [
           { $match: match },
           {
             $group: {
@@ -1128,14 +1112,10 @@ export default class Property {
           { $sort: { properties: -1 } },
         ] );
 
-        res.status( 200 ).json( {
-          status: "success",
-          message: "Country distribution",
-          data: rows,
-        } );
-      } catch ( e ) {
-        console.error( "[dashboard/country-distribution] error:", e );
-        res.status( 500 ).json( { status: "error", message: "Failed to build country distribution" } );
+        ApiResponseBuilder.ok( res, 'properties', rows, 'Country distribution' );
+      } catch ( error ) {
+        console.error( "[dashboard/country-distribution] error:", error );
+        ApiResponseBuilder.internalError( res, error );
       }
     } );
   }
@@ -1145,45 +1125,120 @@ export default class Property {
    * Current heuristic (fallback): count properties whose internalNote mentions "maintenance" OR priority == "high".
    */
   private dashboardMaintenanceSummary(): void {
-    this.router.get( "/dashboard/maintenance-summary", async ( req, res ) => {
-      try {
-        const match = this.buildScopeMatch( req );
-        const openMatch = {
-          ...match,
-          $or: [
-            { priority: "high" },
-            { internalNote: { $regex: /maintenance/i } },
-          ],
-        };
+    this.router.get(
+      "/dashboard/maintenance-summary",
+      async ( req: Request, res: Response ): Promise<void> => {
+        try {
+          // ──────────────────────────────────────────────
+          // 1) Build property scope (archived / mine / owner)
+          // ──────────────────────────────────────────────
+          const propertyScopeMatch: Record<string, unknown> = this.buildScopeMatch( req );
 
-        const [ agg ] = await PropertyModel.aggregate( [
-          { $match: openMatch },
-          {
-            $facet: {
-              open: [ { $count: "cnt" } ],
-              series: [
-                ...this.weeklySeriesFacet( 8, "updatedAt" ),
-              ],
-            },
-          },
-          {
-            $project: {
-              open: { $ifNull: [ { $arrayElemAt: [ "$open.cnt", 0 ] }, 0 ] },
-              series: "$series",
-            },
-          },
-        ] );
+          // ──────────────────────────────────────────────
+          // 2) Load complaints and extract property IDs
+          //    (only complaints that are "open" for maintenance)
+          // ──────────────────────────────────────────────
 
-        res.status( 200 ).json( {
-          status: "success",
-          message: "Maintenance summary",
-          data: { open: agg?.open ?? 0, series: agg?.series ?? [] },
-        } );
-      } catch ( e ) {
-        console.error( "[dashboard/maintenance-summary] error:", e );
-        res.status( 500 ).json( { status: "error", message: "Failed to build maintenance summary" } );
+          // Define which complaint statuses count as "open" / active maintenance
+          const openComplaintStatuses: ComplaintStatus[] = [
+            "new",
+            "triaged",
+            "in_progress",
+            "awaiting_tenant",
+            "reopened",
+          ];
+
+          // We only care about propertyId + status here
+          type ComplaintForSummary = {
+            propertyId?: string | null;
+            status: ComplaintStatus;
+          };
+
+          const rawComplaints = await ComplaintModel.find( {
+            status: { $in: openComplaintStatuses },
+          } )
+            .lean()
+            .exec();
+
+          const complaintsForSummary = rawComplaints as unknown as ComplaintForSummary[];
+
+          const propertyIDs: string[] = Array.from(
+            new Set(
+              complaintsForSummary
+                .map( ( c: ComplaintForSummary ) => c.propertyId )
+                .filter(
+                  ( id: string | null | undefined ): id is string =>
+                    typeof id === "string" && id.trim().length > 0
+                )
+                .map( ( id: string ) => id.trim() )
+            )
+          );
+
+          // If no properties have open complaints → empty summary
+          if ( propertyIDs.length === 0 ) {
+            ApiResponseBuilder.ok(
+              res,
+              "other",
+              { open: 0, series: [] },
+              "Maintenance summary"
+            );
+            return;
+          }
+
+          // ──────────────────────────────────────────────
+          // 3) Build property match: scope + propertyIDs
+          // ──────────────────────────────────────────────
+          const propertyMatch: Record<string, unknown> = {
+            ...propertyScopeMatch,
+            id: { $in: propertyIDs },
+          };
+
+          // ──────────────────────────────────────────────
+          // 4) Aggregate on properties for open count + weekly series
+          // ──────────────────────────────────────────────
+          interface MaintenanceSummaryAgg {
+            open: number;
+            series: number[];
+          }
+
+          const [ agg ] = await PropertyModel.aggregate<MaintenanceSummaryAgg>( [
+            { $match: propertyMatch },
+            {
+              $facet: {
+                // Number of properties that currently match this "maintenance" scope
+                open: [ { $count: "cnt" } ],
+                // Weekly series over updatedAt for last 8 weeks
+                series: [ ...this.weeklySeriesFacet( 8, "updatedAt" ) ],
+              },
+            },
+            {
+              $project: {
+                open: { $ifNull: [ { $arrayElemAt: [ "$open.cnt", 0 ] }, 0 ] },
+                series: "$series",
+              },
+            },
+          ] );
+
+          // ──────────────────────────────────────────────
+          // 5) Send unified API response (using ApiResponseBuilder)
+          // ──────────────────────────────────────────────
+          ApiResponseBuilder.ok(
+            res,
+            "other",
+            {
+              open: agg?.open ?? 0,
+              series: agg?.series ?? [],
+            },
+            "Maintenance summary"
+          );
+          return;
+        } catch ( error ) {
+          console.error( "[dashboard/maintenance-summary] error:", error );
+          ApiResponseBuilder.internalError( res, error );
+          return;
+        }
       }
-    } );
+    );
   }
 
   /** GET /api-property/dashboard/property-trends?range=12m
@@ -1229,17 +1284,13 @@ export default class Property {
           ...this.monthBucketSeriesPipeline( "effectiveDate", months ),
         ] );
 
-        res.status( 200 ).json( {
-          status: "success",
-          message: "Property trends",
-          data: {
-            monthlyNew: newSeries,
-            monthlySold: soldSeries,
-          },
+        ApiResponseBuilder.ok( res, 'other', {
+          monthlyNew: newSeries,
+          monthlySold: soldSeries,
         } );
       } catch ( e ) {
         console.error( "[dashboard/property-trends] error:", e );
-        res.status( 500 ).json( { status: "error", message: "Failed to build property trends" } );
+        ApiResponseBuilder.internalError( res, e );
       }
     } );
   }
@@ -1269,22 +1320,20 @@ export default class Property {
         ] );
 
         const base = rows?.[ 0 ] ?? {};
-        res.status( 200 ).json( {
-          status: "success",
-          message: "Status counters",
-          data: {
-            published: base.published ?? 0,
-            draft: base.draft ?? 0,
-            archived: base.archived ?? 0,
-            available: base.available ?? 0,
-            sold: base.sold ?? 0,
-            rented: base.rented ?? 0,
-            pending: base.pending ?? 0,
-          },
+
+        ApiResponseBuilder.ok( res, 'other', {
+          published: base.published ?? 0,
+          draft: base.draft ?? 0,
+          archived: base.archived ?? 0,
+          available: base.available ?? 0,
+          sold: base.sold ?? 0,
+          rented: base.rented ?? 0,
+          pending: base.pending ?? 0,
         } );
+
       } catch ( e ) {
         console.error( "[dashboard/status-counts] error:", e );
-        res.status( 500 ).json( { status: "error", message: "Failed to build status counters" } );
+        ApiResponseBuilder.internalError( res, e );
       }
     } );
   }
@@ -1296,7 +1345,7 @@ export default class Property {
         const limit = Math.max( 1, Math.min( 100, Number( this.s( req.query.limit ) ) || 8 ) );
         const match = this.buildScopeMatch( req );
 
-        const rows = await PropertyModel.aggregate( [
+        const rows = await PropertyModel.aggregate<IProperty>( [
           { $match: match },
           {
             $group: {
@@ -1317,14 +1366,10 @@ export default class Property {
           { $limit: limit },
         ] );
 
-        res.status( 200 ).json( {
-          status: "success",
-          message: "Top cities by listings",
-          data: rows,
-        } );
+        ApiResponseBuilder.ok( res, 'properties', rows, 'Top cities by listings' );
       } catch ( e ) {
         console.error( "[dashboard/top-cities] error:", e );
-        res.status( 500 ).json( { status: "error", message: "Failed to build top cities" } );
+        ApiResponseBuilder.internalError( res, e );
       }
     } );
   }
@@ -1353,6 +1398,7 @@ export default class Property {
             message: "Price histogram",
             data: { bins: [ { from: min, to: max, count: await PropertyModel.countDocuments( match ) } ] },
           } );
+          ApiResponseBuilder.ok( res, 'other', { bins: [ { from: min, to: max, count: await PropertyModel.countDocuments( match ) } ] }, 'Price histogram' );
           return;
         }
 
@@ -1389,14 +1435,10 @@ export default class Property {
           out.push( { from, to, count: Number( row?.count ?? 0 ) } );
         }
 
-        res.status( 200 ).json( {
-          status: "success",
-          message: "Price histogram",
-          data: { bins: out },
-        } );
+        ApiResponseBuilder.ok( res, 'other', { bins: out }, "Price histogram" );
       } catch ( e ) {
         console.error( "[dashboard/price-histogram] error:", e );
-        res.status( 500 ).json( { status: "error", message: "Failed to build price histogram" } );
+        ApiResponseBuilder.internalError( res, e );
       }
     } );
   }

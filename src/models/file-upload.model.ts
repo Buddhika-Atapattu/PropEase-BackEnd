@@ -4,7 +4,7 @@
 // PATTERN: Class-based (no free functions or inline schema code)
 // ─────────────────────────────────────────────────────────────────────────────
 
-import {Schema, model, type Document, type Model} from 'mongoose';
+import { Schema, model, type Document, type Model } from 'mongoose';
 
 /* ============================================================================
  * 1) Interface definitions (strong typing)
@@ -45,27 +45,27 @@ export class FileUploadModel {
     // Nested sub-schema for individual files
     const FileSchema = new Schema<UploadedFile>(
       {
-        originalName: {type: String, trim: true},
-        storedName: {type: String, trim: true},
-        mimeType: {type: String, trim: true},
-        size: {type: String, trim: true},
-        path: {type: String, trim: true},
-        URL: {type: String, trim: true},
-        extension: {type: String, trim: true},
-        download: {type: String, trim: true},
-        uploader: {type: String, trim: true},
-        uploadDate: {type: Date, default: Date.now},
+        originalName: { type: String, trim: true },
+        storedName: { type: String, trim: true },
+        mimeType: { type: String, trim: true },
+        size: { type: String, trim: true },
+        path: { type: String, trim: true },
+        URL: { type: String, trim: true },
+        extension: { type: String, trim: true },
+        download: { type: String, trim: true },
+        uploader: { type: String, trim: true },
+        uploadDate: { type: Date, default: Date.now },
       },
-      {_id: false} // no subdocument _id fields to reduce noise
+      { _id: false } // no subdocument _id fields to reduce noise
     );
 
     // Main schema for each user's document group
     const UserDocumentSchema = new Schema<UserDocumentEntity>(
       {
-        username: {type: String, required: true, trim: true, index: true},
-        files: {type: [FileSchema], default: []},
+        username: { type: String, required: true, trim: true, index: true },
+        files: { type: [ FileSchema ], default: [] },
       },
-      {timestamps: true} // automatically adds createdAt & updatedAt
+      { timestamps: true } // automatically adds createdAt & updatedAt
     );
 
     return UserDocumentSchema;
@@ -78,7 +78,7 @@ export class FileUploadModel {
   public static getModel(): Model<UserDocumentEntity> {
     const schema = this.buildSchema();
     // Use collection name "user_documents" to stay plural & consistent
-    return model<UserDocumentEntity>('UserDocument', schema, 'user_documents');
+    return model<UserDocumentEntity>( 'UserDocument', schema, 'user_documents' );
   }
 }
 

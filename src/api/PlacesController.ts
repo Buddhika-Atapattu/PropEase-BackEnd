@@ -13,9 +13,10 @@
 //   - dotenv  : for loading environment variables (API key)
 // ============================================================================
 
-import express, {Request, Response, Router} from "express"; // Import Express and its types
+import express, { Request, Response, Router } from "express"; // Import Express and its types
 import axios from "axios"; // For sending HTTP requests to the Google API
 import dotenv from "dotenv"; // Loads environment variables from .env file
+import { ApiResponseBuilder } from '../utils/api-combiner.builder';
 
 dotenv.config(); // Initialize dotenv (ensures process.env.GOOGLE_API_KEY is available)
 
@@ -45,7 +46,7 @@ export class PlacesController {
     // GET /places/autocomplete?input=colombo
     //
     // The handler method `getAutocompleteSuggestions` will process this request.
-    this.router.get("/autocomplete", this.getAutocompleteSuggestions);
+    this.router.get( "/autocomplete", this.getAutocompleteSuggestions );
   }
 
   // -------------------------- AUTOCOMPLETE HANDLER --------------------------
@@ -55,7 +56,7 @@ export class PlacesController {
    * - Calls the Google Places Autocomplete API.
    * - Returns the JSON response from Google to the frontend.
    */
-  private async getAutocompleteSuggestions(req: Request, res: Response): Promise<void> {
+  private async getAutocompleteSuggestions( req: Request, res: Response ): Promise<void> {
     // Extract the text input from the URL query parameters
     // Example: /places/autocomplete?input=colombo
     const input = req.query.input as string;
@@ -65,8 +66,8 @@ export class PlacesController {
     const key = process.env.GOOGLE_API_KEY;
 
     // Validate input and key before proceeding
-    if(!input || !key) {
-      res.status(400).json({error: "Missing input or API key"});
+    if ( !input || !key ) {
+      ApiResponseBuilder.notFound( res, "Missing input or API key" );
       return;
     }
 
@@ -79,9 +80,9 @@ export class PlacesController {
     // - encodeURIComponent() is used to safely encode special characters.
     // - You can also add parameters like `components=country:lk`
     //   to limit results to Sri Lanka.
-    const url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(
+    const url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${ encodeURIComponent(
       input
-    )}&key=${key}`;
+    ) }&key=${ key }`;
 
     // Example final URL:
     // https://maps.googleapis.com/maps/api/place/autocomplete/json?input=colombo&key=XYZ123
@@ -89,15 +90,16 @@ export class PlacesController {
     try {
       // Send a GET request to the Google API.
       // axios.get() returns a promise that resolves with the API response.
-      const response = await axios.get(url);
+      const response = await axios.get( url );
 
       // Forward the response data directly to the frontend.
       // This includes predictions[] and status from Google.
-      res.json(response.data);
-    } catch(error: any) {
+      res.json();
+      ApiResponseBuilder.ok( res, 'other', response.data );
+    } catch ( error: any ) {
       // If the Google API request fails or times out,
       // return an HTTP 500 error with the error message.
-      res.status(500).json({error: error.message || "Server Error"});
+      ApiResponseBuilder.internalError( res, error );
     }
   }
 }
