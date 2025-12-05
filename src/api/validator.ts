@@ -1,97 +1,126 @@
+// ============================================================================
+// File: src/api/validator.ts
+// Description: Validation routes (email format + MX DNS check).
+// Notes:
+//  - Class-based router, aligned with ApiResponseBuilder.
+//  - Mounted (likely) under /api-validator → GET /api-validator/email-validator/:email
+// ============================================================================
+
 import express, { Request, Response, Router } from "express";
 import { promises as dns } from "dns";
 import dotenv from "dotenv";
-// If you actually use CryptoService elsewhere in this file, keep it;
-// otherwise you can safely remove the import + instance to avoid dead code.
-import { CryptoService } from "../services/crypto.service";
-import { ApiResponseBuilder } from '../utils/api-combiner.builder';
+
+import { ApiResponseBuilder } from "../utils/api-combiner.builder";
 
 dotenv.config();
 
-type ApiStatus = "success" | "error" | "warning";
-type ValidationResponse<T = unknown> = {
-  status: ApiStatus;
-  message: string;
-  data?: T;
-};
-
 export default class Validator {
-  private router: Router;
-  private cryptoService: CryptoService = new CryptoService(); // currently unused here
+  private readonly router: Router;
 
   constructor () {
     this.router = express.Router();
     this.emailValidator();
   }
 
-  get route(): Router {
+  public get route(): Router {
     return this.router;
   }
 
-  /**
-   * GET /api-validator/email-validator/:email
-   * Validates:
-   *  1) Basic email format
-   *  2) Domain has MX records (deliverable-ish check)
-   *
-   * Notes:
-   *  - We normalize params safely (no .trim() on undefined)
-   *  - We guard against missing domain (e.g. "foo@", "foo")
-   *  - DNS checks are done via promises API (try/catch)
-   */
-  private emailValidator() {
+  // ==========================================================================
+  // GET /email-validator/:email
+  // (Mounted as /api-validator/email-validator/:email)
+  //
+  // Validates:
+  //  1) Basic email format (RFC-ish, pragmatic)
+  //  2) Domain has MX records (deliverability hint)
+  //
+  // Response shape via ApiResponseBuilder:
+  //  - success: system.other = { email, validation: { format, mx }, domain }
+  //  - validation errors: 400 with message
+  // ==========================================================================
+  private emailValidator(): void {
     this.router.get(
       "/email-validator/:email",
-      async ( req: Request<{ email: string; }>, res: Response<ValidationResponse> ): Promise<any> => {
+      async ( req: Request<{ email: string; }>, res: Response ): Promise<void> => {
         try {
-          // Params can be URL-encoded; decode and normalize carefully
+          // 1) Basic normalization
           const raw = req.params?.email ?? "";
           const safeEmail = decodeURIComponent( raw ).toLowerCase().trim();
 
-          // Early validations
+          // 2) Email required
           if ( !safeEmail ) {
-
-            ApiResponseBuilder.validationError( res, "Email is required in the path parameter." );
+            ApiResponseBuilder.validationError(
+              res,
+              "Email is required in the path parameter."
+            );
+            return;
           }
 
+          // 3) Format check
           if ( !this.isEmailFormatValid( safeEmail ) ) {
             ApiResponseBuilder.validationError( res, "Invalid email format." );
             return;
-          } 
+          }
 
-          // Extract domain safely
+          // 4) Extract domain
           const domain = this.extractDomain( safeEmail );
           if ( !domain ) {
-            ApiResponseBuilder.validationError( res, "Email domain is missing or malformed." );
+            ApiResponseBuilder.validationError(
+              res,
+              "Email domain is missing or malformed."
+            );
             return;
           }
 
-          // MX lookup (deliverability hint)
+          // 5) MX lookup (deliverability hint)
           const hasMXRecord = await this.hasValidMXRecord( domain );
-
           if ( !hasMXRecord ) {
-            ApiResponseBuilder.validationError( res, "Email domain has no MX records." );
+            ApiResponseBuilder.validationError(
+              res,
+              "Email domain has no MX records."
+            );
             return;
           }
-          ApiResponseBuilder.ok( res, 'other', { email: safeEmail, validation: { format: true, mx: true }, domain }, "Email appears valid." );
+
+          // 6) All good → success
+          ApiResponseBuilder.ok(
+            res,
+            "other",
+            {
+              email: safeEmail,
+              validation: {
+                format: true,
+                mx: true,
+              },
+              domain,
+            },
+            "Email appears valid."
+          );
+          return;
         } catch ( error ) {
-          console.error( error );
-          const msg = error instanceof Error ? error.message : String( error );
-          ApiResponseBuilder.internalError( res, msg );
+          console.error( "[email-validator] error:", error );
+          ApiResponseBuilder.internalError( res, error );
           return;
         }
       }
     );
   }
 
-  /** Lightweight RFC-ish format check; avoids `.trim()` on undefined. */
+  // ==========================================================================
+  // Helpers
+  // ==========================================================================
+
+  /** Lightweight RFC-ish email format check. */
   private isEmailFormatValid( email: string ): boolean {
-    // Keep it pragmatic; you already normalize to lowercase & trim earlier.
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     return typeof email === "string" && emailRegex.test( email );
   }
 
-  /** Safely extract the domain part ("a@b.c" -> "b.c"). Returns undefined if malformed. */
+  /**
+   * Safely extract domain part of email.
+   * e.g. "a@b.c" -> "b.c"
+   * Returns undefined if malformed.
+   */
   private extractDomain( email: string ): string | undefined {
     const at = email.lastIndexOf( "@" );
     if ( at <= 0 || at === email.length - 1 ) return undefined;
@@ -100,7 +129,7 @@ export default class Validator {
   }
 
   /**
-   * MX lookup via dns.promises. Guarded so TypeScript never sees string|undefined.
+   * MX lookup via dns.promises.
    * Returns false on any error (NXDOMAIN, ENOTFOUND, timeout, etc.).
    */
   private async hasValidMXRecord( domain: string ): Promise<boolean> {

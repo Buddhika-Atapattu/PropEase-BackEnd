@@ -11,7 +11,7 @@
 // PATTERN: Class-based models (schema + model only, no business logic).
 // ─────────────────────────────────────────────────────────────────────────────
 
-import {Schema, model, type Document, type Model} from 'mongoose';
+import { Schema, model, type Document, type Model } from 'mongoose';
 
 /* ============================================================================
  * 1️⃣ LOGGED USER LOGIN TRACKING
@@ -37,10 +37,10 @@ export class LoggedUserTrackingModelBuilder {
   private static buildSubSchema(): Schema<ILoggedUserData> {
     return new Schema<ILoggedUserData>(
       {
-        ip_address: {type: String, required: true, trim: true},
-        date: {type: Date, required: true, default: Date.now},
+        ip_address: { type: String, required: true, trim: true },
+        date: { type: Date, required: true, default: Date.now },
       },
-      {_id: false}
+      { _id: false }
     );
   }
 
@@ -50,14 +50,14 @@ export class LoggedUserTrackingModelBuilder {
 
     const LoggedUserTrackingSchema = new Schema<ILoggedUserTracking>(
       {
-        username: {type: String, required: true, trim: true, index: true},
-        data: {type: [LoggedUserDataSchema], default: []},
+        username: { type: String, required: true, trim: true, index: true },
+        data: { type: [ LoggedUserDataSchema ], default: [] },
       },
-      {timestamps: true}
+      { timestamps: true }
     );
 
     // Compound index for optimized username+date queries
-    LoggedUserTrackingSchema.index({username: 1, 'data.date': -1});
+    LoggedUserTrackingSchema.index( { username: 1, 'data.date': -1 } );
 
     return LoggedUserTrackingSchema;
   }
@@ -66,7 +66,7 @@ export class LoggedUserTrackingModelBuilder {
   public static getModel(): Model<ILoggedUserTracking> {
     const schema = this.buildSchema();
     // Explicit collection name: 'logged_user_tracking'
-    return model<ILoggedUserTracking>('LoggedUserTracking', schema, 'logged_user_tracking');
+    return model<ILoggedUserTracking>( 'LoggedUserTracking', schema, 'logged_user_tracking' );
   }
 }
 
@@ -81,6 +81,13 @@ export const TrackingLoggedUserModel = LoggedUserTrackingModelBuilder.getModel()
 export interface IUserActivity {
   activity: string;
   timestamp: Date;
+
+  // Optional rich fields for recent feed / categorisation
+  kind?: string;
+  title?: string;
+  refId?: string;
+  severity?: string;        // e.g. 'info' | 'success' | 'warning' | 'error'
+  sessionId?: string | null;
 }
 
 /** TypeScript interface for user activity document */
@@ -98,10 +105,16 @@ export class LoggedUserActivitiesModelBuilder {
   private static buildSubSchema(): Schema<IUserActivity> {
     return new Schema<IUserActivity>(
       {
-        activity: {type: String, required: true, trim: true},
-        timestamp: {type: Date, default: Date.now},
+        activity: { type: String, required: true, trim: true },
+        timestamp: { type: Date, default: Date.now },
+
+        kind: { type: String, trim: true },
+        title: { type: String, trim: true },
+        refId: { type: String, trim: true },
+        severity: { type: String, trim: true },
+        sessionId: { type: String, trim: true },
       },
-      {_id: false}
+      { _id: false }
     );
   }
 
@@ -111,15 +124,15 @@ export class LoggedUserActivitiesModelBuilder {
 
     const LoggedUserActivitiesSchema = new Schema<ILoggedUserActivities>(
       {
-        username: {type: String, required: true, trim: true, index: true},
-        ip_address: {type: String, required: true, trim: true},
-        activities: {type: [ActivitySchema], default: []},
+        username: { type: String, required: true, trim: true, index: true },
+        ip_address: { type: String, required: true, trim: true },
+        activities: { type: [ ActivitySchema ], default: [] },
       },
-      {timestamps: true}
+      { timestamps: true }
     );
 
     // Index for faster queries by username and IP
-    LoggedUserActivitiesSchema.index({username: 1, ip_address: 1});
+    LoggedUserActivitiesSchema.index( { username: 1, ip_address: 1 } );
 
     return LoggedUserActivitiesSchema;
   }
@@ -128,7 +141,7 @@ export class LoggedUserActivitiesModelBuilder {
   public static getModel(): Model<ILoggedUserActivities> {
     const schema = this.buildSchema();
     // Explicit collection name: 'logged_user_activities'
-    return model<ILoggedUserActivities>('LoggedUserActivities', schema, 'logged_user_activities');
+    return model<ILoggedUserActivities>( 'LoggedUserActivities', schema, 'logged_user_activities' );
   }
 }
 
@@ -142,7 +155,8 @@ export const LoggedUserActivitiesModel = LoggedUserActivitiesModelBuilder.getMod
  *   - Tracks where and when users log in (IP + timestamp).
  *
  * LoggedUserActivities:
- *   - Tracks what actions users perform during a session.
+ *   - Tracks what actions users perform during a session, with optional
+ *     metadata used by the /recent feed (kind, title, severity, refId, etc.).
  *
  * Together, these provide a full audit trail for PropEase.
  * ============================================================================

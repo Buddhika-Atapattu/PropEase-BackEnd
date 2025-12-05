@@ -173,7 +173,7 @@ export default class FileTransfer {
       if ( allowed.includes( file.mimetype ) ) cb( null, true );
       else cb( new Error( `Unsupported image type: ${ file.mimetype }` ) );
     };
-
+ 
     const upload = multer( { storage, fileFilter } );
 
     this.router.post(

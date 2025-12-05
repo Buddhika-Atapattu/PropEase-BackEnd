@@ -1,10 +1,11 @@
-// src/utils/api-combiner.builder.ts
+// Path: src/utils/api-combiner.builder.ts
 import { Response } from 'express';
 import {
     ApiData,
     SystemData,
     PaginationMeta,
     ValidationUnit,
+    ApiStatus
 } from '../types/api-message';
 import { ApiDataBuilder } from './api-data.builder';
 import { BaseResponseBuilder } from './api-response.builder';
@@ -40,15 +41,20 @@ interface ApiExtras {
  * "Other" payload (chart, extra info, etc.):
  *   ApiResponseBuilder.ok(res, 'other', { chartData: ... });
  *
- * Errors (call BaseResponseBuilder methods directly via this class):
- *   ApiResponseBuilder.validationError(res, 'Token is required!');
- *   ApiResponseBuilder.badRequest(res, 'Invalid lease ID');
- *   ApiResponseBuilder.internalError(res, error);
+ * Errors:
+ *   - Simple:
+ *       ApiResponseBuilder.error(res, 400, 'Invalid lease ID');
+ *       ApiResponseBuilder.error(res, 401, 'Unauthorized'); // etc.
+ *
+ *   - With payload:
+ *       ApiResponseBuilder.error(res, 422, 'Validation failed', 'other', { fieldErrors }, {
+ *         validation: validationMeta
+ *       });
  */
 export class ApiResponseBuilder extends BaseResponseBuilder {
 
     // ─────────────────────────────────────────────────────────────
-    // Overloads
+    // SUCCESS: Overloads
     // ─────────────────────────────────────────────────────────────
 
     // 1) Domain system data – auto message, no extras
@@ -84,7 +90,7 @@ export class ApiResponseBuilder extends BaseResponseBuilder {
     ): void;
 
     // ─────────────────────────────────────────────────────────────
-    // Implementation (covers all overloads)
+    // SUCCESS: Implementation (covers all overloads)
     // ─────────────────────────────────────────────────────────────
     public static ok(
         res: Response,
@@ -96,18 +102,16 @@ export class ApiResponseBuilder extends BaseResponseBuilder {
         const builder: ApiDataBuilder<SystemData> = new ApiDataBuilder<SystemData>();
 
         // Attach pagination / validation regardless of which key we use
-        if ( extras && extras.pagination ) {
+        if ( extras?.pagination ) {
             builder.withPagination( extras.pagination );
         }
 
-        if ( extras && extras.validation ) {
+        if ( extras?.validation ) {
             builder.withValidation( extras.validation );
         }
 
         if ( key === 'other' ) {
-            // ─────────────────────────────────────────────────────────
             // Case: data.other = payload
-            // ─────────────────────────────────────────────────────────
             builder.withOther( payload as Record<string, unknown> );
             const data: ApiData<SystemData> = builder.build();
 
@@ -116,9 +120,7 @@ export class ApiResponseBuilder extends BaseResponseBuilder {
             return;
         }
 
-        // ─────────────────────────────────────────────────────────
         // Case: data.system[key] = payload (domain data)
-        // ─────────────────────────────────────────────────────────
         const systemKey: SystemKey = key as SystemKey;
 
         const systemPartial: Partial<SystemData> = {
@@ -127,7 +129,7 @@ export class ApiResponseBuilder extends BaseResponseBuilder {
 
         builder.withSystem( systemPartial as SystemData );
 
-        if ( extras && extras.other ) {
+        if ( extras?.other ) {
             builder.withOther( extras.other );
         }
 
@@ -138,7 +140,119 @@ export class ApiResponseBuilder extends BaseResponseBuilder {
     }
 
     // ─────────────────────────────────────────────────────────────
-    // Default messages per SystemData key
+    // ERROR: Overloads
+    // ─────────────────────────────────────────────────────────────
+
+    /**
+     * 1) Simple error: just status + message, no data.
+     *
+     * Examples:
+     *   ApiResponseBuilder.error(res, 400, 'Invalid request');
+     *   ApiResponseBuilder.error(res, 401, 'Unauthorized');
+     *   ApiResponseBuilder.error(res, 403, 'Forbidden');
+     */
+    public static error(
+        res: Response,
+        statusCode: number,
+        message: string
+    ): void;
+
+    /**
+     * 2) Error with domain SystemData payload:
+     *    data.system[key] = payload
+     */
+    public static error<K extends SystemKey>(
+        res: Response,
+        statusCode: number,
+        message: string,
+        key: K,
+        payload: SystemValue<K>,
+        extras?: ApiExtras
+    ): void;
+
+    /**
+     * 3) Error with "other" payload:
+     *    data.other = payload
+     */
+    public static error(
+        res: Response,
+        statusCode: number,
+        message: string,
+        key: 'other',
+        payload: Record<string, unknown>,
+        extras?: Omit<ApiExtras, 'other'>
+    ): void;
+
+    // ─────────────────────────────────────────────────────────────
+    // ERROR: Implementation
+    // ─────────────────────────────────────────────────────────────
+    public static error(
+        res: Response,
+        statusCode: number,
+        message: string,
+        key?: SystemKey | 'other',
+        payload?: unknown,
+        extras?: ApiExtras
+    ): void {
+        const apiStatus: ApiStatus = statusCode >= 500 ? 'error' : 'fail';
+
+        // No payload → no ApiData
+        if ( key === undefined ) {
+            BaseResponseBuilder.custom( res, statusCode, apiStatus, message, null );
+            return;
+        }
+
+        const builder: ApiDataBuilder<SystemData> = new ApiDataBuilder<SystemData>();
+
+        if ( extras?.pagination ) {
+            builder.withPagination( extras.pagination );
+        }
+
+        if ( extras?.validation ) {
+            builder.withValidation( extras.validation );
+        }
+
+        if ( key === 'other' ) {
+            // Error with data.other
+            builder.withOther( payload as Record<string, unknown> );
+            const data: ApiData<SystemData> = builder.build();
+
+            BaseResponseBuilder.custom<ApiData<SystemData>>(
+                res,
+                statusCode,
+                apiStatus,
+                message,
+                data
+            );
+            return;
+        }
+
+        // Error with domain system[key]
+        const systemKey: SystemKey = key as SystemKey;
+
+        const systemPartial: Partial<SystemData> = {
+            [ systemKey ]: payload as SystemData[ typeof systemKey ],
+        } as Partial<SystemData>;
+
+        builder.withSystem( systemPartial as SystemData );
+
+        if ( extras?.other ) {
+            builder.withOther( extras.other );
+        }
+
+        const data: ApiData<SystemData> = builder.build();
+
+        BaseResponseBuilder.custom<ApiData<SystemData>>(
+            res,
+            statusCode,
+            apiStatus,
+            message,
+            data
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Default messages per SystemData key (for success only)
     // ─────────────────────────────────────────────────────────────
     private static getDefaultSuccessMessage( key: SystemKey ): string {
         switch ( key ) {
@@ -178,5 +292,4 @@ export class ApiResponseBuilder extends BaseResponseBuilder {
                 return 'Request processed successfully';
         }
     }
-
 }

@@ -3,7 +3,7 @@ import multer, {FileFilterCallback} from 'multer';
 import path from 'node:path';
 import {UploadsController} from '../controller/uploads.controller';
 
-export class UploadsRoutes {
+export default class UploadsRoutes {
     public readonly router: Router = Router();
     private readonly ctrl: UploadsController;
 

@@ -29,10 +29,15 @@ import NotificationService from "../services/notification.service";
 import { ApiResponseBuilder } from "../utils/api-combiner.builder";
 import type { PaginationMeta } from "../types/api-message";
 import { Role } from "../types/roles";
+import { GuardTokenService } from '../services/guard-token.service';
 
 dotenv.config();
 
 export default class UserRoute {
+  // Guard service:
+  private readonly guardTokenService: GuardTokenService = new GuardTokenService();
+
+
   // ──────────────────────────────────────────────────────────
   // Paths (must match your static mount)
   // ──────────────────────────────────────────────────────────
@@ -196,67 +201,128 @@ export default class UserRoute {
   // Auth: Login / verify user (JWT)
   // ==========================================================
 
+  // Inside UserRoute class
   private getUserData(): void {
     this.router.post(
-      "/verify-user",
+      '/verify-user',
       async ( req: Request, res: Response ): Promise<void> => {
         try {
-          const username = String( req.body.username || "" ).trim();
-          const password = String( req.body.password || "" );
+          const username: string = String( req.body.username || '' ).trim();
+          const password: string = String( req.body.password || '' );
 
+          // 1) Basic input validation
           if ( !username || !password ) {
             ApiResponseBuilder.validationError(
               res,
-              "Username and password are required"
+              'Username and password are required'
             );
             return;
           }
 
-          const user: IUser | null = await UserModel.findOne( { username } );
+          // 2) Load user
+          const user: IUser | null = await UserModel.findOne( { username } ).exec();
+
           if ( !user ) {
-            ApiResponseBuilder.validationError( res, "Invalid username" );
+            ApiResponseBuilder.validationError( res, 'Invalid username' );
             return;
           }
 
-          const isPasswordValid = await Argon2.verify( user.password, password );
+          // 3) Verify password (argon2)
+          const isPasswordValid: boolean = await Argon2.verify(
+            ( user as any ).password, // adjust if your field is passwordHash
+            password
+          );
+
           if ( !isPasswordValid ) {
-            ApiResponseBuilder.validationError( res, "Invalid password" );
+            ApiResponseBuilder.validationError( res, 'Invalid password' );
             return;
           }
 
+          // 4) If multi-auth is enabled, stop here and ask frontend to perform MFA.
+          //    We DO NOT issue session/guard tokens yet.
+          if ( user.multiAuthEnabled ) {
+            const plain = user.toObject ? user.toObject() : ( user as any );
+            const { password: _omit, ...userWithoutPassword } = plain;
+
+            ApiResponseBuilder.ok(
+              res,
+              'user',
+              userWithoutPassword,
+              'User verified, multi-authentication required',
+              {
+                other: {
+                  mfaRequired: true,
+                  multiAuthEnabled: true,
+                  username: user.username
+                }
+              }
+            );
+            return;
+          }
+
+          // 5) Multi-auth NOT enabled → get or create main session+guard token
+          const tokens = await this.guardTokenService.getOrIssueForUser( user );
+
+          // 6) Issue a JWT as well (frontend can use this for UI, but backend guard
+          //    is driven by sessionToken + guardToken)
           const payload = {
             sub: String( user._id ),
             username: user.username,
             role: user.role as Role,
           };
 
-          const token = jwt.sign(
+          const jwtToken: string = jwt.sign(
             payload,
-            process.env.JWT_SECRET || "defaultsecret",
-            { expiresIn: "30d" }
+            process.env.JWT_SECRET || 'defaultsecret',
+            { expiresIn: '30d' }
           );
 
+          // 7) Set cookies for main tokens (defence in depth)
+          res.cookie( 'sessionToken', tokens.sessionToken, {
+            httpOnly: true,
+            secure: true,
+            sameSite: 'strict',
+            maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
+          } );
+
+          res.cookie( 'guardToken', tokens.guardToken, {
+            httpOnly: true,
+            secure: true,
+            sameSite: 'strict',
+            maxAge: 30 * 24 * 60 * 60 * 1000
+          } );
+
+          // 8) Sanitise user object (never send password to client)
           const plain = user.toObject ? user.toObject() : ( user as any );
           const { password: _omit, ...userWithoutPassword } = plain;
 
+          // 9) Final response:
+          //    - system.user = safe user data
+          //    - other = tokens and flags for frontend
           ApiResponseBuilder.ok(
             res,
-            "user",
+            'user',
+            userWithoutPassword,
+            'User verified successfully',
             {
-              ...userWithoutPassword,
-              token
-            },
-            "User verified successfully"
+              other: {
+                jwtToken,                  // optional JWT for FE
+                sessionToken: tokens.sessionToken, // main 30-day token
+                guardToken: tokens.guardToken,     // rotating guard token
+                multiAuthEnabled: false,  // explicit flag for UI
+              }
+            }
           );
           return;
         } catch ( error ) {
-          console.error( "[verify-user] error:", error );
+          console.error( '[verify-user] error:', error );
           ApiResponseBuilder.internalError( res, error );
           return;
         }
       }
     );
   }
+
 
   // ==========================================================
   // Create user (image upload → webp, email verify, OTP fields)
@@ -307,6 +373,7 @@ export default class UserRoute {
           // Required numerics / dates
           const age = this.toNum( req.body.age, NaN );
           const dateOfBirth = this.toDate( req.body.dateOfBirth );
+          const multiAuthEnabled: boolean = req.body.multiAuthEnabled.trim().toLowerCase() === 'true' ? true : false;
 
           // Optional
           const phoneNumber = String( req.body.phoneNumber || "" ).trim();
@@ -441,6 +508,7 @@ export default class UserRoute {
             emailVerificationTokenExpires: verifyEmailObj.expires
               ? new Date( verifyEmailObj.expires )
               : undefined,
+            multiAuthEnabled,
             autoDelete: this.toBool( req.body.autoDelete, true ),
             creator,
           } );

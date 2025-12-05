@@ -5,6 +5,7 @@ import { LeasePayload, LeasePayloadWithProperty } from '../models/lease.model';
 import { IProperty } from '../models/property.model';
 import { ITenant } from '../models/tenant.model';
 import { IUser } from '../models/user.model';
+import { ITeamManagement } from '../models/teamManagement.model';
 
 /* ──────────────────────────────────────────────────────────────
    Basic status type for consistency across all APIs
@@ -68,6 +69,29 @@ export interface ValidationUnit {
    expiresAt?: string;
 }
 
+
+
+/**
+ * Minimal file metadata used across backend.
+ * Pure JSON (no File, no Buffer here).
+ */
+export interface FileMetaBase {
+   /** Original filename sent by client (as uploaded) */
+   originalName: string;
+
+   /** Stored filename on disk or in bucket (unique) */
+   storedName: string;
+
+   /** File extension without dot, e.g. "pdf", "jpg" */
+   extension: string;
+
+   /** MIME type, e.g. "application/pdf", "image/jpeg" */
+   mimeType: string;
+
+   /** Size in bytes */
+   sizeBytes: number;
+}
+
 /* ──────────────────────────────────────────────────────────────
    Strongly-typed system data payload
    (All your core domain models live here)
@@ -93,6 +117,12 @@ export interface SystemData {
 
    fileUpload?: UserDocumentEntity;
    fileUploads?: UserDocumentEntity[];
+
+   team?: ITeamManagement;
+   teams?: ITeamManagement[];
+
+   file?: FileMetaBase;
+   files?: FileMetaBase[];
 
    /** Optional numeric summaries – very common in dashboards */
    totalUsers?: number;
@@ -198,6 +228,18 @@ export type ComplaintSystemData = Pick<
 export type FileUploadSystemData = Pick<
    SystemData,
    'fileUpload' | 'fileUploads'
+>;
+
+// Team management system slice
+export type TeamManagementData = Pick<
+   SystemData,
+   'team' | 'teams'
+>;
+
+// File management system slice
+export type FileMetaBaseData = Pick<
+   SystemData,
+   'file' | 'files'
 >;
 
 // You can also define dashboard summaries:

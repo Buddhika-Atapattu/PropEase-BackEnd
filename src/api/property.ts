@@ -21,6 +21,7 @@ import {
 import NotificationService from "../services/notification.service";
 import type { PaginationMeta } from "../types/api-message";
 import { ApiResponseBuilder } from '../utils/api-combiner.builder';
+import { GuardedRequest } from "../source/guard-routes-map.source";
 
 dotenv.config();
 

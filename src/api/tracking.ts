@@ -4,27 +4,28 @@
 // ----------------------------------------------------------------------------
 // 1) Track logins
 //    - File log: /public/logs/<username>/user-login.log
-//    - MongoDB: TrackingLoggedUserModel (per-IP activity list)
+//    - MongoDB: TrackingLoggedUserModel (per-IP login history)
 //    - Returns sessionId to link further activities
 //
 // 2) Summaries & Queries
 //    - /get-logged-user-tracking-count/:username
 //    - /get-logged-user-tracking/:username?index=&limit=&daterange=&search=
-//    - /get-all-users-login-counts
+//    - /get-all-users-login-counts?dateRange={"start":"...","end":"..."}
 //
 // 3) Track Activities (MongoDB LoggedUserActivitiesModel)
 //    - /track-activity
-//    - /activities/:username/:start/:limit
-//    - /recent (activity feed)
+//    - /activities/:username/:start/:limit?startDate=&endDate=
+//    - /recent?limit=&cursor=&kind=
 //
 // 4) File & User creation activity
-//    - /user-file-management-activity/:username/:start/:limit
-//    - /get-created-users-based-on-creator/:username/:start/:limit
+//    - /user-file-management-activity/:username/:start/:limit?startDate=&endDate=
+//    - /get-created-users-based-on-creator/:username?index=&limit=&search=
+//    - /get-total-of-created-users-based-on-creator/:username
 //
 // STYLE:
 // - All helpers as private methods
 // - Safe pagination + date handling
-// - exactOptionalPropertyTypes-safe
+// - exactOptionalPropertyTypes-safe (no `{}` pretending to be a DateRange)
 // ============================================================================
 
 import express, { Request, Response, NextFunction, Router } from "express";
@@ -87,20 +88,24 @@ export default class Tracking {
       "/track-logged-user-login",
       async ( req: Request, res: Response, _next: NextFunction ): Promise<void> => {
         try {
+          // 1) Resolve client IP (x-forwarded-for first, then socket)
           const ipHeader = req.headers[ "x-forwarded-for" ]
             ?.toString()
             .split( "," )[ 0 ];
-          const ip = this.normalizeIp(
-            ipHeader ?? req.socket.remoteAddress ?? undefined
-          );
+          const rawIp = ipHeader ?? req.socket.remoteAddress ?? undefined;
+          const ip = this.normalizeIp( rawIp ) || "unknown";
 
+          // 2) Basic payload validation
           const { username, date } = req.body as {
             username?: unknown;
             date?: unknown;
           };
 
           if ( !username || typeof username !== "string" || !username.trim() ) {
-            ApiResponseBuilder.validationError( res, "Invalid or missing username" );
+            ApiResponseBuilder.validationError(
+              res,
+              "Invalid or missing username"
+            );
             return;
           }
 
@@ -111,44 +116,52 @@ export default class Tracking {
             return;
           }
 
+          const safeUsername = username.trim();
           const sessionId = crypto.randomUUID();
 
-          const { dir, file } = this.makeUserLogPaths( username );
+          // 3) Append to per-user log file
+          const { dir, file } = this.makeUserLogPaths( safeUsername );
           await fs.promises.mkdir( dir, { recursive: true } );
 
-          const logEntry = `[User: ${ username } | IP: ${ ip } | Date: ${ new Date(
-            parsedDate
-          ).toISOString() } | Session: ${ sessionId }]\n`;
+          const logEntry =
+            `[User: ${ safeUsername } | IP: ${ ip } | ` +
+            `Date: ${ new Date( parsedDate ).toISOString() } | ` +
+            `Session: ${ sessionId }]\n`;
+
           await fs.promises.appendFile( file, logEntry );
 
+          // 4) Update Mongo login-tracking document
+          //    Schema: { username, data: [{ ip_address, date }] }
           await TrackingLoggedUserModel.updateOne(
-            { username, ip_address: ip },
+            { username: safeUsername }, // ✅ only schema paths at root
             {
               $push: {
-                activities: {
-                  kind: "user",
-                  severity: "success",
-                  title: "Login",
-                  activity: "User logged in",
-                  refId: sessionId,
-                  timestamp: parsedDate,
-                  // @ts-ignore sessionId not in strict schema
-                  sessionId,
+                data: {
+                  ip_address: ip, // ✅ lives inside data[]
+                  date: parsedDate,
                 },
               },
             },
-            { upsert: true }
+            { upsert: true } // safe with strict mode now
           );
 
+          // 5) Respond
           ApiResponseBuilder.ok(
             res,
             "other",
-            { username, ip, sessionId, date: parsedDate },
+            {
+              username: safeUsername,
+              ip,
+              sessionId,
+              date: parsedDate,
+            },
             "User login tracked successfully"
           );
+          return;
         } catch ( error ) {
           console.error( "Error /track-logged-user-login:", error );
           ApiResponseBuilder.internalError( res, error );
+          return;
         }
       }
     );
@@ -160,7 +173,10 @@ export default class Tracking {
   private getTotalUserTackingCount(): void {
     this.router.get(
       "/get-logged-user-tracking-count/:username",
-      async ( req: Request<{ username: string; }>, res: Response ): Promise<void> => {
+      async (
+        req: Request<{ username: string; }>,
+        res: Response
+      ): Promise<void> => {
         try {
           const username = ( req.params.username ?? "" ).trim();
 
@@ -201,11 +217,15 @@ export default class Tracking {
   // ============================================================================
   // GET /get-logged-user-tracking/:username
   // Query: ?index=&limit=&daterange=&search=
+  //   - daterange = JSON string: {"start":"2025-01-01","end":"2025-01-31"}
   // ============================================================================
   private getLoggedUserTracking(): void {
     this.router.get(
       "/get-logged-user-tracking/:username",
-      async ( req: Request<{ username: string; }>, res: Response ): Promise<void> => {
+      async (
+        req: Request<{ username: string; }>,
+        res: Response
+      ): Promise<void> => {
         try {
           const username = ( req.params.username ?? "" ).trim();
 
@@ -243,7 +263,7 @@ export default class Tracking {
           const safeLimit = parsedLimit;
           const start = safeIndex * safeLimit;
 
-          const safeDateRange = this.parseDateRangeFromQuery( daterange );
+          const safeDateRange = this.parseDateRangeFromQuery( daterange ?? "" );
           const safeSearch = ( search ?? "" ).trim().toLowerCase();
 
           // 1) User logs (file-based)
@@ -274,8 +294,9 @@ export default class Tracking {
           };
 
           // 2) All users login counts (file-based)
-          const allUsersLogin =
-            this.getallUsersLoginFromFiles( safeDateRange ?? undefined );
+          const allUsersLogin = this.getallUsersLoginFromFiles(
+            safeDateRange ?? undefined
+          );
 
           const totalLoginCount: number = allUsersLogin.reduce(
             ( sum, u ) => sum + u.loginCount,
@@ -307,46 +328,44 @@ export default class Tracking {
 
   // ============================================================================
   // GET /get-all-users-login-counts
-  // Query: ?startDate=ISO&endDate=ISO
+  // Query: ?dateRange={"start":"2025-01-01","end":"2025-01-31"}
   // ============================================================================
-  // Inside class Tracking
   private getAllUserLoginCounts(): void {
     this.router.get(
       "/get-all-users-login-counts",
       async ( req: Request, res: Response ): Promise<void> => {
         try {
-          // 1) Get the raw JSON string from query (?dateRange=...)
-          const rawRangeStr = ( req.query.dateRange as string | undefined )?.trim() ?? "";
+          const rawRangeStr =
+            ( req.query.dateRange as string | undefined )?.trim() ?? "";
 
           if ( !rawRangeStr ) {
             ApiResponseBuilder.validationError( res, "Date range is required!" );
             return;
           }
 
-          // 2) Parse JSON as a simple object with string dates
-          //    Example expected: { "start": "2025-01-01", "end": "2025-01-31" }
+          // Expected: { "start": "2025-01-01", "end": "2025-01-31" }
           const rawRange = this.mustJSON<{ start?: string; end?: string; }>(
             rawRangeStr,
             "Date range"
           );
 
-          // 3) Convert strings → Date (using your helpers)
           const startDt = rawRange.start ? this.toDate( rawRange.start ) : null;
-          const endDt = rawRange.end ? this.endOfDay( this.toDate( rawRange.end ) ) : null;
+          const endDt = rawRange.end
+            ? this.endOfDay( this.toDate( rawRange.end ) )
+            : null;
 
-          // 4) Build a properly typed DateRange object
           const dateRange: DateRange = {
-            // with exactOptionalPropertyTypes, we avoid `{}` by always supplying keys
-            start: startDt ?? '',
-            end: endDt ?? '',
+            start: '',
+            end: ''
           };
+          if ( startDt ) dateRange.start = startDt;
+          if ( endDt ) dateRange.end = endDt;
 
           if ( !dateRange.start && !dateRange.end ) {
             ApiResponseBuilder.validationError( res, "Date range is invalid!" );
             return;
           }
 
-          // 5) Use your helper that expects DateRange
           const allUserLoginRecords = this.getallUsersLoginFromFiles( dateRange );
 
           const totalLoginCount = allUserLoginRecords.reduce(
@@ -354,12 +373,24 @@ export default class Tracking {
             0
           );
 
+          const pagination: PaginationMeta = {
+            index: 0,
+            limit: totalLoginCount || 0,
+            total: totalLoginCount,
+            start: 0,
+            end: totalLoginCount ? totalLoginCount - 1 : 0,
+            hasNext: false,
+            hasPrevious: false,
+            hasResults: totalLoginCount > 0,
+            hasMore: false,
+          };
+
           ApiResponseBuilder.ok(
             res,
             "other",
             { allUserLoginRecords },
             "All user login counts retrieved successfully",
-            { pagination: { total: totalLoginCount } }
+            { pagination }
           );
           return;
         } catch ( error ) {
@@ -370,7 +401,6 @@ export default class Tracking {
       }
     );
   }
-
 
   // ============================================================================
   // GET /user-file-management-activity/:username/:start/:limit
@@ -392,7 +422,10 @@ export default class Tracking {
           };
 
           const safeStart = Math.max( 0, this.toInt( start, 0, 0 ) );
-          const safeLimit = Math.min( 100, Math.max( 1, this.toInt( limit, 20, 1, 100 ) ) );
+          const safeLimit = Math.min(
+            100,
+            Math.max( 1, this.toInt( limit, 20, 1, 100 ) )
+          );
 
           const startDt = this.toDate( startDate );
           const endDt = this.endOfDay( this.toDate( endDate ) );
@@ -446,35 +479,55 @@ export default class Tracking {
             ? "User file activity retrieved successfully"
             : "No matching records found";
 
-          ApiResponseBuilder.ok(
-            res,
-            "fileUploads",
-            data,
-            message,
-            { pagination: { total } }
+          const pagination: PaginationMeta = this.buildPaginationMeta(
+            Math.floor( safeStart / safeLimit ),
+            safeLimit,
+            total,
+            safeStart,
+            data.length
           );
+
+          ApiResponseBuilder.ok( res, "fileUploads", data, message, {
+            pagination,
+          } );
         } catch ( error ) {
           console.error( "Error /user-file-management-activity:", error );
           ApiResponseBuilder.internalError( res, error );
         }
       }
     );
-  };
+  }
 
   // ============================================================================
   // POST /track-activity
+  // Body:
+  //   { username, activity, ip?, sessionId?, occurredAt?, kind?, title?, refId?, severity? }
   // ============================================================================
   private trackActivity(): void {
     this.router.post(
       "/track-activity",
       async ( req: Request, res: Response, _next: NextFunction ): Promise<void> => {
         try {
-          const { username, activity, ip, sessionId, occurredAt } = req.body as {
+          const {
+            username,
+            activity,
+            ip,
+            sessionId,
+            occurredAt,
+            kind,
+            title,
+            refId,
+            severity,
+          } = req.body as {
             username?: string;
             activity?: string;
             ip?: string;
             sessionId?: string;
             occurredAt?: string;
+            kind?: string;
+            title?: string;
+            refId?: string;
+            severity?: string;
           };
 
           if ( !username || !username.trim() ) {
@@ -491,7 +544,9 @@ export default class Tracking {
             req.headers[ "x-forwarded-for" ]?.toString().split( "," )[ 0 ] ??
             req.socket.remoteAddress
           );
-          const when = occurredAt ? this.toDate( occurredAt ) ?? new Date() : new Date();
+          const when = occurredAt
+            ? this.toDate( occurredAt ) ?? new Date()
+            : new Date();
 
           await LoggedUserActivitiesModel.updateOne(
             { username, ip_address: clientIp },
@@ -500,7 +555,10 @@ export default class Tracking {
                 activities: {
                   activity,
                   timestamp: when,
-                  // @ts-ignore
+                  kind: kind ?? undefined,
+                  title: title ?? undefined,
+                  refId: refId ?? undefined,
+                  severity: severity ?? undefined,
                   sessionId: sessionId ?? null,
                 },
               },
@@ -517,6 +575,10 @@ export default class Tracking {
               ip: clientIp,
               sessionId: sessionId ?? null,
               timestamp: when,
+              kind: kind ?? undefined,
+              title: title ?? undefined,
+              refId: refId ?? undefined,
+              severity: severity ?? undefined,
             },
             "Activity tracked"
           );
@@ -526,7 +588,7 @@ export default class Tracking {
         }
       }
     );
-  };
+  }
 
   // ============================================================================
   // GET /activities/:username/:start/:limit
@@ -552,12 +614,18 @@ export default class Tracking {
           }
 
           const safeStart = Math.max( 0, this.toInt( start, 0, 0 ) );
-          const safeLimit = Math.min( 200, Math.max( 1, this.toInt( limit, 20, 1, 200 ) ) );
+          const safeLimit = Math.min(
+            200,
+            Math.max( 1, this.toInt( limit, 20, 1, 200 ) )
+          );
 
           const startDt = this.toDate( startDate );
           const endDt = this.endOfDay( this.toDate( endDate ) );
 
-          const pipeline: any[] = [ { $match: { username } }, { $unwind: "$activities" } ];
+          const pipeline: any[] = [
+            { $match: { username } },
+            { $unwind: "$activities" },
+          ];
 
           if ( startDt || endDt ) {
             const ts: Record<string, Date> = {};
@@ -581,6 +649,10 @@ export default class Tracking {
                     activity: "$activities.activity",
                     timestamp: "$activities.timestamp",
                     sessionId: "$activities.sessionId",
+                    kind: "$activities.kind",
+                    title: "$activities.title",
+                    refId: "$activities.refId",
+                    severity: "$activities.severity",
                   },
                 },
               ],
@@ -594,12 +666,21 @@ export default class Tracking {
           const message = data.length
             ? "Activities retrieved successfully"
             : "No matching records found";
+
+          const pagination: PaginationMeta = this.buildPaginationMeta(
+            Math.floor( safeStart / safeLimit ),
+            safeLimit,
+            total,
+            safeStart,
+            data.length
+          );
+
           ApiResponseBuilder.ok(
             res,
             "other",
             { data },
             message,
-            { pagination: total }
+            { pagination }
           );
         } catch ( error ) {
           console.error( "Error /activities:", error );
@@ -607,7 +688,7 @@ export default class Tracking {
         }
       }
     );
-  };
+  }
 
   // ============================================================================
   // GET /get-total-of-created-users-based-on-creator/:username
@@ -623,8 +704,6 @@ export default class Tracking {
           const rawUsername = req.params.username ?? "";
           const username = rawUsername.trim();
 
-
-          // 1) Basic validation
           if ( !username ) {
             ApiResponseBuilder.validationError( res, "username is required" );
             return;
@@ -632,26 +711,39 @@ export default class Tracking {
 
           const filter: FilterQuery<IUser> = { creator: username };
 
-
-          // 4) Query DB
           const total: number = await UserModel.countDocuments( filter );
+
+          const pagination: PaginationMeta = {
+            index: 0,
+            limit: total || 0,
+            total,
+            start: 0,
+            end: total ? total - 1 : 0,
+            hasNext: false,
+            hasPrevious: false,
+            hasResults: total > 0,
+            hasMore: false,
+          };
 
           ApiResponseBuilder.ok(
             res,
             "other",
             {},
-            `Created users count got successful!`,
-            { pagination: { total } }
+            "Created users count got successful!",
+            { pagination }
           );
           return;
         } catch ( error ) {
-          console.error( "Error /get-created-users-based-on-creator:", error );
+          console.error(
+            "Error /get-total-of-created-users-based-on-creator:",
+            error
+          );
           ApiResponseBuilder.internalError( res, error );
           return;
         }
       }
     );
-  };
+  }
 
   // ============================================================================
   // GET /get-created-users-based-on-creator/:username
@@ -674,7 +766,6 @@ export default class Tracking {
             search?: string;
           };
 
-          // 1) Basic validation
           if ( !username ) {
             ApiResponseBuilder.validationError( res, "username is required" );
             return;
@@ -688,53 +779,44 @@ export default class Tracking {
             return;
           }
 
-          // 2) Safe pagination
-          const pageIndex = this.toInt( index, 0, 0 );             // 0,1,2,...
-          const pageLimit = this.toInt( limit, 20, 1, 100 );       // 1–100
+          const pageIndex = this.toInt( index, 0, 0 );
+          const pageLimit = this.toInt( limit, 20, 1, 100 );
           const safeSkip = pageIndex * pageLimit;
 
-          // 3) Search term (optional)
           const safeSearch = search?.trim();
           const filter: FilterQuery<IUser> = { creator: username };
 
           if ( safeSearch ) {
             const rx = new RegExp( safeSearch, "i" );
-            filter.$or = [
-              { name: rx },
-              { username: rx },
-              { role: rx },
-            ];
+            filter.$or = [ { name: rx }, { username: rx }, { role: rx } ];
           }
 
-          // 4) Query DB
-          const users: IUser[] = await UserModel
-            .find( filter, { password: 0 } )
+          const users: IUser[] = ( await UserModel.find( filter, { password: 0 } )
             .sort( { createdAt: -1 } )
             .skip( safeSkip )
             .limit( pageLimit )
             .lean<IUser>()
-            .exec() as unknown as IUser[];
+            .exec() ) as unknown as IUser[];
 
           const message = users.length
             ? "Users retrieved successfully"
             : "No matching records found";
 
-          ApiResponseBuilder.ok(
-            res,
-            "users",
-            users,
-            message
-          );
+          // Optional: you could also add pagination here by counting documents,
+          // but for now we return just the list to avoid another DB round-trip.
+          ApiResponseBuilder.ok( res, "users", users, message );
           return;
         } catch ( error ) {
-          console.error( "Error /get-created-users-based-on-creator:", error );
+          console.error(
+            "Error /get-created-users-based-on-creator:",
+            error
+          );
           ApiResponseBuilder.internalError( res, error );
           return;
         }
       }
     );
-  };
-
+  }
 
   // ============================================================================
   // GET /recent
@@ -746,7 +828,10 @@ export default class Tracking {
       async ( req: Request, res: Response ): Promise<void> => {
         try {
           const rawLimit = String( req.query.limit ?? "" );
-          const limit = Math.min( 200, Math.max( 1, this.toInt( rawLimit, 20, 1, 200 ) ) );
+          const limit = Math.min(
+            200,
+            Math.max( 1, this.toInt( rawLimit, 20, 1, 200 ) )
+          );
           const cursorIso = ( req.query.cursor as string | undefined )?.trim();
           const kind = ( req.query.kind as string | undefined )?.trim();
 
@@ -794,10 +879,12 @@ export default class Tracking {
               : undefined,
             occurredAt: new Date( r.occurredAt ).toISOString(),
             severity: ( r.severity || "info" ) as string,
+            sessionId: r.sessionId ?? null,
           } ) );
 
           const hasMore = rows.length > limit;
-          const lastItem = items.length > 0 ? items[ items.length - 1 ] : undefined;
+          const lastItem =
+            items.length > 0 ? items[ items.length - 1 ] : undefined;
           const nextCursor =
             hasMore && lastItem
               ? this.toIsoOrUndef( lastItem.occurredAt )
@@ -815,7 +902,7 @@ export default class Tracking {
         }
       }
     );
-  };
+  }
 
   // ============================================================================
   // Private helpers
@@ -932,7 +1019,6 @@ export default class Tracking {
       if ( endDt && date > endDt ) continue;
 
       if ( uname !== username ) continue;
-      if ( ip !== this.normalizeIp( ip ) ) continue;
 
       const entry: UserLogEntry = { username: uname, ip, date };
       if ( rawSession ) entry.session = rawSession;
@@ -999,7 +1085,7 @@ export default class Tracking {
       if ( startDt ) range.start = startDt;
       if ( endDt ) range.end = endDt;
 
-      return range;
+      return !range.start && !range.end ? null : range;
     } catch {
       return null;
     }

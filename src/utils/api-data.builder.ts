@@ -9,12 +9,16 @@ import {
     TenantSystemData,
     ComplaintSystemData,
     FileUploadSystemData,
+    type TeamManagementData,
+    type FileMetaBaseData,
+    type FileMetaBase,
 } from '../types/api-message';
 import { LeasePayload, LeasePayloadWithProperty } from '../models/lease.model';
 import { IProperty } from '../models/property.model';
 import { ITenant } from '../models/tenant.model';
 import { IComplaint } from '../models/complaint.model';
 import { UserDocumentEntity } from '../models/file-upload.model';
+import type { ITeamManagement } from '../models/teamManagement.model';
 
 /**
  * Generic ApiData builder.
@@ -164,6 +168,38 @@ export class FileUploadDataBuilder extends ApiDataBuilder<FileUploadSystemData> 
     public withFileUploads( files: UserDocumentEntity[] ): this {
         const current = ( this as any ).system as FileUploadSystemData | undefined;
         const next: FileUploadSystemData = { ...( current ?? {} ), fileUploads: files };
+        this.withSystem( next );
+        return this;
+    }
+}
+
+export class TeamManagementBuilder extends ApiDataBuilder<TeamManagementData> {
+    public withTeam( team: ITeamManagement ): this {
+        const current = ( this as any ).system as TeamManagementData | undefined;
+        const next: TeamManagementData = { ...( current ?? {} ), team };
+        this.withSystem( next );
+        return this;
+    }
+
+    public withTeams( teams: ITeamManagement[] ): this {
+        const current = ( this as any ).system as TeamManagementData | undefined;
+        const next: TeamManagementData = { ...( current ?? {} ), teams };
+        this.withSystem( next );
+        return this;
+    }
+}
+
+export class FileMetaBaseBuilder extends ApiDataBuilder<FileMetaBaseData> {
+    public withTeam( file: FileMetaBase ): this {
+        const current = ( this as any ).system as FileMetaBaseData | undefined;
+        const next: FileMetaBaseData = { ...( current ?? {} ), file };
+        this.withSystem( next );
+        return this;
+    }
+
+    public withTeams( files: FileMetaBase[] ): this {
+        const current = ( this as any ).system as FileMetaBaseData | undefined;
+        const next: FileMetaBaseData = { ...( current ?? {} ), files };
         this.withSystem( next );
         return this;
     }
