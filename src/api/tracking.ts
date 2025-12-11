@@ -28,23 +28,22 @@
 // - exactOptionalPropertyTypes-safe (no `{}` pretending to be a DateRange)
 // ============================================================================
 
-import express, { Request, Response, NextFunction, Router } from "express";
 import crypto from "crypto";
-import dotenv from "dotenv";
+import express, { NextFunction, Request, Response, Router } from "express";
 import fs from "fs";
 import path from "path";
 
-import {
-  TrackingLoggedUserModel,
-  LoggedUserActivitiesModel,
-} from "../models/tracking.model";
-import { UserDocumentModel } from "../models/file-upload.model";
-import { UserModel, type IUser } from "../models/user.model";
-import { ApiResponseBuilder } from "../utils/api-combiner.builder";
-import { type PaginationMeta, type DateRange } from "../types/api-message";
 import type { FilterQuery } from "mongoose";
+import { UserDocumentModel } from "../models/file-upload.model";
+import {
+  LoggedUserActivitiesModel,
+  TrackingLoggedUserModel,
+} from "../models/tracking.model";
+import { USER_MODEL_PROJECTION, UserModel, type User } from "../models/user.model";
+import { type DateRange, type PaginationMeta } from "../types/api-message";
+import { ApiResponseBuilder } from "../utils/api-combiner.builder";
 
-dotenv.config();
+
 
 /** Single parsed line from user-login.log */
 interface UserLogEntry {
@@ -709,7 +708,7 @@ export default class Tracking {
             return;
           }
 
-          const filter: FilterQuery<IUser> = { creator: username };
+          const filter: FilterQuery<User> = { creator: username };
 
           const total: number = await UserModel.countDocuments( filter );
 
@@ -784,19 +783,19 @@ export default class Tracking {
           const safeSkip = pageIndex * pageLimit;
 
           const safeSearch = search?.trim();
-          const filter: FilterQuery<IUser> = { creator: username };
+          const filter: FilterQuery<User> = { creator: username };
 
           if ( safeSearch ) {
             const rx = new RegExp( safeSearch, "i" );
             filter.$or = [ { name: rx }, { username: rx }, { role: rx } ];
           }
 
-          const users: IUser[] = ( await UserModel.find( filter, { password: 0 } )
+          const users: User[] = ( await UserModel.find( filter, USER_MODEL_PROJECTION )
             .sort( { createdAt: -1 } )
             .skip( safeSkip )
             .limit( pageLimit )
-            .lean<IUser>()
-            .exec() ) as unknown as IUser[];
+            .lean<User>()
+            .exec() ) as unknown as User[];
 
           const message = users.length
             ? "Users retrieved successfully"

@@ -4,7 +4,6 @@
 // External dependencies
 // ─────────────────────────────────────────────────────────────────────────────
 
-import dotenv from "dotenv";
 import { Request } from "express";
 import fs from "fs";
 import fse from "fs-extra";
@@ -14,7 +13,6 @@ import sharp from "sharp";
 
 import { FileMetaBase } from "../types/api-message";
 
-dotenv.config();
 
 /**
  * FileUploader
@@ -26,6 +24,7 @@ dotenv.config();
  *   - Restore from `/public/recyclebin` back to `/public/uploads`
  *   - Permanently delete from `/public/recyclebin`
  *   - Convert image assets into WebP format
+ *   - Memory/disk Multer builders for routes (profile images, docs, etc.)
  *
  * Architectural principle:
  *   - This class is **pure infrastructure / domain**. It does **not** know HTTP.
@@ -77,7 +76,157 @@ export default class FileUploader {
     private static readonly UPLOAD_URL_PREFIX: string = "/uploads";
 
     // ─────────────────────────────────────────────
-    // PUBLIC API – UPLOAD
+    // PUBLIC API – MULTER BUILDERS (CENTRALISED)
+    // ─────────────────────────────────────────────
+
+    /**
+     * Build a memory-based Multer instance.
+     *
+     * Typical usage:
+     *   const upload = FileUploader.createMemoryUpload(allowedTypes, 20);
+     *   router.post('/route', upload.fields([...]), handler);
+     *
+     * Intended for:
+     *   - Small images (profile pictures, avatars) that you want to convert
+     *     to WebP or process with Sharp before writing to disk.
+     */
+    public static createMemoryUpload(
+        allowedMimeTypes: ReadonlySet<string>,
+        maxFileSizeMb: number
+    ): multer.Multer {
+        const storage = multer.memoryStorage();
+
+        const fileFilter: multer.Options[ "fileFilter" ] = ( _req, file, cb ): void => {
+            if ( !allowedMimeTypes || allowedMimeTypes.size === 0 ) {
+                cb( null, true );
+                return;
+            }
+            if ( allowedMimeTypes.has( file.mimetype ) ) {
+                cb( null, true );
+                return;
+            }
+            cb( new Error( `File type not allowed: ${ file.mimetype }` ) );
+        };
+
+        return multer( {
+            storage,
+            limits: {
+                fileSize: maxFileSizeMb * 1024 * 1024,
+            },
+            fileFilter,
+        } );
+    }
+
+    /**
+     * Build a disk-based Multer instance with a dynamic destination resolver.
+     *
+     * Used for general document uploads where you want Multer to write files
+     * directly to disk under `/public/uploads/...`.
+     */
+    public static createDiskUpload( options: {
+        allowedMimeTypes: ReadonlySet<string>;
+        maxFileSizeMb: number;
+        maxFiles: number;
+        resolveDestination: ( req: Request ) => Promise<string> | string;
+    } ): multer.Multer {
+        const storage: StorageEngine = multer.diskStorage( {
+            destination: async ( req, _file, cb ) => {
+                try {
+                    const dest: string = await options.resolveDestination( req );
+                    cb( null, dest );
+                } catch ( error: unknown ) {
+                    cb(
+                        error instanceof Error
+                            ? error
+                            : new Error( String( error ) ),
+                        ""
+                    );
+                }
+            },
+            filename: ( _req, file, cb ) => {
+                const ext: string = path.extname( file.originalname );
+                const base: string = path.basename( file.originalname, ext );
+                const timestamp: number = Date.now();
+                const safeBase: string = FileUploader.slugify( base );
+                const storedName: string = `${ safeBase }_${ timestamp }${ ext.toLowerCase() }`;
+                cb( null, storedName );
+            },
+        } );
+
+        const fileFilter: multer.Options[ "fileFilter" ] = ( _req, file, cb ): void => {
+            if ( !options.allowedMimeTypes || options.allowedMimeTypes.size === 0 ) {
+                cb( null, true );
+                return;
+            }
+            if ( options.allowedMimeTypes.has( file.mimetype ) ) {
+                cb( null, true );
+                return;
+            }
+            cb( new Error( `File type not allowed: ${ file.mimetype }` ) );
+        };
+
+        return multer( {
+            storage,
+            limits: {
+                fileSize: options.maxFileSizeMb * 1024 * 1024,
+                files: options.maxFiles,
+            },
+            fileFilter,
+        } );
+    }
+
+    /**
+     * Save a single image from an in-memory upload (Multer memory storage)
+     * as WebP under a specific entity folder:
+     *
+     *   /<baseUploadPath>/<entityFolder>/<filename>
+     *
+     * The controller is responsible for providing:
+     *   - baseUploadPath: absolute path, e.g. "/.../public/uploads/users"
+     *   - basePublicUrl : full URL prefix, e.g. "http://host/uploads/users"
+     *   - entityFolder  : path-safe segment, e.g. "buddhika"
+     *   - filename      : "image.webp"
+     */
+    public static async saveSingleImageFromMemory( options: {
+        baseUploadPath: string;
+        basePublicUrl: string;
+        entityFolder: string;
+        filename: string;
+        buffer: Buffer;
+        webpQuality?: number;
+    } ): Promise<{ publicUrl: string; diskPath: string; }> {
+        const quality: number =
+            typeof options.webpQuality === "number" ? options.webpQuality : 80;
+
+        const safeFolder: string = FileUploader.sanitizeSegmentStrict(
+            options.entityFolder
+        );
+
+        const targetDir: string = FileUploader.buildSafeChildDir(
+            options.baseUploadPath,
+            safeFolder
+        );
+
+        await FileUploader.ensureDirectory( targetDir );
+
+        const diskPath: string = path.join( targetDir, options.filename );
+
+        await sharp( options.buffer )
+            .webp( { quality } )
+            .toFile( diskPath );
+
+        const baseUrlTrimmed: string = options.basePublicUrl.replace( /\/+$/, "" );
+        const publicUrl: string = [
+            baseUrlTrimmed,
+            encodeURIComponent( safeFolder ),
+            options.filename,
+        ].join( "/" );
+
+        return { publicUrl, diskPath };
+    }
+
+    // ─────────────────────────────────────────────
+    // PUBLIC API – GENERIC MULTI-FILE UPLOAD (SERVICE STYLE)
     // ─────────────────────────────────────────────
 
     /**
@@ -99,15 +248,6 @@ export default class FileUploader {
      * @param req        Express request (Multer reads `req` body + file stream).
      *
      * @returns          Array of `FileMetaBase` describing each stored file.
-     *
-     * Usage from controller (example):
-     *
-     *   const files = await FileUploader.handleUpload(
-     *     `complaints/${complaintId}/documents`,
-     *     "attachments",
-     *     req
-     *   );
-     *   ApiResponseBuilder.ok(res, "files", files, "Files uploaded successfully");
      */
     public static async handleUpload(
         subPath: string,
@@ -197,22 +337,6 @@ export default class FileUploader {
      *
      * Data model:
      *   - Files are moved into `/public/recyclebin/<category>/<refId>/`.
-     *
-     * @param category        Logical category, e.g. "complaints", "leases", "teams".
-     * @param refId           Domain reference ID, e.g. complaint code, team id, lease id.
-     * @param relativePaths   Paths **relative to `/public`**, e.g. "uploads/complaints/123/a.pdf".
-     *
-     * @returns               `{ moved: string[] }` where each string is a path
-     *                         relative to `/public`, e.g. "recyclebin/complaints/123/a.pdf".
-     *
-     * Usage example in controller:
-     *
-     *   const result = await FileUploader.moveToRecycleBin(
-     *     "complaints",
-     *     complaintId,
-     *     body.paths
-     *   );
-     *   ApiResponseBuilder.ok(res, "other", result, "Files moved to recycle bin");
      */
     public static async moveToRecycleBin(
         category: string,
@@ -281,17 +405,6 @@ export default class FileUploader {
 
     /**
      * Restore files from `/public/recyclebin` back into `/public/uploads`.
-     *
-     * For each:
-     *   "recyclebin/complaints/123/a.pdf"
-     *     → strip "recyclebin/"
-     *     → restore into "/public/uploads/complaints/123/a.pdf"
-     *
-     * @param recycleRelativePaths   Paths relative to `/public`,
-     *                               e.g. "recyclebin/complaints/123/a.pdf".
-     *
-     * @returns                      `{ restored: string[] }` where each entry is
-     *                               a path relative to `/public/uploads/...`.
      */
     public static async restoreFromRecycleBin(
         recycleRelativePaths: string[]
@@ -348,16 +461,6 @@ export default class FileUploader {
 
     /**
      * Permanently delete files or directories from `/public/recyclebin`.
-     *
-     * @param recycleRelativePathsOrDirs   Paths relative to `/public`,
-     *                                     must start with "recyclebin/".
-     *
-     * @returns                            `{ deleted: string[] }` with relative
-     *                                     paths of deleted files/directories.
-     *
-     * Behaviour:
-     *   - Deletes files or directories irreversibly from the recycle bin.
-     *   - Intended for admin actions or scheduled cleanup tasks.
      */
     public static async deleteFromRecycleBin(
         recycleRelativePathsOrDirs: string[]
@@ -407,42 +510,24 @@ export default class FileUploader {
     // PUBLIC API – IMAGE CONVERSION (WebP)
     // ─────────────────────────────────────────────
 
-    /**
-     * Convert any Sharp-supported raster image into modern WebP.
-     *
-     * This is a pure transformation:
-     *   - No HTTP response handling.
-     *   - Input and output paths must be fully resolved and validated by callers.
-     *   - The original file is not mutated; conversion creates a new artifact.
-     *
-     * @param absInputPath   Fully resolved absolute path to the input image.
-     * @param absOutputDir   Fully resolved absolute directory where WebP should be stored.
-     * @param quality        WebP quality (0–100). Default: 80 (good balance).
-     *
-     * @returns              A `FileMetaBase` describing the converted WebP file.
-     */
     public static async convertToWebP(
         absInputPath: string,
         absOutputDir: string,
         quality = 80
     ): Promise<FileMetaBase> {
         try {
-            // 1) Validate parameters
             if ( !absInputPath || !absOutputDir ) {
                 throw new Error(
                     "Input and output paths are required for WebP conversion."
                 );
             }
 
-            // 2) Ensure input exists
             if ( !fs.existsSync( absInputPath ) ) {
                 throw new Error( `Input file not found: ${ absInputPath }` );
             }
 
-            // 3) Ensure output directory exists
             await fse.ensureDir( absOutputDir );
 
-            // 4) Build deterministic, slug-safe output file name
             const inputBase: string = path.basename(
                 absInputPath,
                 path.extname( absInputPath )
@@ -452,12 +537,10 @@ export default class FileUploader {
 
             const absOutputPath: string = path.join( absOutputDir, storedName );
 
-            // 5) Image transformation pipeline (original → WebP)
             await sharp( absInputPath )
                 .webp( { quality } )
                 .toFile( absOutputPath );
 
-            // 6) Output file metadata aligned with FileMetaBase
             const stat = await fse.stat( absOutputPath );
 
             const meta: FileMetaBase = {
@@ -475,32 +558,177 @@ export default class FileUploader {
                     ? `WebP conversion failed: ${ error.message }`
                     : "Unknown error during WebP conversion";
 
-            // Intentionally rethrow for upstream handling (controller/service decides how to react)
             throw new Error( message );
         }
     }
+
+    // Path: src/utils/file-uploader.helper.ts
+
+    /**
+     * Generic multi-field upload handler for multipart/form-data routes.
+     *
+     * - Writes under: /public/uploads/<subPath>/<fieldName>/
+     * - Supports multiple Multer fields in a single request (e.g. images + documents).
+     * - Enforces optional per-field MIME type allow-lists.
+     *
+     * Example usage (Property router):
+     *   const uploaded = await FileUploader.handleMultiFieldUpload(
+     *     `properties/${propertyID}`,
+     *     [
+     *       { name: 'images', maxCount: 30 },
+     *       { name: 'documents', maxCount: 20 },
+     *     ],
+     *     req,
+     *     {
+     *       allowedMimeTypesByField: {
+     *         images: new Set([...]),
+     *         documents: new Set([...]),
+     *       },
+     *       maxFileSizeMb: 25,
+     *       maxFiles: 40,
+     *     }
+     *   );
+     *
+     *   const images = uploaded.images ?? [];
+     *   const docs   = uploaded.documents ?? [];
+     */
+    public static async handleMultiFieldUpload(
+        subPath: string,
+        fields: Array<{ name: string; maxCount?: number; }>,
+        req: Request,
+        options?: {
+            allowedMimeTypesByField?: Record<string, ReadonlySet<string>>;
+            maxFileSizeMb?: number;
+            maxFiles?: number;
+        }
+    ): Promise<Record<string, Express.Multer.File[]>> {
+        // 1) Sanitise and normalise subPath
+        const safeSubPath: string = FileUploader.sanitizeSubPath( subPath );
+
+        if ( !safeSubPath.trim() ) {
+            throw new Error( "Uploading path is required!" );
+        }
+
+        // 2) Base directory for this logical bucket
+        const baseDir: string = FileUploader.buildSafeChildDir(
+            FileUploader.UPLOAD_ROOT,
+            safeSubPath
+        );
+
+        await FileUploader.ensureDirectory( baseDir );
+
+        // 3) Storage: /uploads/<subPath>/<fieldName>/
+        const storage: StorageEngine = multer.diskStorage( {
+            destination: async ( _req, file, cb ): Promise<void> => {
+                try {
+                    const fieldName: string = file.fieldname;
+                    const targetDir: string = FileUploader.buildSafeChildDir(
+                        baseDir,
+                        fieldName
+                    );
+                    await FileUploader.ensureDirectory( targetDir );
+                    cb( null, targetDir );
+                } catch ( error: unknown ) {
+                    cb(
+                        error instanceof Error
+                            ? error
+                            : new Error( String( error ) ),
+                        ""
+                    );
+                }
+            },
+            filename: ( _req, file, cb ): void => {
+                const ext: string = path.extname( file.originalname );
+                const base: string = path.basename( file.originalname, ext );
+                const timestamp: number = Date.now();
+                const safeBase: string = FileUploader.slugify( base );
+                const storedName: string = `${ safeBase }_${ timestamp }${ ext.toLowerCase() }`;
+                cb( null, storedName );
+            },
+        } );
+
+        // 4) Optional per-field MIME allow-list
+        const fileFilter: multer.Options[ "fileFilter" ] = (
+            _req,
+            file,
+            cb
+        ): void => {
+            const byField: Record<string, ReadonlySet<string>> | undefined =
+                options?.allowedMimeTypesByField;
+
+            if ( !byField || Object.keys( byField ).length === 0 ) {
+                cb( null, true );
+                return;
+            }
+
+            const allowedForField: ReadonlySet<string> | undefined =
+                byField[ file.fieldname ];
+
+            if ( !allowedForField || allowedForField.size === 0 ) {
+                // No explicit list for this field ⇒ allow all for this field
+                cb( null, true );
+                return;
+            }
+
+            if ( allowedForField.has( file.mimetype ) ) {
+                cb( null, true );
+                return;
+            }
+
+            cb(
+                new Error(
+                    `File type not allowed for field "${ file.fieldname }": ${ file.mimetype }`
+                )
+            );
+        };
+
+        const upload = multer( {
+            storage,
+            limits: {
+                fileSize: ( options?.maxFileSizeMb ?? 20 ) * 1024 * 1024,
+                files: options?.maxFiles ?? 40,
+            },
+            fileFilter,
+        } ).fields( fields );
+
+        // 5) Wrap callback-style API in a Promise
+        const filesByField: Record<string, Express.Multer.File[]> =
+            await new Promise(
+                ( resolve, reject ): void => {
+                    upload( req, {} as any, ( err: unknown ): void => {
+                        if ( err ) {
+                            const message: string =
+                                err instanceof Error
+                                    ? err.message
+                                    : "Unknown upload error";
+                            reject( new Error( `File upload failed: ${ message }` ) );
+                            return;
+                        }
+
+                        // Multer sets req.files as Record<string, Express.Multer.File[]>
+                        const uploaded:
+                            | Record<string, Express.Multer.File[]>
+                            | undefined = req.files as
+                            | Record<string, Express.Multer.File[]>
+                            | undefined;
+
+                        resolve( uploaded ?? {} );
+                    } );
+                }
+            );
+
+        return filesByField;
+    }
+
 
     // ─────────────────────────────────────────────
     // PRIVATE HELPERS – PATH SAFETY & UTILITIES
     // ─────────────────────────────────────────────
 
-    /**
-     * Ensure that a directory exists (mkdir -p semantics).
-     * Safe to call repeatedly; `fs-extra.ensureDir` is idempotent.
-     */
     private static async ensureDirectory( targetDir: string ): Promise<void> {
         await fse.ensureDir( targetDir );
     }
 
-    /**
-     * Strict sanitisation for composite subpaths, e.g. "complaints/123/documents".
-     *
-     * Steps:
-     *   - Normalise slashes to "/".
-     *   - Split into segments.
-     *   - Remove empty segments and "."/".." occurrences.
-     *   - Apply strict per-segment sanitisation.
-     */
     private static sanitizeSubPath( subPath: string ): string {
         const normalized: string = subPath.replace( /\\/g, "/" ).trim();
 
@@ -512,28 +740,12 @@ export default class FileUploader {
         return parts.join( "/" );
     }
 
-    /**
-     * Strict sanitisation for a *single* path segment (category, refId, folder names).
-     *
-     * Allowed characters:
-     *   - a–z, A–Z, 0–9, underscore (_), hyphen (-)
-     *
-     * Anything else is normalised to underscore.
-     */
     private static sanitizeSegmentStrict( segment: string ): string {
         const trimmed: string = segment.trim();
         if ( !trimmed ) return "";
         return trimmed.replace( /[^a-zA-Z0-9_-]/g, "_" );
     }
 
-    /**
-     * Safe child directory builder.
-     *
-     * Behaviour:
-     *   - Resolves `base + child` using `path.resolve`.
-     *   - Ensures the resolved path remains within `base`.
-     *   - Rejects traversal attempts by throwing an error.
-     */
     private static buildSafeChildDir( base: string, child: string ): string {
         const baseResolved: string = path.resolve( base );
         const target: string = path.resolve( base, child );
@@ -545,11 +757,6 @@ export default class FileUploader {
         return target;
     }
 
-    /**
-     * Safe child path builder (for files).
-     *
-     * Same concept as `buildSafeChildDir`, but used for concrete file paths under a base.
-     */
     private static buildSafeChildPath( base: string, relative: string ): string {
         const baseResolved: string = path.resolve( base );
         const target: string = path.resolve( base, relative );
@@ -561,15 +768,6 @@ export default class FileUploader {
         return target;
     }
 
-    /**
-     * Slugify filename base (without extension) into a filesystem-friendly token.
-     *
-     * Rules:
-     *   - Lowercase.
-     *   - Non [a-z0-9] sequences collapse into "-".
-     *   - Leading/trailing "-" removed.
-     *   - Fallback to "file" if result is empty.
-     */
     private static slugify( input: string ): string {
         const safe: string = input
             .trim()

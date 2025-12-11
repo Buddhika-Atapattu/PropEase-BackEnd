@@ -4,8 +4,10 @@ import { UserDocumentEntity } from '../models/file-upload.model';
 import { LeasePayload, LeasePayloadWithProperty } from '../models/lease.model';
 import { IProperty } from '../models/property.model';
 import { ITenant } from '../models/tenant.model';
-import { IUser } from '../models/user.model';
-import { ITeamManagement } from '../models/teamManagement.model';
+import { User } from '../models/user.model';
+import { ITeamManagement } from '../models/teamManagement/teamManagement.model';
+import type { IWorkItem } from '../models/teamManagement/workItem.model';
+import type { IWorkEvent } from '../models/teamManagement/workEvent.model';
 
 /* ──────────────────────────────────────────────────────────────
    Basic status type for consistency across all APIs
@@ -97,8 +99,8 @@ export interface FileMetaBase {
    (All your core domain models live here)
    ────────────────────────────────────────────────────────────── */
 export interface SystemData {
-   user?: IUser;
-   users?: IUser[];
+   user?: User;
+   users?: User[];
 
    lease?: LeasePayload;
    leases?: LeasePayload[];
@@ -121,8 +123,15 @@ export interface SystemData {
    team?: ITeamManagement;
    teams?: ITeamManagement[];
 
+   workItem?: IWorkItem;
+   workItems?: IWorkItem[];
+
+   event?: IWorkEvent;
+   events?: IWorkEvent[];
+
    file?: FileMetaBase;
    files?: FileMetaBase[];
+
 
    /** Optional numeric summaries – very common in dashboards */
    totalUsers?: number;

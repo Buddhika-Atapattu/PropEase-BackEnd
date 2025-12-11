@@ -61,13 +61,6 @@ export interface PublicEndpoint {
  * Keep this list small and very explicit.
  */
 export const PUBLIC_ENDPOINTS: ReadonlyArray<PublicEndpoint> = [
-    // Shared login endpoint in user route
-    {
-        method: "POST",
-        pattern: /^\/api-user\/verify-user$/,
-        reason: "Primary login endpoint",
-    },
-
     // Auth controller (if mounted as /api-auth)
     {
         method: "POST",
@@ -79,6 +72,20 @@ export const PUBLIC_ENDPOINTS: ReadonlyArray<PublicEndpoint> = [
         pattern: /^\/api\/auth\/logout$/,
         reason:
             "AuthController logout (should still be callable even with broken cookies)",
+    },
+    {
+        method: "POST",
+        pattern: /^\/api\/auth\/regenerate-challenge$/,
+        reason:
+            "Regenerate the login challenge",
+    },
+
+    // /ws-token/rotate/:username
+    {
+        method: "POST",
+        pattern: /^\/api\/auth\/ws-token\/rotate\/[^/]+$/,
+        reason:
+            "Regenerate the login challenge",
     },
 
     // MFA
@@ -97,6 +104,27 @@ export const PUBLIC_ENDPOINTS: ReadonlyArray<PublicEndpoint> = [
         pattern: /^\/api\/mfa\/activate$/,
         reason: "MFA confirm (alias)",
     },
+    {
+        method: "POST",
+        pattern: /^\/api\/mfa\/initial-verify$/,
+        reason: "MFA initial verify",
+    },
+    {
+        method: "POST",
+        pattern: /^\/api\/mfa\/user-verify$/,
+        reason: "MFA user verify",
+    },
+    // /status/:pairingToken
+    {
+        method: "GET",
+        pattern: /^\/api\/mfa\/status\/[^/]+$/,
+        reason: "MFA status (alias)",
+    },
+    {
+        method: "POST",
+        pattern: /^\/api\/mfa\/deactive\/[^/]+$/,
+        reason: "MFA deactive",
+    },
 
     // Email validator
     {
@@ -110,13 +138,6 @@ export const PUBLIC_ENDPOINTS: ReadonlyArray<PublicEndpoint> = [
         method: "POST",
         pattern: /^\/api-report\/security$/,
         reason: "Security incident reporting from FE",
-    },
-
-    // Richtext upload (optional – you can later protect this if needed)
-    {
-        method: "POST",
-        pattern: /^\/api-uploads\/uploads\/richtext$/,
-        reason: "Richtext image upload",
     },
 ];
 
@@ -225,11 +246,11 @@ export const GUARD_ROUTES: ReadonlyArray<GuardRouteDefinition> = [
         description: "Get user by email",
     },
 
-    // GET /api-user/user-phone/:phone
+    // POST /api-user/user-phone/:phone
     {
         id: "user:get-by-phone",
-        method: "GET",
-        pattern: /^\/api-user\/user-phone\/[^/]+$/,
+        method: "POST",
+        pattern: /^\/api-user\/user-phone$/,
         module: "UserManagement",
         action: "view",
         description: "Get user by phone number",
@@ -819,6 +840,16 @@ export const GUARD_ROUTES: ReadonlyArray<GuardRouteDefinition> = [
         description: "Create a team",
     },
 
+    // GET /api-team-management/teamName/:teamName
+    {
+        id: "team:get-team-by-name",
+        method: "GET",
+        pattern: /^\/api-team-management\/teamName\/[^/]+$/,
+        module: "TeamManagement",
+        action: "view",
+        description: "Get team by team name",
+    },
+
     // GET /api-team-management/all
     {
         id: "team:list-all",
@@ -831,7 +862,7 @@ export const GUARD_ROUTES: ReadonlyArray<GuardRouteDefinition> = [
 
     // GET /api-team-management/:teamId
     {
-        id: "team:get-by-id",
+        id: "team:get-team-by-id",
         method: "GET",
         pattern: /^\/api-team-management\/[^/]+$/,
         module: "TeamManagement",
@@ -998,6 +1029,61 @@ export const GUARD_ROUTES: ReadonlyArray<GuardRouteDefinition> = [
         action: "view",
         description: "Get count of users in teams for a specific domain",
     },
+
+    // GET /api-team-management/users/all?index=&limit=&search=
+    {
+        id: "team:users-with-team",
+        method: "GET",
+        pattern: /^\/api-team-management\/users\/all\/?$/,
+        module: "TeamManagement",
+        action: "view",
+        description: "List all users with their team membership (paged via query)",
+    },
+
+    // =========================================================================
+    // WORK EVENTS (/api-work-event)
+    // =========================================================================
+
+    // GET /api-work-event/all
+    {
+        id: "work-event:list-all",
+        method: "GET",
+        pattern: /^\/api-work-event\/all\/?$/,
+        module: "TeamManagement",
+        action: "view",
+        description: "List all work events (filters via query: workItemId, teamId, domain, etc.)",
+    },
+
+    // GET /api-work-event/by-workitem/:workItemId
+    {
+        id: "work-event:list-by-workitem",
+        method: "GET",
+        pattern: /^\/api-work-event\/by-workitem\/[^/]+$/,
+        module: "TeamManagement",
+        action: "view",
+        description: "List work events for a given work item",
+    },
+
+    // GET /api-work-event/by-team/:teamId
+    {
+        id: "work-event:list-by-team",
+        method: "GET",
+        pattern: /^\/api-work-event\/by-team\/[^/]+$/,
+        module: "TeamManagement",
+        action: "view",
+        description: "List work events for all work items under a team",
+    },
+
+    // GET /api-work-event/stats/workitem/:workItemId
+    {
+        id: "work-event:stats-by-workitem",
+        method: "GET",
+        pattern: /^\/api-work-event\/stats\/workitem\/[^/]+$/,
+        module: "TeamManagement",
+        action: "view",
+        description: "Get aggregated stats of events for a given work item",
+    },
+
 
     // =========================================================================
     // TENANT & COMPLAINTS (/api-tenant)

@@ -26,17 +26,17 @@ export default class CorsDebug {
     const reqMethod = req.headers['access-control-request-method'];
     const reqHeaders = req.headers['access-control-request-headers'];
 
-    let line = `${this.prefix}[${id}] [CORS] Preflight OPTIONS ${req.originalUrl} from ${origin}; `;
+    let line = `[Site:]${ this.prefix }[${ id }] \n[CORS:] Preflight OPTIONS ${ req.originalUrl } from ${ origin }; `;
     line += `requestMethod=${reqMethod}; requestHeaders=${reqHeaders}`;
-    console.log(line);
+    console.log( '[LOG:]', line, '\n' );
 
     if (this.verbose) {
       // Print a safe subset of headers for debugging
-      console.log(`${this.prefix}[${id}] [CORS] headers:`, {
+      console.log( `[LOG:]${ this.prefix }[${ id }] \n[CORS:] headers:`, {
         origin: req.headers.origin,
         'access-control-request-method': req.headers['access-control-request-method'],
         'access-control-request-headers': req.headers['access-control-request-headers'],
-      });
+      }, '\n' );
     }
 
     next();

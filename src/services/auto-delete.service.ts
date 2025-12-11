@@ -50,7 +50,7 @@ export class AutoDeleteUserService {
       '0 1 * * *',
       () => {
         this.performAutoDeletion().catch((err) => {
-          const msg = '[AutoDelete] Unhandled error in performAutoDeletion';
+          const msg = '[AutoDelete:] Unhandled error in performAutoDeletion';
           console.error(msg, err);
           this.safeEmit('auto-delete-notify', {
             type: 'error',
@@ -64,9 +64,9 @@ export class AutoDeleteUserService {
     );
 
     console.log(
-      `[AutoDelete] Daily job scheduled at 01:00. Enabled=${this.ENABLED} AgeDays=${this.AGE_DAYS} NotifyRoles=[${this.NOTIFY_ROLES.join(
+      `[AutoDelete:] Daily job scheduled at 01:00. Enabled=${ this.ENABLED } AgeDays=${ this.AGE_DAYS } NotifyRoles=[${ this.NOTIFY_ROLES.join(
         ', '
-      )}]`
+      ) }]`, '\n'
     );
   }
 
@@ -98,8 +98,8 @@ export class AutoDeleteUserService {
 
       // If no users to delete, notify and exit
       if(!usersToDelete.length) {
-        const infoMsg = '[AutoDelete] No users to delete today.';
-        console.log(infoMsg);
+        const infoMsg = '[AutoDelete:] No users to delete today.';
+        console.log( infoMsg, '\n' );
         this.safeEmit('auto-delete-notify', {
           type: 'info',
           message: infoMsg,
@@ -142,9 +142,9 @@ export class AutoDeleteUserService {
         deletedCount = result.deletedCount ?? 0;
   
         const successMessage =
-          `[AutoDelete] Deleted ${deletedCount} user(s). ` +
+          `[AutoDelete:] Deleted ${deletedCount} user(s). ` +
           `Backup saved to: ${backupFilePath}`;
-        console.log(successMessage);
+        console.log(successMessage,'\n');
   
         this.safeEmit('auto-delete-notify', {
           type: 'success',
@@ -157,9 +157,9 @@ export class AutoDeleteUserService {
       } else {
         // Dry-run
         const dryMsg =
-          `[AutoDelete] Dry-run: would delete ${usersToDelete.length} user(s). ` +
+          `[AutoDelete:] Dry-run: would delete ${ usersToDelete.length } user(s). ` +
           `Backup preview saved to: ${backupFilePath}. Cutoff: ${cutoff.toISOString()}`;
-        console.log(dryMsg);
+        console.log( dryMsg, '\n' );
 
         this.safeEmit('auto-delete-notify', {
           type: 'info',
@@ -181,8 +181,8 @@ export class AutoDeleteUserService {
         when: now.toISOString(),
       });
     } catch(error: any) {
-      const errMsg = '[AutoDelete] Error during deletion.';
-      console.error(errMsg, error);
+      const errMsg = '[AutoDelete:] Error during deletion.';
+      console.error( errMsg, error, '\n' );
 
       this.safeEmit('auto-delete-notify', {
         type: 'error',
@@ -362,7 +362,7 @@ export class AutoDeleteUserService {
     try {
       this.io.emit(event, payload as any);
     } catch(e) {
-      console.error('[AutoDelete] Socket emit failed:', e);
+      console.error( '[AutoDelete:] Socket emit failed:', e, '\n' );
     }
   }
 }

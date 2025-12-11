@@ -8,7 +8,7 @@ import {
     Types
 } from 'mongoose';
 
-import type { IUser } from './user.model';
+import type { User } from './user.model';
 
 /**
  * GuardTokenDocument
@@ -23,7 +23,7 @@ import type { IUser } from './user.model';
  */
 export interface GuardTokenDocument extends Document {
     userId: Types.ObjectId;
-    username: IUser[ 'username' ];
+    username: User[ 'username' ];
     sessionToken: string;
     guardToken: string;
     previousGuardToken?: string;
@@ -94,7 +94,7 @@ class GuardTokenModelBuilder {
     public build(): Model<GuardTokenDocument> {
         const schema = this.buildSchema();
         const GuardTokenModel: Model<GuardTokenDocument> =
-            model<GuardTokenDocument>( 'GuardToken', schema );
+            model<GuardTokenDocument>( 'GuardToken', schema, 'guard-tokens' );
         return GuardTokenModel;
     }
 }

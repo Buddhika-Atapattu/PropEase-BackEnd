@@ -1,5 +1,6 @@
+// Path: src/models/teamManagement/teamManagement.model.ts
 import { Schema, model, type Document, type Model, Types } from 'mongoose';
-import { IUser } from './user.model';
+import { User } from '../user.model';
 
 // ─────────────────────────────────────────────
 // Shared types
@@ -99,8 +100,8 @@ export interface TaskEvidence {
     storageKey?: string;
 
     /** Who attached this evidence */
-    uploadedById?: string;
-    uploadedByName?: string;
+    uploadedById?: Types.ObjectId;
+    uploadedByName?: User[ 'username' ];
 
     /** When it was attached */
     uploadedAt?: ISODateString;
@@ -167,12 +168,52 @@ export interface AssignedTask {
 // Team management root model
 // ─────────────────────────────────────────────
 
+export type OrgUnitType = 'team' | 'department' | 'squad' | 'board';
+
+/** All supported team roles */
+export const TEAM_ROLES = [
+    // Core roles
+    'captain',
+    'member',
+    'lead',
+    'supervisor',
+    'observer',
+
+    // Trade-based / functional roles
+    'mechanic',
+    'carpenter',
+    'electrician',
+    'plumber',
+    'technician',
+    'welder',
+    'driver',
+    'cleaner',
+    'security',
+    'gardener',
+    'painter',
+    'mason',
+    'helper',
+] as const;
+
+export type RoleInTeam = ( typeof TEAM_ROLES )[ number ];
+
+
+export interface TeamMember {
+    id: Types.ObjectId;
+    username: User[ 'username' ];
+    roleInTeam?: RoleInTeam;
+    reason?: string;          // why this user is in the team
+    joinedAt?: ISODateString;          // ✅ when this user joined THIS team
+}
+
 export interface ITeamManagement extends Document {
     /** Unique team ID (e.g. PROPEASE-TEAM-...) */
     id: string;
 
     /** Display name of the team (e.g. "Sales - West Region") */
     teamName: string;
+
+    orgType?: OrgUnitType;             // team | department | squad
 
     /** What area this team belongs to (sales/dev/support/etc.) */
     domain: TeamDomain;
@@ -181,17 +222,13 @@ export interface ITeamManagement extends Document {
     description: string;
 
     /** All members currently in the team */
-    members: Types.ObjectId[];
-
-    membersUsernames: string[];
+    members: TeamMember[];
 
     /**
      * Team captain / lead (primary responsible person).
      * This person may or may not be part of `members` array depending on your design.
      */
-    captain: Types.ObjectId;
-
-    captonUsername: string;
+    captain: TeamMember;
 
     /** Cached total member count for quick access (should match members.length) */
     memberTotal: number;
@@ -215,6 +252,9 @@ export interface ITeamManagement extends Document {
     isActive?: boolean;
 }
 
+const MAX_ACTIVE_TEAMS_PER_USER: number = 5;
+
+
 // ─────────────────────────────────────────────
 // Model builder class
 // ─────────────────────────────────────────────
@@ -227,6 +267,7 @@ class TeamModelBuilder {
     private readonly fileMetaBaseSchema: Schema<FileMetaBase>;
     private readonly taskEvidenceSchema: Schema<TaskEvidence>;
     private readonly assignedTaskSchema: Schema<AssignedTask>;
+    private readonly teamMember: Schema<TeamMember>;
 
     constructor () {
         this.geoLocationSchema = this.buildGeoLocationModelSchema();
@@ -234,6 +275,7 @@ class TeamModelBuilder {
         this.fileMetaBaseSchema = this.buildFileMetaBaseSchema();
         this.taskEvidenceSchema = this.buildTaskEvidenceSchema();
         this.assignedTaskSchema = this.buildAssignedTaskSchema();
+        this.teamMember = this.buildTeamMemberSchema();
     }
 
     // ─────────────────────────────────────────────
@@ -275,16 +317,8 @@ class TeamModelBuilder {
     private buildFileMetaBaseSchema(): Schema<FileMetaBase> {
         const fileMetaBaseSchema: Schema<FileMetaBase> = new Schema<FileMetaBase>(
             {
-                originalName: {
-                    type: String,
-                    required: true,
-                    default: `file_${ this.now }`,
-                },
-                storedName: {
-                    type: String,
-                    required: true,
-                    default: `stored_${ this.now }`,
-                },
+                originalName: { type: String, required: true },
+                storedName: { type: String, required: true },
                 extension: { type: String, required: true, default: '' },
                 mimeType: { type: String, required: true, default: '' },
                 sizeBytes: { type: Number, required: true, default: 0 },
@@ -304,12 +338,16 @@ class TeamModelBuilder {
                 file: { type: this.fileMetaBaseSchema, required: false },
                 url: { type: String, required: false, default: '' },
                 storageKey: { type: String, required: false, default: '' },
-                uploadedById: { type: String, required: false, default: '' },
+                uploadedById: {
+                    type: Schema.Types.ObjectId,
+                    ref: 'User',
+                    required: false,
+                },
                 uploadedByName: { type: String, required: false, default: '' },
                 uploadedAt: {
                     type: String,
                     required: false,
-                    default: this.now,
+                    default: () => new Date().toISOString(),
                 },
             },
             {
@@ -404,12 +442,75 @@ class TeamModelBuilder {
         return assignedTask;
     }
 
+    private buildTeamMemberSchema(): Schema<TeamMember> {
+        const teamMember: Schema<TeamMember> = new Schema<TeamMember>(
+            {
+                id: {
+                    type: Schema.Types.ObjectId,
+                    required: true,
+                    ref: 'User',
+                    index: true,
+                },
+                username: {
+                    type: String,
+                    required: true,
+                    trim: true,
+                    index: true,
+                },
+                roleInTeam: {
+                    type: String,
+                    enum: [
+                        'captain',
+                        'member',
+                        'lead',
+                        'supervisor',
+                        'observer',
+
+                        // Trade-based roles
+                        'mechanic',
+                        'carpenter',
+                        'electrician',
+                        'plumber',
+                        'technician',
+                        'welder',
+                        'driver',
+                        'cleaner',
+                        'security',
+                        'gardener',
+                        'painter',
+                        'mason',
+                        'helper',
+                    ],
+                    required: true,
+                    default: 'member'
+                },
+                reason: {
+                    type: String,
+                    required: false,
+                    default: '',
+                },
+                joinedAt: {
+                    type: String,
+                    required: false,
+                    default: () => new Date().toISOString(),
+                }
+
+            },
+            {
+                _id: false,
+                timestamps: false,
+            },
+        );
+        return teamMember;
+    }
+
+
     // ─────────────────────────────────────────────
     // Root Team schema & model
     // ─────────────────────────────────────────────
 
     private buildTeamManagementSchema(): Schema<ITeamManagement> {
-        const teamSchema: Schema<ITeamManagement> = new Schema<ITeamManagement>(
+        const TeamSchema: Schema<ITeamManagement> = new Schema<ITeamManagement>(
             {
                 id: {
                     type: String,
@@ -419,8 +520,16 @@ class TeamModelBuilder {
 
                 teamName: {
                     type: String,
+                    unique: true,
                     required: true,
                     trim: true,
+                },
+
+                orgType: {
+                    type: String,
+                    enum: [ 'team', 'department', 'squad', 'board' ],
+                    required: false,
+                    default: 'team'
                 },
 
                 domain: {
@@ -436,33 +545,18 @@ class TeamModelBuilder {
                     default: '',
                 },
 
-                members: [
-                    {
-                        type: Schema.Types.ObjectId,
-                        ref: 'User',
-                        required: false,
-                    },
-                ],
+                members: {
+                    type: [ this.teamMember ],
+                    required: false,
+                    default: [],
+                },
 
-                membersUsernames: [
-                    {
-                        type: String,
-                        trim: true,
-                        required: false,
-                    },
-                ],
 
                 captain: {
-                    type: Schema.Types.ObjectId,
-                    ref: 'User',
+                    type: this.teamMember,
                     required: true,
                 },
 
-                captonUsername: {
-                    type: String,
-                    ref: 'User',
-                    required: true,
-                },
 
                 memberTotal: {
                     type: Number,
@@ -485,13 +579,13 @@ class TeamModelBuilder {
                 createdAt: {
                     type: String,
                     required: true,
-                    default: this.now,
+                    default: () => new Date().toISOString(),
                 },
 
                 updatedAt: {
                     type: String,
                     required: true,
-                    default: this.now,
+                    default: () => new Date().toISOString(),
                 },
 
                 isActive: {
@@ -505,12 +599,61 @@ class TeamModelBuilder {
                 timestamps: false,
             },
         );
-
         // Useful indexes
-        teamSchema.index( { id: 1 }, { unique: true } );
-        teamSchema.index( { teamName: 1, domain: 1 } );
+        TeamSchema.index( { teamName: 1, domain: 1 } );
+        TeamSchema.index( { 'members.id': 1, isActive: 1 } );
 
-        return teamSchema;
+        // Global uniqueness for AssignedTask.id across ALL teams
+        // - Only enforced when assignTasks.id exists and is non-null
+        TeamSchema.index(
+            { 'assignTasks.id': 1 },
+            {
+                unique: true,
+                partialFilterExpression: {
+                    'assignTasks.id': { $exists: true, $ne: null },
+                },
+            },
+        );
+
+        TeamSchema.pre<ITeamManagement>( 'save', async function ( next ) {
+            try {
+                if ( !this.isNew && !this.isModified( 'members' ) ) {
+                    return next();
+                }
+
+                const uniqueMemberIds: string[] = Array.from(
+                    new Set( this.members.map( ( m ) => m.id.toString() ) ),
+                );
+
+                const TeamModel: Model<ITeamManagement> =
+                    model<ITeamManagement>( 'TeamManagement' );
+
+                for ( const memberId of uniqueMemberIds ) {
+                    const count: number = await TeamModel
+                        .countDocuments( {
+                            'members.id': new Types.ObjectId( memberId ),
+                            isActive: true,
+                            _id: { $ne: this._id },
+                        } )
+                        .exec();
+
+                    if ( count >= MAX_ACTIVE_TEAMS_PER_USER ) {
+                        const error = new Error(
+                            `User ${ memberId } already belongs to ${ count } active teams (max allowed is ${ MAX_ACTIVE_TEAMS_PER_USER }).`,
+                        );
+                        return next( error );
+                    }
+                }
+
+                next();
+            } catch ( err ) {
+                next( err as Error );
+            }
+        } );
+
+
+        return TeamSchema;
+
     }
 
     public buildModel(): Model<ITeamManagement> {

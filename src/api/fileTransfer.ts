@@ -1,18 +1,17 @@
 // src/api/fileTransfer.ts
 
 // ============ IMPORTS (Only what we actually use) ============
-import express, { Request, Response, Router } from "express";
-import dotenv from "dotenv";
-import fs from "fs";
-import path from "path";
-import multer from "multer";
 import axios from "axios";
+import express, { Request, Response, Router } from "express";
+import fs from "fs";
 import * as libre from "libreoffice-convert";
+import multer from "multer";
+import path from "path";
+import { FILE, ScannedFileRecordJSON, TokenViceData } from "../models/lease.model";
 import { CryptoService } from "../services/crypto.service";
-import { FILE, TokenViceData, ScannedFileRecordJSON } from "../models/lease.model";
 import { ApiResponseBuilder } from '../utils/api-combiner.builder';
 
-dotenv.config();
+
 
 /**
  * FileTransfer
@@ -173,7 +172,7 @@ export default class FileTransfer {
       if ( allowed.includes( file.mimetype ) ) cb( null, true );
       else cb( new Error( `Unsupported image type: ${ file.mimetype }` ) );
     };
- 
+
     const upload = multer( { storage, fileFilter } );
 
     this.router.post(

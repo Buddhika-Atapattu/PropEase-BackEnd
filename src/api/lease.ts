@@ -7,8 +7,8 @@
 // - Beginner-friendly comments included
 // ============================================================================
 
+import { ENV } from '../configs/env.config';
 import axios from "axios";
-import dotenv from "dotenv";
 import ejs from "ejs";
 import express, { Request, Response, Router } from "express";
 import fs from "fs";
@@ -22,7 +22,6 @@ import QRCode from "qrcode";
 import { promisify } from "util";
 
 import {
-  AddedBy,
   Address,
   CoTenant,
   CountryCodes,
@@ -48,14 +47,13 @@ import {
   UtilityResponsibility
 } from "../models/lease.model";
 
-import { Property, PropertyModel, type IProperty } from '../models/property.model';
-import { UserModel, type IUser } from "../models/user.model";
+import { Property, PropertyModel, IProperty, AddedBy } from '../models/property.model';
+import { UserModel, User, USER_MODEL_PROJECTION, type IUser } from "../models/user.model";
 import { CryptoService } from "../services/crypto.service";
 import NotificationService from "../services/notification.service";
 import { PaginationMeta } from "../types/api-message";
 import { ApiResponseBuilder } from '../utils/api-combiner.builder';
 
-dotenv.config();
 
 // Optional (future): promisify libre if you add DOC->PDF here
 const convertToPDF = promisify( libre.convert );
@@ -1390,7 +1388,7 @@ export default class Lease {
   /** Build a Static Maps image (base64) for PDFs. Falls back to embeddedUrl string. */
   private async makeDinamicMAPURL( input: LeasePayloadWithProperty[ 'property' ][ 'location' ] ): Promise<string> {
     try {
-      const APIkey = process.env.GOOGLE_API_KEY;
+      const APIkey = ENV.google.GOOGLE_API_KEY;
 
       if ( !input?.embeddedUrl || !input.lat || !input.lng ) return '';
 
@@ -1925,7 +1923,7 @@ export default class Lease {
       try {
         const safeUsername = this.sanitizeIdentifier( req.params.username );
         if ( !safeUsername ) throw new Error( "Username is required!" );
-        const user = await UserModel.findOne( { username: safeUsername } ).lean<IUser>();
+        const user = await UserModel.findOne( { username: safeUsername }, USER_MODEL_PROJECTION ).lean<User>();
         if ( !user ) {
           ApiResponseBuilder.notFound( res, 'User not found!' );
           return;

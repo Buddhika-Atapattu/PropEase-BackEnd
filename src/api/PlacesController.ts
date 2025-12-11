@@ -13,12 +13,10 @@
 //   - dotenv  : for loading environment variables (API key)
 // ============================================================================
 
+import {ENV} from '../configs/env.config';
 import express, { Request, Response, Router } from "express"; // Import Express and its types
 import axios from "axios"; // For sending HTTP requests to the Google API
-import dotenv from "dotenv"; // Loads environment variables from .env file
 import { ApiResponseBuilder } from '../utils/api-combiner.builder';
-
-dotenv.config(); // Initialize dotenv (ensures process.env.GOOGLE_API_KEY is available)
 
 // ============================================================================
 // Main Controller Class
@@ -63,7 +61,7 @@ export class PlacesController {
 
     // Retrieve your Google API key from environment variables
     // (Stored securely in your .env file as GOOGLE_API_KEY)
-    const key = process.env.GOOGLE_API_KEY;
+    const key = ENV.google.GOOGLE_API_KEY;
 
     // Validate input and key before proceeding
     if ( !input || !key ) {

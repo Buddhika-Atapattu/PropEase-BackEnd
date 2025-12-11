@@ -20,7 +20,6 @@
 // ============================================================================
 
 import { randomUUID } from 'crypto';
-import dotenv from 'dotenv';
 import express, {
   NextFunction,
   Request,
@@ -43,12 +42,11 @@ import {
 } from '../models/complaint.model';
 import { LeaseModel, type LeasePayload } from '../models/lease.model';
 import { ITenant, TenantModel } from '../models/tenant.model';
-import { UserModel, type IUser } from '../models/user.model';
+import { USER_MODEL_PROJECTION, UserModel, type User } from '../models/user.model';
 import NotificationService from '../services/notification.service';
 import type { PaginationMeta } from '../types/api-message';
 import { ApiResponseBuilder } from '../utils/api-combiner.builder';
 
-dotenv.config();
 
 
 /**
@@ -629,7 +627,7 @@ export default class Tenant {
                 typeof u === 'string' && u.trim().length > 0,
             );
 
-          const filter: FilterQuery<IUser> = {};
+          const filter: FilterQuery<User> = {};
 
           // Exclude all users that are already tenants
           if ( tenantUsernames.length > 0 ) {
@@ -680,12 +678,12 @@ export default class Tenant {
 
           const [ users, total ] = await Promise.all( [
             UserModel
-              .find( filter )
+              .find( filter, USER_MODEL_PROJECTION )
               .sort( sort )
               .skip( skip )
               .limit( limit )
-              .lean<IUser>()
-              .exec() as unknown as IUser[],
+              .lean<User>()
+              .exec() as unknown as User[],
             UserModel.countDocuments( filter ),
           ] );
 
@@ -787,7 +785,7 @@ export default class Tenant {
                 typeof u === 'string' && u.trim().length > 0,
             );
 
-          const filter: FilterQuery<IUser> = {};
+          const filter: FilterQuery<User> = {};
 
           // Exclude all users that are already tenants
           if ( tenantUsernames.length > 0 ) {
@@ -852,7 +850,7 @@ export default class Tenant {
           // Validate tenant + deletor
           const tenantDoc = await TenantModel.findOne( { username } );
           if ( !tenantDoc ) { ApiResponseBuilder.notFound( res, 'Tenant not found' ); return; }
-          const deletorDoc = await UserModel.findOne( { username: deletor } );
+          const deletorDoc = await UserModel.findOne( { username: deletor }, USER_MODEL_PROJECTION );
           if ( !deletorDoc ) { ApiResponseBuilder.notFound( res, 'Deletor is required' ); return; }
 
           // Load leases

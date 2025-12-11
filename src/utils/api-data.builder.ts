@@ -18,7 +18,7 @@ import { IProperty } from '../models/property.model';
 import { ITenant } from '../models/tenant.model';
 import { IComplaint } from '../models/complaint.model';
 import { UserDocumentEntity } from '../models/file-upload.model';
-import type { ITeamManagement } from '../models/teamManagement.model';
+import type { ITeamManagement } from '../models/teamManagement/teamManagement.model';
 
 /**
  * Generic ApiData builder.

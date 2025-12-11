@@ -1,14 +1,14 @@
-// Path: src/models/mfa-pairing.model.ts
+// Path: src/models/mfa/mfa-pairing.model.ts
 
 import {
     Schema,
+    Types,
     model,
     type Document,
-    type Model,
-    Types
+    type Model
 } from 'mongoose';
 
-import type { IUser } from './user.model';
+import type { User } from '../user.model';
 
 /**
  * MfaPairingDocument
@@ -24,7 +24,7 @@ import type { IUser } from './user.model';
  */
 export interface MfaPairingDocument extends Document {
     userId: Types.ObjectId;
-    username: IUser[ 'username' ];
+    username: User[ 'username' ];
     pairingToken: string;
     deviceName?: string;
     devicePlatform?: string;
@@ -32,6 +32,7 @@ export interface MfaPairingDocument extends Document {
     expiresAt: Date;
     createdAt: Date;
     updatedAt: Date;
+    multiAuthSecret: string;
 }
 
 class MfaPairingModelBuilder {
@@ -51,8 +52,7 @@ class MfaPairingModelBuilder {
                 pairingToken: {
                     type: String,
                     required: true,
-                    unique: true,
-                    trim: true
+                    trim: true,          // unique removed to avoid duplicate index
                 },
                 deviceName: {
                     type: String,
@@ -62,6 +62,11 @@ class MfaPairingModelBuilder {
                 devicePlatform: {
                     type: String,
                     required: false,
+                    trim: true
+                },
+                multiAuthSecret: {
+                    type: String,
+                    required: true,
                     trim: true
                 },
                 confirmed: {
@@ -84,7 +89,7 @@ class MfaPairingModelBuilder {
         // User can have several pending pairings theoretically, but usually only one.
         schema.index( { userId: 1, confirmed: 1 } );
 
-        // QR pairing token must be unique
+        // QR pairing token must be unique (single definition – no duplicate)
         schema.index( { pairingToken: 1 }, { unique: true } );
 
         // TTL: auto-clean expired pairing requests

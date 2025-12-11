@@ -6,13 +6,12 @@
 //  - Mounted (likely) under /api-validator → GET /api-validator/email-validator/:email
 // ============================================================================
 
-import express, { Request, Response, Router } from "express";
 import { promises as dns } from "dns";
-import dotenv from "dotenv";
+import express, { Request, Response, Router } from "express";
 
 import { ApiResponseBuilder } from "../utils/api-combiner.builder";
 
-dotenv.config();
+
 
 export default class Validator {
   private readonly router: Router;

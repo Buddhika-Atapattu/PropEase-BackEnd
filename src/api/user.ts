@@ -10,33 +10,34 @@
 
 import * as Argon2 from "argon2";
 import crypto from "crypto";
-import dotenv from "dotenv";
 import express, { Request, Response, Router } from "express";
 import fse from "fs-extra";
 import jwt from "jsonwebtoken";
-import multer from "multer";
 import nodemailer from "nodemailer";
 import path from "path";
-import sharp from "sharp";
 import twilio, { Twilio } from "twilio";
 
+import { ENV } from "../configs/env.config";
 import { Config } from "../configs/config";
-import { UserDocumentModel, type UserDocumentEntity } from "../models/file-upload.model";
+
+import {
+  UserDocumentModel,
+  type UserDocumentEntity,
+} from "../models/file-upload.model";
 import { PropertyModel } from "../models/property.model";
 import { TokenMap } from "../models/token.model";
-import { IUser, UserModel } from "../models/user.model";
-import NotificationService from "../services/notification.service";
-import { ApiResponseBuilder } from "../utils/api-combiner.builder";
-import type { PaginationMeta } from "../types/api-message";
-import { Role } from "../types/roles";
-import { GuardTokenService } from '../services/guard-token.service';
+import { USER_MODEL_PROJECTION, UserModel, type IUser, type User } from "../models/user.model";
 
-dotenv.config();
+import { GuardTokenService } from "../services/guard-token.service";
+import NotificationService from "../services/notification.service";
+
+import type { PaginationMeta } from "../types/api-message";
+import { ApiResponseBuilder } from "../utils/api-combiner.builder";
+import FileUploader from "../utils/file-uploader.helper";
 
 export default class UserRoute {
   // Guard service:
   private readonly guardTokenService: GuardTokenService = new GuardTokenService();
-
 
   // ──────────────────────────────────────────────────────────
   // Paths (must match your static mount)
@@ -64,8 +65,6 @@ export default class UserRoute {
     // ────────────────────────────────────────────────────────
     // Route registrations
     // ────────────────────────────────────────────────────────
-    // Auth
-    this.getUserData(); // login verification
 
     // CRUD: user
     this.createUser();
@@ -112,11 +111,19 @@ export default class UserRoute {
     return /^[A-Za-z0-9._-]+$/.test( seg );
   }
 
-  /** Parse JSON safely with fallback. */
+  /** Parse JSON safely with fallback – supports strings or plain objects. */
   private parseJSON<T = unknown>( value: unknown, fallback: T ): T {
     try {
-      if ( typeof value !== "string" ) return fallback;
-      return JSON.parse( value ) as T;
+      if ( value == null ) return fallback;
+
+      if ( typeof value === "string" ) {
+        const t = value.trim();
+        if ( !t ) return fallback;
+        return JSON.parse( t ) as T;
+      }
+
+      // If it's already an object/array, just trust the shape
+      return value as T;
     } catch {
       return fallback;
     }
@@ -197,130 +204,65 @@ export default class UserRoute {
     return String( Math.floor( 100000 + Math.random() * 900000 ) );
   }
 
-  // ==========================================================
-  // Auth: Login / verify user (JWT)
-  // ==========================================================
+  /**
+   * Build PhoneNumber object for new IUser model:
+   *  phoneNumber?: { code: CountryCodes; number: string }
+   *
+   * Expecting frontend to send JSON in `req.body.phoneNumber`, e.g.:
+   *  {
+   *    "code": { "name": "...", "code": "+94", "flags": { ... } },
+   *    "number": "771234567"
+   *  }
+   */
+  private buildPhoneNumberFromBody(
+    body: Record<string, unknown>
+  ): IUser[ "phoneNumber" ] | undefined {
+    const raw: unknown = body?.phoneNumber;
 
-  // Inside UserRoute class
-  private getUserData(): void {
-    this.router.post(
-      '/verify-user',
-      async ( req: Request, res: Response ): Promise<void> => {
-        try {
-          const username: string = String( req.body.username || '' ).trim();
-          const password: string = String( req.body.password || '' );
+    if ( !raw ) {
+      return undefined;
+    }
 
-          // 1) Basic input validation
-          if ( !username || !password ) {
-            ApiResponseBuilder.validationError(
-              res,
-              'Username and password are required'
-            );
-            return;
-          }
-
-          // 2) Load user
-          const user: IUser | null = await UserModel.findOne( { username } ).exec();
-
-          if ( !user ) {
-            ApiResponseBuilder.validationError( res, 'Invalid username' );
-            return;
-          }
-
-          // 3) Verify password (argon2)
-          const isPasswordValid: boolean = await Argon2.verify(
-            ( user as any ).password, // adjust if your field is passwordHash
-            password
-          );
-
-          if ( !isPasswordValid ) {
-            ApiResponseBuilder.validationError( res, 'Invalid password' );
-            return;
-          }
-
-          // 4) If multi-auth is enabled, stop here and ask frontend to perform MFA.
-          //    We DO NOT issue session/guard tokens yet.
-          if ( user.multiAuthEnabled ) {
-            const plain = user.toObject ? user.toObject() : ( user as any );
-            const { password: _omit, ...userWithoutPassword } = plain;
-
-            ApiResponseBuilder.ok(
-              res,
-              'user',
-              userWithoutPassword,
-              'User verified, multi-authentication required',
-              {
-                other: {
-                  mfaRequired: true,
-                  multiAuthEnabled: true,
-                  username: user.username
-                }
-              }
-            );
-            return;
-          }
-
-          // 5) Multi-auth NOT enabled → get or create main session+guard token
-          const tokens = await this.guardTokenService.getOrIssueForUser( user );
-
-          // 6) Issue a JWT as well (frontend can use this for UI, but backend guard
-          //    is driven by sessionToken + guardToken)
-          const payload = {
-            sub: String( user._id ),
-            username: user.username,
-            role: user.role as Role,
-          };
-
-          const jwtToken: string = jwt.sign(
-            payload,
-            process.env.JWT_SECRET || 'defaultsecret',
-            { expiresIn: '30d' }
-          );
-
-          // 7) Set cookies for main tokens (defence in depth)
-          res.cookie( 'sessionToken', tokens.sessionToken, {
-            httpOnly: true,
-            secure: true,
-            sameSite: 'strict',
-            maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
-          } );
-
-          res.cookie( 'guardToken', tokens.guardToken, {
-            httpOnly: true,
-            secure: true,
-            sameSite: 'strict',
-            maxAge: 30 * 24 * 60 * 60 * 1000
-          } );
-
-          // 8) Sanitise user object (never send password to client)
-          const plain = user.toObject ? user.toObject() : ( user as any );
-          const { password: _omit, ...userWithoutPassword } = plain;
-
-          // 9) Final response:
-          //    - system.user = safe user data
-          //    - other = tokens and flags for frontend
-          ApiResponseBuilder.ok(
-            res,
-            'user',
-            userWithoutPassword,
-            'User verified successfully',
-            {
-              other: {
-                jwtToken,                  // optional JWT for FE
-                sessionToken: tokens.sessionToken, // main 30-day token
-                guardToken: tokens.guardToken,     // rotating guard token
-                multiAuthEnabled: false,  // explicit flag for UI
-              }
-            }
-          );
-          return;
-        } catch ( error ) {
-          console.error( '[verify-user] error:', error );
-          ApiResponseBuilder.internalError( res, error );
-          return;
-        }
+    // If frontend already sends an object (from fetch / axios, not FormData)
+    if ( typeof raw === "object" ) {
+      const candidate = raw as IUser[ "phoneNumber" ];
+      if ( candidate && typeof candidate.number === "string" && candidate.code ) {
+        return candidate;
       }
-    );
+    }
+
+    // If it came as JSON string in multipart/form-data → parse
+    if ( typeof raw === "string" ) {
+      const parsed = this.parseJSON<IUser[ "phoneNumber" ] | null>( raw, null );
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        typeof parsed.number === "string" &&
+        parsed.code
+      ) {
+        return parsed;
+      }
+    }
+
+    // Fallback: ignore if malformed; user.phoneNumber stays undefined
+    return undefined;
+  }
+
+  /** Normalize phone for search: remove spaces, dashes, parentheses. Keep leading '+' if present. */
+  private normalizePhoneForSearch( raw: string ): string {
+    const trimmed = String( raw || '' ).trim();
+    if ( !trimmed ) return '';
+
+    // Keep leading + if present, strip it from the rest
+    const hasPlus = trimmed.startsWith( '+' );
+    const digitsOnly = trimmed.replace( /[^\d]/g, '' );
+
+    return hasPlus ? `+${ digitsOnly }` : digitsOnly;
+  }
+
+  /** Env helper for cookie security. */
+  private isProductionEnv(): boolean {
+    return process.env.NODE_ENV === "production";
   }
 
 
@@ -329,8 +271,7 @@ export default class UserRoute {
   // ==========================================================
 
   private createUser(): void {
-    const storage = multer.memoryStorage();
-
+    // Centralised: delegate to FileUploader helper
     const allowedTypes = new Set<string>( [
       "image/jpeg",
       "image/png",
@@ -342,14 +283,8 @@ export default class UserRoute {
       "image/ico",
     ] );
 
-    const upload = multer( {
-      storage,
-      limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB
-      fileFilter: ( _req, file, cb ) => {
-        if ( allowedTypes.has( file.mimetype ) ) cb( null, true );
-        else cb( new Error( "Only image files are allowed" ) );
-      },
-    } );
+    // Expect FileUploader.createMemoryUpload(...) to return a configured multer instance
+    const upload = FileUploader.createMemoryUpload( allowedTypes, 20 ); // 20 MB
 
     this.router.post(
       "/create-user",
@@ -370,15 +305,25 @@ export default class UserRoute {
           const role = String( req.body.role || "user" ).trim();
           const creator = String( req.body.creator || "system" ).trim();
 
+          // NEW: nationality (required by model)
+          const nationality = String( req.body.nationality || "" ).trim();
+
           // Required numerics / dates
           const age = this.toNum( req.body.age, NaN );
           const dateOfBirth = this.toDate( req.body.dateOfBirth );
-          const multiAuthEnabled: boolean = req.body.multiAuthEnabled.trim().toLowerCase() === 'true' ? true : false;
+          const multiAuthEnabled: boolean = this.toBool(
+            req.body.multiAuthEnabled,
+            false
+          );
 
           // Optional
-          const phoneNumber = String( req.body.phoneNumber || "" ).trim();
           const gender = String( req.body.gender || "" ).trim();
           const bio = String( req.body.bio || "" ).trim();
+
+          // phoneNumber for new model (object)
+          const phoneNumber = this.buildPhoneNumberFromBody(
+            req.body as Record<string, unknown>
+          );
 
           // Basic validation aligned with the model
           if ( !username || !this.isSafeSegment( username ) ) {
@@ -398,7 +343,10 @@ export default class UserRoute {
             return;
           }
           if ( !dateOfBirth ) {
-            ApiResponseBuilder.validationError( res, "Valid dateOfBirth is required" );
+            ApiResponseBuilder.validationError(
+              res,
+              "Valid dateOfBirth is required"
+            );
             return;
           }
           if ( !Number.isFinite( age ) ) {
@@ -406,7 +354,17 @@ export default class UserRoute {
             return;
           }
           if ( !image ) {
-            ApiResponseBuilder.validationError( res, "Profile image is required" );
+            ApiResponseBuilder.validationError(
+              res,
+              "Profile image is required"
+            );
+            return;
+          }
+          if ( !nationality ) {
+            ApiResponseBuilder.validationError(
+              res,
+              "Nationality is required"
+            );
             return;
           }
 
@@ -416,20 +374,24 @@ export default class UserRoute {
             return;
           }
 
-          // Compute where to write the final image
-          const imagePath = path.join( this.DEFAULT_PATH, username, "image.webp" );
-          await fse.ensureDir( path.dirname( imagePath ) );
-          await sharp( image.buffer ).webp( { quality: 80 } ).toFile( imagePath );
-
+          // Use FileUploader to persist the image (webp) to /public/uploads/users/<username>/image.webp
           const baseUrl = `${ req.protocol }://${ req.get( "host" ) }`;
-          const publicImageUrl = `${ baseUrl }/${ this.DEFAULT_URL }/${ encodeURIComponent(
-            username
-          ) }/image.webp`;
+          const imageResult = await FileUploader.saveSingleImageFromMemory( {
+            baseUploadPath: this.DEFAULT_PATH, // .../public/uploads/users/
+            basePublicUrl: `${ baseUrl }/${ this.DEFAULT_URL }`, // http://.../uploads/users
+            entityFolder: username,
+            filename: "image.webp",
+            buffer: image.buffer,
+            webpQuality: 80,
+          } );
+
+          const publicImageUrl = imageResult.publicUrl;
 
           // Access information
-          const access = this.parseJSON( req.body.access, undefined ) as
-            | IUser[ "access" ]
-            | undefined;
+          const access = this.parseJSON<IUser[ "access" ] | undefined>(
+            req.body.access,
+            undefined
+          );
 
           // Optional email verification payload
           const verifyEmailObj = this.parseJSON<{
@@ -482,7 +444,7 @@ export default class UserRoute {
             return;
           }
 
-          const newUser = new UserModel( {
+          const newUserDoc: IUser = new UserModel( {
             name,
             username,
             email,
@@ -491,7 +453,7 @@ export default class UserRoute {
             age,
             gender,
             bio,
-            phoneNumber,
+            phoneNumber, // new object type or undefined
             role,
             image: publicImageUrl,
             isActive: this.toBool( req.body.isActive, true ),
@@ -511,9 +473,10 @@ export default class UserRoute {
             multiAuthEnabled,
             autoDelete: this.toBool( req.body.autoDelete, true ),
             creator,
+            nationality,
           } );
 
-          await newUser.save();
+          await newUserDoc.save();
 
           // Broadcast to back-office roles (best-effort)
           const notificationService = new NotificationService();
@@ -522,18 +485,21 @@ export default class UserRoute {
           await notificationService.createNotification(
             {
               title: "New User",
-              body: `User ${ newUser.name || newUser.username } has registered.`,
+              body: `User ${ newUserDoc.name || newUserDoc.username } has registered.`,
               type: "create",
               severity: "info",
-              audience: { mode: "role", roles: [ "admin", "manager", "operator" ] },
+              audience: {
+                mode: "role",
+                roles: [ "admin", "manager", "operator" ],
+              },
               channels: [ "inapp", "email" ],
               metadata: {
-                refId: newUser.username,
+                refId: newUserDoc.username,
                 data: {
-                  email: newUser.email,
-                  role: newUser.role,
-                  createdAt: newUser.createdAt,
-                  creator: newUser.creator,
+                  email: newUserDoc.email,
+                  role: newUserDoc.role,
+                  createdAt: newUserDoc.createdAt,
+                  creator: newUserDoc.creator,
                 },
               },
             },
@@ -543,10 +509,12 @@ export default class UserRoute {
               )
           );
 
+          const safeUser: User = newUserDoc.toSafeDTO();
+
           ApiResponseBuilder.ok(
             res,
             "user",
-            newUser,
+            safeUser,
             "User created successfully"
           );
           return;
@@ -564,7 +532,6 @@ export default class UserRoute {
   // ==========================================================
 
   private updateUser(): void {
-    const storage = multer.memoryStorage();
     const allowedTypes = new Set<string>( [
       "image/jpeg",
       "image/png",
@@ -576,19 +543,16 @@ export default class UserRoute {
       "image/ico",
     ] );
 
-    const upload = multer( {
-      storage,
-      limits: { fileSize: 5 * 1024 * 1024 },
-      fileFilter: ( _req, file, cb ) => {
-        if ( allowedTypes.has( file.mimetype ) ) cb( null, true );
-        else cb( new Error( "Only image files are allowed" ) );
-      },
-    } );
+    // Centralised memory upload for profile images
+    const upload = FileUploader.createMemoryUpload( allowedTypes, 20 ); // 20 MB
 
     this.router.put(
       "/user-update/:username",
       upload.fields( [ { name: "userimage", maxCount: 1 } ] ),
-      async ( req: Request<{ username: string; }>, res: Response ): Promise<void> => {
+      async (
+        req: Request<{ username: string; }>,
+        res: Response
+      ): Promise<void> => {
         try {
           const username = String( req.params.username || "" ).trim();
           if ( !username || !this.isSafeSegment( username ) ) {
@@ -596,8 +560,8 @@ export default class UserRoute {
             return;
           }
 
-          const user = await UserModel.findOne( { username } );
-          if ( !user ) {
+          const userDoc = await UserModel.findOne( { username }, USER_MODEL_PROJECTION );
+          if ( !userDoc ) {
             ApiResponseBuilder.notFound( res, "User not found" );
             return;
           }
@@ -609,17 +573,19 @@ export default class UserRoute {
           const image = files?.userimage?.[ 0 ];
 
           const baseUrl = `${ req.protocol }://${ req.get( "host" ) }`;
-          let imageUrl = user.image;
+          let imageUrl = userDoc.image;
 
           // If there is a new image -> convert to webp and replace
           if ( image ) {
-            const imagePath = path.join( this.DEFAULT_PATH, username, "image.webp" );
-            await fse.ensureDir( path.dirname( imagePath ) );
-            await fse.remove( imagePath ).catch( () => {} );
-            await sharp( image.buffer ).webp( { quality: 80 } ).toFile( imagePath );
-            imageUrl = `${ baseUrl }/${ this.DEFAULT_URL }/${ encodeURIComponent(
-              username
-            ) }/image.webp`;
+            const imageResult = await FileUploader.saveSingleImageFromMemory( {
+              baseUploadPath: this.DEFAULT_PATH,
+              basePublicUrl: `${ baseUrl }/${ this.DEFAULT_URL }`,
+              entityFolder: username,
+              filename: "image.webp",
+              buffer: image.buffer,
+              webpQuality: 80,
+            } );
+            imageUrl = imageResult.publicUrl;
           }
 
           const body = req.body as Record<string, any>;
@@ -654,7 +620,11 @@ export default class UserRoute {
 
           if ( "age" in body ) {
             const n = this.toNum( body.age, NaN );
-            if ( !Number.isFinite( n ) || !Number.isInteger( n ) || Number.isNaN( n ) ) {
+            if (
+              !Number.isFinite( n ) ||
+              !Number.isInteger( n ) ||
+              Number.isNaN( n )
+            ) {
               ApiResponseBuilder.validationError( res, "Invalid age" );
               return;
             }
@@ -669,8 +639,18 @@ export default class UserRoute {
             updates.bio = String( body.bio || "" ).trim();
           }
 
+          if ( "nationality" in body ) {
+            updates.nationality = String( body.nationality || "" ).trim();
+          }
+
+          // phoneNumber (new object model)
           if ( "phoneNumber" in body ) {
-            updates.phoneNumber = String( body.phoneNumber || "" ).trim();
+            const updatedPhone = this.buildPhoneNumberFromBody(
+              body as Record<string, unknown>
+            );
+            if ( updatedPhone ) {
+              updates.phoneNumber = updatedPhone;
+            }
           }
 
           // image (replace if uploaded)
@@ -700,14 +680,14 @@ export default class UserRoute {
             }
           }
           if ( Object.keys( addr ).length > 0 ) {
-            updates.address = { ...( user.address || {} ), ...addr };
+            updates.address = { ...( userDoc.address || {} ), ...addr };
           }
 
           // Access: expect JSON or object
           if ( "access" in body ) {
             const access = this.parseJSON<IUser[ "access" ]>(
               body.access,
-              user.access
+              userDoc.access
             );
             updates.access = access;
           }
@@ -739,14 +719,17 @@ export default class UserRoute {
             if ( exp ) updates.emailVerificationTokenExpires = exp;
           }
 
-          const updatedUser = await UserModel.findOneAndUpdate(
+          const updatedUserDoc = await UserModel.findOneAndUpdate(
             { username },
             { $set: updates },
             { new: true, upsert: false }
           );
 
-          if ( !updatedUser ) {
-            ApiResponseBuilder.notFound( res, "User not found or update failed" );
+          if ( !updatedUserDoc ) {
+            ApiResponseBuilder.notFound(
+              res,
+              "User not found or update failed"
+            );
             return;
           }
 
@@ -757,16 +740,19 @@ export default class UserRoute {
           await notificationService.createNotification(
             {
               title: "Update User",
-              body: `User ${ updatedUser.name || updatedUser.username } has been updated.`,
+              body: `User ${ updatedUserDoc.name || updatedUserDoc.username } has been updated.`,
               type: "update",
               severity: "info",
-              audience: { mode: "role", roles: [ "admin", "manager", "operator" ] },
+              audience: {
+                mode: "role",
+                roles: [ "admin", "manager", "operator" ],
+              },
               channels: [ "inapp", "email" ],
               metadata: {
-                refId: updatedUser.username,
+                refId: updatedUserDoc.username,
                 data: {
-                  email: updatedUser.email,
-                  role: updatedUser.role,
+                  email: updatedUserDoc.email,
+                  role: updatedUserDoc.role,
                   updatedAt: new Date(),
                   updatedBy:
                     ( typeof body.updator === "string"
@@ -781,10 +767,12 @@ export default class UserRoute {
               )
           );
 
+          const safeUser: User = updatedUserDoc.toSafeDTO();
+
           ApiResponseBuilder.ok(
             res,
             "user",
-            updatedUser,
+            safeUser,
             "User updated successfully"
           );
           return;
@@ -806,13 +794,10 @@ export default class UserRoute {
       "/users",
       async ( _req: Request, res: Response ): Promise<void> => {
         try {
-          const users = ( await UserModel.find(
-            {},
-            { password: 0 }
-          )
+          const users = ( await UserModel.find( {}, USER_MODEL_PROJECTION )
             .sort( { createdAt: -1 } )
-            .lean<IUser>()
-            .exec() ) as unknown as IUser[];
+            .lean<User>()
+            .exec() ) as unknown as User[];
 
           ApiResponseBuilder.ok(
             res,
@@ -870,18 +855,20 @@ export default class UserRoute {
             filter.$or = [ { name: rx }, { username: rx }, { email: rx } ];
           }
 
-          const [ users, total ] = await Promise.all( [
-            UserModel.find( filter, { password: 0 } )
+          const [ users, total ] = ( await Promise.all( [
+            UserModel.find( filter, USER_MODEL_PROJECTION )
               .sort( { createdAt: -1 } )
               .skip( safeStart )
               .limit( safeLimit )
-              .lean<IUser>()
+              .lean<User>()
               .exec() as Promise<unknown>,
             UserModel.countDocuments( filter ),
-          ] ) as [ IUser[], number ];
+          ] ) ) as [ User[], number ];
 
-          const totalPages: number = total > 0 ? Math.ceil( total / safeLimit ) : 0;
-          const currentPage = totalPages > 0 ? Math.floor( safeStart / safeLimit ) + 1 : 0;
+          const totalPages: number =
+            total > 0 ? Math.ceil( total / safeLimit ) : 0;
+          const currentPage =
+            totalPages > 0 ? Math.floor( safeStart / safeLimit ) + 1 : 0;
           const index: number = currentPage > 0 ? currentPage - 1 : 0;
           const hasResults: boolean = total > 0;
           const end: number = Math.min( safeStart + safeLimit, total );
@@ -921,7 +908,10 @@ export default class UserRoute {
   private findUserByUsername(): void {
     this.router.get(
       "/user-username/:username",
-      async ( req: Request<{ username: string; }>, res: Response ): Promise<void> => {
+      async (
+        req: Request<{ username: string; }>,
+        res: Response
+      ): Promise<void> => {
         try {
           const username = String( req.params.username || "" ).trim();
           if ( !username ) {
@@ -930,8 +920,8 @@ export default class UserRoute {
           }
 
           const exists = await UserModel.exists( { username } );
-          const user: IUser | null = await UserModel.findOne( { username } )
-            .lean<IUser>()
+          const user: User | null = await UserModel.findOne( { username } )
+            .lean<User>()
             .exec();
 
           if ( !user ) {
@@ -959,7 +949,10 @@ export default class UserRoute {
   private findUserByEmail(): void {
     this.router.get(
       "/user-email/:email",
-      async ( req: Request<{ email: string; }>, res: Response ): Promise<void> => {
+      async (
+        req: Request<{ email: string; }>,
+        res: Response
+      ): Promise<void> => {
         try {
           const email = decodeURIComponent( req.params.email ?? "" ).trim();
           if ( !this.isEmail( email ) ) {
@@ -968,9 +961,12 @@ export default class UserRoute {
           }
 
           const user = await UserModel.findOne( {
-            email: { $regex: `^${ this.escapeRegex( email ) }$`, $options: "i" },
-          } )
-            .lean<IUser>()
+            email: {
+              $regex: `^${ this.escapeRegex( email ) }$`,
+              $options: "i",
+            },
+          }, USER_MODEL_PROJECTION )
+            .lean<User>()
             .exec();
 
           if ( !user ) {
@@ -978,13 +974,9 @@ export default class UserRoute {
             return;
           }
 
-          ApiResponseBuilder.ok(
-            res,
-            "user",
-            user,
-            "User found",
-            { other: { status: true } }
-          );
+          ApiResponseBuilder.ok( res, "user", user, "User found", {
+            other: { status: true },
+          } );
           return;
         } catch ( error ) {
           console.error( "[user-email] error:", error );
@@ -996,14 +988,27 @@ export default class UserRoute {
   }
 
   private findUserByPhone(): void {
-    this.router.get(
-      "/user-phone/:phone",
-      async ( req: Request<{ phone: string; }>, res: Response ): Promise<void> => {
+    this.router.post(
+      "/user-phone",
+      async (
+        req: Request,
+        res: Response
+      ): Promise<void> => {
         try {
-          const phoneNumber = String( req.params.phone || "" ).trim();
-          const phoneRegex = /^(?:\+?[1-9]\d{1,3}|0)[\d\s\-()]{7,20}$/;
 
-          if ( !phoneRegex.test( phoneNumber ) ) {
+          const phoneNumber: User[ 'phoneNumber' ] | null = req.body.phone;
+
+          if ( !phoneNumber ) {
+            ApiResponseBuilder.validationError( res, 'Phone number is required!' );
+            return;
+          }
+
+          const fullNumber: string = phoneNumber.code.code + phoneNumber.number;
+
+
+          // 1) Basic format validation (same as before, can be adjusted)
+          const phoneRegex = /^(?:\+?[1-9]\d{1,3}|0)[\d\s\-()]{7,20}$/;
+          if ( !phoneRegex.test( fullNumber ) ) {
             ApiResponseBuilder.validationError(
               res,
               "Invalid phone number format"
@@ -1011,27 +1016,141 @@ export default class UserRoute {
             return;
           }
 
-          const user = await UserModel.findOne( {
-            phoneNumber: {
-              $regex: `^${ this.escapeRegex( phoneNumber ) }$`,
-              $options: "i",
+          // 2) Normalize input for matching
+          const normalizedFull = this.normalizePhoneForSearch( fullNumber ); // e.g. "+94771234567" or "94771234567"
+          if ( !normalizedFull ) {
+            ApiResponseBuilder.validationError(
+              res,
+              "Invalid phone number after normalization"
+            );
+            return;
+          }
+
+          // Use last 6 digits as a safety fallback for suffix match
+          const digitsOnly = normalizedFull.replace( /[^\d]/g, "" );
+          const suffix = digitsOnly.length >= 6
+            ? digitsOnly.slice( -6 )
+            : digitsOnly;
+
+          // Build regex patterns (case-insensitive)
+          const fullRx = new RegExp( `^${ this.escapeRegex( normalizedFull ) }$`, "i" );
+          const suffixRx = suffix
+            ? new RegExp( `${ this.escapeRegex( suffix ) }$`, "i" )
+            : null;
+
+          // 3) Aggregation pipeline to support:
+          //    - New schema: phoneNumber: { code: { code }, number }
+          //    - Legacy schema: phoneNumber: string
+          const pipeline: any[] = [
+            {
+              $addFields: {
+                phoneNewRaw: {
+                  $concat: [
+                    { $ifNull: [ "$phoneNumber.code.code", "" ] },
+                    { $ifNull: [ "$phoneNumber.number", "" ] },
+                  ],
+                },
+                phoneLegacyRaw: {
+                  $cond: [
+                    { $eq: [ { $type: "$phoneNumber" }, "string" ] },
+                    "$phoneNumber",
+                    "",
+                  ],
+                },
+              },
             },
-          } )
-            .lean<IUser>()
-            .exec();
+            {
+              $addFields: {
+                phoneNewNorm: {
+                  $replaceAll: {
+                    input: {
+                      $replaceAll: {
+                        input: {
+                          $replaceAll: {
+                            input: {
+                              $replaceAll: {
+                                input: "$phoneNewRaw",
+                                find: " ",
+                                replacement: "",
+                              },
+                            },
+                            find: "-",
+                            replacement: "",
+                          },
+                        },
+                        find: "(",
+                        replacement: "",
+                      },
+                    },
+                    find: ")",
+                    replacement: "",
+                  },
+                },
+                phoneLegacyNorm: {
+                  $replaceAll: {
+                    input: {
+                      $replaceAll: {
+                        input: {
+                          $replaceAll: {
+                            input: {
+                              $replaceAll: {
+                                input: "$phoneLegacyRaw",
+                                find: " ",
+                                replacement: "",
+                              },
+                            },
+                            find: "-",
+                            replacement: "",
+                          },
+                        },
+                        find: "(",
+                        replacement: "",
+                      },
+                    },
+                    find: ")",
+                    replacement: "",
+                  },
+                },
+              },
+            },
+            {
+              // Match exact normalized number OR (fallback) suffix match
+              $match: {
+                $or: [
+                  { phoneNewNorm: { $regex: fullRx } },
+                  { phoneLegacyNorm: { $regex: fullRx } },
+                  ...( suffixRx
+                    ? [
+                      { phoneNewNorm: { $regex: suffixRx } },
+                      { phoneLegacyNorm: { $regex: suffixRx } },
+                    ]
+                    : [] ),
+                ],
+              },
+            },
+            {
+              // Exclude password hash and internal fields
+              $project: {
+                password: 0,
+              },
+            },
+            { $limit: 1 },
+            {
+              $project: USER_MODEL_PROJECTION,
+            },
+          ];
+
+          const users = await UserModel.aggregate<User>( pipeline ).exec();
+          const user = users[ 0 ];
 
           if ( !user ) {
             ApiResponseBuilder.notFound( res, "User not found" );
             return;
           }
 
-          ApiResponseBuilder.ok(
-            res,
-            "user",
-            user,
-            "User found",
-            { other: { status: "true" } }
-          );
+          ApiResponseBuilder.ok( res, "user", user, "User found", {
+            other: { status: "true" },
+          } );
           return;
         } catch ( error ) {
           console.error( "[user-phone] error:", error );
@@ -1050,13 +1169,16 @@ export default class UserRoute {
     // NOTE: route spelling kept to match your original path `/emailverifycation/...`
     this.router.get(
       "/emailverifycation/:token",
-      async ( req: Request<{ token: string; }>, res: Response ): Promise<void> => {
+      async (
+        req: Request<{ token: string; }>,
+        res: Response
+      ): Promise<void> => {
         try {
           const token = req.params.token;
-          const user = await UserModel.findOne( {
+          const user: IUser | null = await UserModel.findOne( {
             emailVerificationToken: token,
             emailVerificationTokenExpires: { $gt: new Date() },
-          } );
+          }, USER_MODEL_PROJECTION ).exec();
 
           if ( !user ) {
             res
@@ -1069,12 +1191,12 @@ export default class UserRoute {
           }
 
           user.emailVerified = true;
-          delete ( user as any ).emailVerificationToken;
-          delete ( user as any ).emailVerificationTokenExpires;
+          delete user.emailVerificationToken;
+          delete user.emailVerificationTokenExpires;
           user.autoDelete = false;
           await user.save();
 
-          res.redirect( process.env.FRONTEND_ORIGIN || "http://localhost:4200" );
+          res.redirect( ENV.cors.FRONTEND_ORIGIN || "http://localhost:4200" );
           return;
         } catch ( error ) {
           console.error( "[emailverifycation] error:", error );
@@ -1106,8 +1228,8 @@ export default class UserRoute {
     const transporter = nodemailer.createTransport( {
       service: "gmail",
       auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
+        user: ENV.smtp.SMTP_USER,
+        pass: ENV.smtp.SMTP_PASS,
       },
     } );
 
@@ -1168,7 +1290,10 @@ export default class UserRoute {
   private getUserByToken(): void {
     this.router.get(
       "/user-token/:token",
-      async ( req: Request<{ token: string; }>, res: Response ): Promise<void> => {
+      async (
+        req: Request<{ token: string; }>,
+        res: Response
+      ): Promise<void> => {
         try {
           const token = String( req.params.token || "" );
           if ( !token ) {
@@ -1182,13 +1307,18 @@ export default class UserRoute {
             return;
           }
 
-          const user = await UserModel.findOne( { username: record.username } );
-          if ( !user ) {
+          const userDoc: IUser | null = await UserModel.findOne( {
+            username: record.username,
+          }, USER_MODEL_PROJECTION ).exec();
+
+          if ( !userDoc ) {
             ApiResponseBuilder.notFound( res, "User not found" );
             return;
           }
 
-          ApiResponseBuilder.ok( res, "user", user, "User found" );
+          const safeUser: User = userDoc.toSafeDTO();
+
+          ApiResponseBuilder.ok( res, "user", safeUser, "User found" );
           return;
         } catch ( error ) {
           console.error( "[user-token] error:", error );
@@ -1238,41 +1368,28 @@ export default class UserRoute {
       "image/vnd.microsoft.icon",
     ] );
 
-    const storage = multer.diskStorage( {
-      destination: async ( req, _file, cb ) => {
-        try {
-          const username = String( req.params.username || "" ).trim();
-          if ( !username || !this.isSafeSegment( username ) ) {
-            cb( new Error( "Username is required or invalid" ), "" );
-            return;
-          }
-          const uploadPath = path.join( this.DEFAULT_PATH, username, "documents" );
-          await fse.ensureDir( uploadPath );
-          cb( null, uploadPath );
-        } catch ( error: any ) {
-          cb( error instanceof Error ? error : new Error( String( error ) ), "" );
+    const upload = FileUploader.createDiskUpload( {
+      allowedMimeTypes: allowedTypes,
+      maxFileSizeMb: 20,
+      maxFiles: 10,
+      resolveDestination: async ( req: Request ): Promise<string> => {
+        const username = String( req.params.username || "" ).trim();
+        if ( !username || !this.isSafeSegment( username ) ) {
+          throw new Error( "Username is required or invalid" );
         }
-      },
-      filename: ( _req, file, cb ) => {
-        const original = path.basename( file.originalname ).replace( /\s+/g, "_" );
-        const unique = `${ Date.now() }-${ Math.round( Math.random() * 1e9 ) }`;
-        cb( null, `${ unique }-${ original }` );
-      },
-    } );
-
-    const upload = multer( {
-      storage,
-      limits: { fileSize: 20 * 1024 * 1024, files: 10 },
-      fileFilter: ( _req, file, cb ) => {
-        if ( allowedTypes.has( file.mimetype ) ) cb( null, true );
-        else cb( new Error( `File type not allowed: ${ file.mimetype }` ) );
+        const uploadPath = path.join( this.DEFAULT_PATH, username, "documents" );
+        await fse.ensureDir( uploadPath );
+        return uploadPath;
       },
     } );
 
     this.router.post(
       "/user-document-upload/:username",
       upload.array( "files", 10 ),
-      async ( req: Request<{ username: string; }>, res: Response ): Promise<void> => {
+      async (
+        req: Request<{ username: string; }>,
+        res: Response
+      ): Promise<void> => {
         try {
           const files = req.files as Express.Multer.File[] | undefined;
           if ( !files?.length ) {
@@ -1319,10 +1436,7 @@ export default class UserRoute {
           );
 
           if ( !doc ) {
-            ApiResponseBuilder.fail(
-              res,
-              "Failed to save files"
-            );
+            ApiResponseBuilder.fail( res, "Failed to save files" );
             return;
           }
 
@@ -1348,7 +1462,10 @@ export default class UserRoute {
           );
           return;
         } catch ( error: any ) {
-          console.error( "[user-document-upload] error:", error?.message || error );
+          console.error(
+            "[user-document-upload] error:",
+            error?.message || error
+          );
           ApiResponseBuilder.internalError( res, error );
           return;
         }
@@ -1359,7 +1476,10 @@ export default class UserRoute {
   private getUserDocuments(): void {
     this.router.get(
       "/uploads/:username/documents",
-      async ( req: Request<{ username: string; }>, res: Response ): Promise<void> => {
+      async (
+        req: Request<{ username: string; }>,
+        res: Response
+      ): Promise<void> => {
         try {
           const username = String( req.params.username || "" ).trim();
           if ( !username ) {
@@ -1403,7 +1523,10 @@ export default class UserRoute {
   private getUserDataByUsername(): void {
     this.router.get(
       "/user-data/:username",
-      async ( req: Request<{ username: string; }>, res: Response ): Promise<void> => {
+      async (
+        req: Request<{ username: string; }>,
+        res: Response
+      ): Promise<void> => {
         try {
           const username = String( req.params.username || "" ).trim();
           if ( !username ) {
@@ -1411,11 +1534,8 @@ export default class UserRoute {
             return;
           }
 
-          const user = await UserModel.findOne(
-            { username },
-            { password: 0 }
-          )
-            .lean<IUser>()
+          const user = await UserModel.findOne( { username }, USER_MODEL_PROJECTION )
+            .lean<User>()
             .exec();
 
           if ( !user ) {
@@ -1426,12 +1546,7 @@ export default class UserRoute {
             return;
           }
 
-          ApiResponseBuilder.ok(
-            res,
-            "user",
-            user,
-            "User found under username"
-          );
+          ApiResponseBuilder.ok( res, "user", user, "User found under username" );
           return;
         } catch ( error ) {
           console.error( "[user-data] error:", error );
@@ -1487,7 +1602,7 @@ export default class UserRoute {
 
           const baseUrl = `${ req.protocol }://${ req.get( "host" ) }`;
 
-          const userDoc = await UserModel.findOne( { username } ).lean();
+          const userDoc = await UserModel.findOne( { username }, USER_MODEL_PROJECTION ).lean();
           const recycleUserDir = path.join( this.RECYCLE_PATH, username );
           const userImagePath = path.join(
             this.DEFAULT_PATH,
@@ -1495,8 +1610,16 @@ export default class UserRoute {
             "image.webp"
           );
           const snapshot = userDoc;
-          const userDocsPath = path.join( this.DEFAULT_PATH, username, "documents" );
-          const deletedCopyDir = path.join( this.DEFAULT_PATH, "deleted", username );
+          const userDocsPath = path.join(
+            this.DEFAULT_PATH,
+            username,
+            "documents"
+          );
+          const deletedCopyDir = path.join(
+            this.DEFAULT_PATH,
+            "deleted",
+            username
+          );
           const deletedCopyImage = path.join( deletedCopyDir, "image.webp" );
           const deletedImageURL = `${ baseUrl }/${ this.DEFAULT_URL }/deleted/${ encodeURIComponent(
             username
@@ -1516,7 +1639,9 @@ export default class UserRoute {
           // Keep a "deleted preview" copy under /uploads/users/deleted/<username>/
           if ( await fse.pathExists( userImagePath ) ) {
             await fse.ensureDir( deletedCopyDir );
-            await fse.copy( userImagePath, deletedCopyImage, { overwrite: true } );
+            await fse.copy( userImagePath, deletedCopyImage, {
+              overwrite: true,
+            } );
           }
 
           // Move image to recyclebin
@@ -1560,7 +1685,10 @@ export default class UserRoute {
                 body: `User ${ userDoc.name ?? username } has been deleted.`,
                 type: "delete",
                 severity: "warning",
-                audience: { mode: "role", roles: [ "admin", "manager", "operator" ] },
+                audience: {
+                  mode: "role",
+                  roles: [ "admin", "manager", "operator" ],
+                },
                 channels: [ "inapp", "email" ],
                 metadata: {
                   refId: username,
@@ -1587,10 +1715,7 @@ export default class UserRoute {
           const deleted = await UserModel.findOneAndDelete( { username } ).lean();
 
           if ( !deleted ) {
-            ApiResponseBuilder.notFound(
-              res,
-              "User not found to delete"
-            );
+            ApiResponseBuilder.notFound( res, "User not found to delete" );
             return;
           }
 
@@ -1612,7 +1737,10 @@ export default class UserRoute {
   private getUserSectionByKey(): void {
     this.router.get(
       "/user-section-key/:username/:key",
-      async ( req: Request<{ username: string; key: string; }>, res: Response ): Promise<void> => {
+      async (
+        req: Request<{ username: string; key: string; }>,
+        res: Response
+      ): Promise<void> => {
         try {
           const username = String( req.params.username || "" ).trim();
           const key = String( req.params.key || "" ).trim();
@@ -1649,12 +1777,9 @@ export default class UserRoute {
             return;
           }
 
-          const projection: Record<string, 0 | 1> = {
-            [ key ]: 1,
-            _id: 0,
-          };
 
-          const section = await UserModel.findOne( { username }, projection )
+
+          const section = await UserModel.findOne( { username }, USER_MODEL_PROJECTION )
             .lean()
             .exec();
 

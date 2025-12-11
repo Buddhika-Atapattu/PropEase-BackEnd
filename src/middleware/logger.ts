@@ -40,7 +40,7 @@ export default class LoggerMiddleware {
         res.on('finish', () => {
             const durMs = Number((process.hrtime.bigint() - start) / BigInt(1_000_000));
             const status = res.statusCode;
-            console.log(`${this.prefix}[${id}] ${method} ${path} ←${origin} ua=${ua} → ${status} (${durMs}ms)`);
+            console.log( `[LOG:]${ this.prefix }[${ id }] ${ method } ${ path } ←${ origin } ua=${ ua } → ${ status } (${ durMs }ms)`, '\n' );
         });
 
         next();

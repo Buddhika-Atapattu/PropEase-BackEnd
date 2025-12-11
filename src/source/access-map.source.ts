@@ -1,6 +1,6 @@
 // Path: src/source/access-map.source.ts
 
-import type { IUser } from "../models/user.model";
+import type { User } from "../models/user.model";
 
 // ─────────────────────────────────────────────────────────────
 // Core types for access map
@@ -53,7 +53,7 @@ export interface PermissionEntry {
  * Convenience composite type if you want a richer user object
  * containing resolved access control.
  */
-export type IUserWithAccess = IUser & {
+export type UserWithAccess = User & {
   accessControl?: PermissionEntry[];
 };
 

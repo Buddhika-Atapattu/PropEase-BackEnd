@@ -1,13 +1,24 @@
 // src/models/property.model.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// PURPOSE: Property model (types + DB schema + virtuals) in a class-based pattern.
-// NOTE: No controller/service logic here — models are for types and DB only.
+// PURPOSE:
+//   Property model (types + DB schema + virtuals) in a class-based pattern.
+//   - All sub-schemas are encapsulated in static-only builder classes.
+//   - No business logic: only structure, virtuals, indexes.
+// NOTE:
+//   Controllers/services handle validation, business rules, and I/O.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import {Schema, model, type Document, type Model} from 'mongoose';
+import {
+  Schema,
+  model,
+  type Document,
+  type Model,
+} from 'mongoose';
+
+import type { CountryCodes } from './user.model';
 
 /* ============================================================================
- * 1) TypeScript Interfaces (Structure & Types)
+ * 1) TypeScript Interfaces (Domain Shape)
  * ==========================================================================*/
 
 /** Reusable shapes for media and address. */
@@ -42,7 +53,7 @@ export interface CountryDetails {
     common: string;
     official: string;
     nativeName?: {
-      [langCode: string]: {
+      [ langCode: string ]: {
         official: string;
         common: string;
       };
@@ -57,32 +68,37 @@ export interface CountryDetails {
   status?: string;
   unMember?: boolean;
   currencies?: {
-    [code: string]: {name: string; symbol: string};
+    [ code: string ]: { name: string; symbol: string; };
   };
-  idd?: {root: string; suffixes: string[]};
+  idd?: { root: string; suffixes: string[]; };
   capital?: string[];
   altSpellings?: string[];
   region: string;
   subregion?: string;
-  languages?: {[langCode: string]: string};
-  latlng: [number, number];
+  languages?: { [ langCode: string ]: string; };
+  latlng: [ number, number ];
   landlocked?: boolean;
   borders?: string[];
   area: number;
-  demonyms?: {[langCode: string]: {m: string; f: string}};
-  translations?: {[langCode: string]: {official: string; common: string}};
+  demonyms?: { [ langCode: string ]: { m: string; f: string; }; };
+  translations?: { [ langCode: string ]: { official: string; common: string; }; };
   flag?: string;
-  flags: {png: string; svg: string; alt?: string};
-  coatOfArms?: {png?: string; svg?: string};
-  maps?: {googleMaps: string; openStreetMaps: string};
+  flags: { png: string; svg: string; alt?: string; };
+  coatOfArms?: { png?: string; svg?: string; };
+  maps?: { googleMaps: string; openStreetMaps: string; };
   population: number;
   fifa?: string;
-  car?: {signs: string[]; side: 'left' | 'right'};
+  car?: { signs: string[]; side: 'left' | 'right'; };
   timezones: string[];
   continents: string[];
   startOfWeek?: string;
-  capitalInfo?: {latlng: [number, number]};
-  postalCode?: {format?: string; regex?: string};
+  capitalInfo?: { latlng: [ number, number ]; };
+  postalCode?: { format?: string; regex?: string; };
+}
+
+export interface PhoneNumber {
+  code: CountryCodes;
+  number: string;
 }
 
 export interface AddedBy {
@@ -90,7 +106,7 @@ export interface AddedBy {
   name: string;
   email: string;
   role: 'admin' | 'agent' | 'owner' | string;
-  contactNumber?: string;
+  contactNumber?: PhoneNumber;
   addedAt: Date | string;
 }
 
@@ -193,308 +209,797 @@ export interface IProperty extends Document, PropertyVirtuals {
 export interface Property extends Omit<IProperty, keyof Document> {}
 
 /* ============================================================================
- * 2) Class-based Builder (schema, virtuals, indexes)
+ * 2) Sub-schema builders (static-only)
+ * ==========================================================================*/
+
+/**
+ * FlagsSubSchemaBuilder
+ * ---------------------
+ * Builds the flags object attached to country codes (PNG/SVG/alt).
+ * Note: This is duplicated (by design) from user.model to avoid runtime cycles.
+ */
+export class FlagsSubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<{ png: string; svg: string; alt?: string; }> {
+    return new Schema<{ png: string; svg: string; alt?: string; }>(
+      {
+        png: {
+          type: String,
+          required: true,
+          default: '',
+        },
+        svg: {
+          type: String,
+          required: true,
+          default: '',
+        },
+        alt: {
+          type: String,
+          required: false,
+          default: '',
+        },
+      },
+      { _id: false },
+    );
+  }
+}
+
+/**
+ * CountryCodeSubSchemaBuilder
+ * ---------------------------
+ * Builds the CountryCodes sub-schema (name, code, flags).
+ */
+export class CountryCodeSubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<CountryCodes> {
+    return new Schema<CountryCodes>(
+      {
+        name: {
+          type: String,
+          required: true,
+          default: '',
+        },
+        code: {
+          type: String,
+          required: true,
+          default: '',
+        },
+        flags: {
+          type: FlagsSubSchemaBuilder.buildSchema(),
+          required: true,
+        },
+      },
+      { _id: false },
+    );
+  }
+}
+
+/**
+ * PhoneNumberSubSchemaBuilder
+ * ---------------------------
+ * Builds the PhoneNumber sub-schema reused in AddedBy.
+ */
+export class PhoneNumberSubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<PhoneNumber> {
+    return new Schema<PhoneNumber>(
+      {
+        code: {
+          type: CountryCodeSubSchemaBuilder.buildSchema(),
+          required: true,
+        },
+        number: {
+          type: String,
+          required: true,
+          default: '',
+        },
+      },
+      { _id: false },
+    );
+  }
+}
+
+/**
+ * PropertyImageSubSchemaBuilder
+ * -----------------------------
+ * Builds the image metadata sub-schema for property images.
+ */
+export class PropertyImageSubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<propertyImages> {
+    return new Schema<propertyImages>(
+      {
+        originalname: {
+          type: String,
+          required: true,
+          default: '',
+        },
+        filename: {
+          type: String,
+          required: true,
+          default: '',
+        },
+        mimetype: {
+          type: String,
+          required: true,
+          default: '',
+        },
+        size: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
+        imageURL: {
+          type: String,
+          required: true,
+          default: '',
+        },
+      },
+      { _id: false },
+    );
+  }
+}
+
+/**
+ * PropertyDocSubSchemaBuilder
+ * ---------------------------
+ * Builds the document metadata sub-schema for property documents.
+ */
+export class PropertyDocSubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<propertyDocs> {
+    return new Schema<propertyDocs>(
+      {
+        originalname: {
+          type: String,
+          required: true,
+          default: '',
+        },
+        filename: {
+          type: String,
+          required: true,
+          default: '',
+        },
+        mimetype: {
+          type: String,
+          required: true,
+          default: '',
+        },
+        size: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
+        documentURL: {
+          type: String,
+          required: true,
+          default: '',
+        },
+      },
+      { _id: false },
+    );
+  }
+}
+
+/**
+ * PropertyAddressSubSchemaBuilder
+ * -------------------------------
+ * Builds the Address sub-schema for properties.
+ */
+export class PropertyAddressSubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<Address> {
+    return new Schema<Address>(
+      {
+        houseNumber: {
+          type: String,
+          required: true,
+          default: '',
+        },
+        street: {
+          type: String,
+          required: false,
+          default: '',
+        },
+        city: {
+          type: String,
+          required: true,
+          default: '',
+        },
+        stateOrProvince: {
+          type: String,
+          required: false,
+          default: '',
+        },
+        postcode: {
+          type: String,
+          required: true,
+          default: '',
+        },
+        country: {
+          type: String,
+          required: true,
+          default: '',
+        },
+      },
+      { _id: false },
+    );
+  }
+}
+
+/**
+ * CountryDetailsSubSchemaBuilder
+ * ------------------------------
+ * Builds the CountryDetails sub-schema (REST Countries style).
+ */
+export class CountryDetailsSubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<CountryDetails> {
+    return new Schema<CountryDetails>(
+      {
+        name: {
+          common: { type: String, required: true, default: '' },
+          official: { type: String, required: true, default: '' },
+          nativeName: { type: Schema.Types.Mixed, required: false },
+        },
+        tld: { type: [ String ], required: false, default: [] },
+        cca2: { type: String, required: true, default: '' },
+        cca3: { type: String, required: false },
+        ccn3: { type: String, required: false },
+        cioc: { type: String, required: false },
+        independent: { type: Boolean, required: false },
+        status: { type: String, required: false },
+        unMember: { type: Boolean, required: false },
+        currencies: { type: Schema.Types.Mixed, required: false },
+        idd: {
+          root: { type: String, required: false },
+          suffixes: { type: [ String ], required: false, default: [] },
+        },
+        capital: { type: [ String ], required: false, default: [] },
+        altSpellings: { type: [ String ], required: false, default: [] },
+        region: { type: String, required: true, default: '' },
+        subregion: { type: String, required: false },
+        languages: { type: Schema.Types.Mixed, required: false },
+        latlng: { type: [ Number ], required: true, default: [ 0, 0 ] },
+        landlocked: { type: Boolean, required: false },
+        borders: { type: [ String ], required: false, default: [] },
+        area: { type: Number, required: true, default: 0 },
+        demonyms: { type: Schema.Types.Mixed, required: false },
+        translations: { type: Schema.Types.Mixed, required: false },
+        flag: { type: String, required: false },
+        flags: {
+          png: { type: String, required: true, default: '' },
+          svg: { type: String, required: true, default: '' },
+          alt: { type: String, required: false, default: '' },
+        },
+        coatOfArms: {
+          png: { type: String, required: false },
+          svg: { type: String, required: false },
+        },
+        maps: {
+          googleMaps: { type: String, required: false, default: '' },
+          openStreetMaps: { type: String, required: false, default: '' },
+        },
+        population: { type: Number, required: true, default: 0 },
+        fifa: { type: String, required: false },
+        car: {
+          signs: { type: [ String ], required: false, default: [] },
+          side: { type: String, required: false },
+        },
+        timezones: { type: [ String ], required: true, default: [] },
+        continents: { type: [ String ], required: true, default: [] },
+        startOfWeek: { type: String, required: false },
+        capitalInfo: {
+          latlng: { type: [ Number ], required: false, default: undefined },
+        },
+        postalCode: {
+          format: { type: String, required: false },
+          regex: { type: String, required: false },
+        },
+      },
+      { _id: false },
+    );
+  }
+}
+
+/**
+ * AddedBySubSchemaBuilder
+ * -----------------------
+ * Builds the AddedBy metadata sub-schema.
+ */
+export class AddedBySubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<AddedBy> {
+    return new Schema<AddedBy>(
+      {
+        username: {
+          type: String,
+          required: true,
+          default: '',
+        },
+        name: {
+          type: String,
+          required: true,
+          default: '',
+        },
+        email: {
+          type: String,
+          required: true,
+          default: '',
+        },
+        role: {
+          type: String,
+          required: true,
+          default: 'agent',
+        },
+        contactNumber: {
+          type: PhoneNumberSubSchemaBuilder.buildSchema(),
+          required: false,
+        },
+        addedAt: {
+          type: Schema.Types.Mixed, // Date | string
+          required: true,
+          default: () => new Date(),
+        },
+      },
+      { _id: false },
+    );
+  }
+}
+
+/**
+ * GoogleMapLocationSubSchemaBuilder
+ * ---------------------------------
+ * Builds the GoogleMapLocation sub-schema.
+ */
+export class GoogleMapLocationSubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<GoogleMapLocation> {
+    return new Schema<GoogleMapLocation>(
+      {
+        lat: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
+        lng: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
+        embeddedUrl: {
+          type: String,
+          required: true,
+          default: '',
+        },
+      },
+      { _id: false },
+    );
+  }
+}
+
+/* ============================================================================
+ * 3) PropertyModelBuilder (composition root)
  * ==========================================================================*/
 
 export class PropertyModelBuilder {
-  /** Build and return subdocument schemas. Kept private and class-based. */
-  private static buildSubSchemas() {
-    const PropertyImageSchema = new Schema<propertyImages>(
-      {
-        originalname: String,
-        filename: String,
-        mimetype: String,
-        size: Number,
-        imageURL: String,
-      },
-      {_id: false}
-    );
+  private constructor () {}
 
-    const PropertyDocSchema = new Schema<propertyDocs>(
-      {
-        originalname: String,
-        filename: String,
-        mimetype: String,
-        size: Number,
-        documentURL: String,
-      },
-      {_id: false}
-    );
-
-    const AddressSchema = new Schema<Address>(
-      {
-        houseNumber: String,
-        street: String,
-        city: String,
-        stateOrProvince: String,
-        postcode: String,
-        country: String,
-      },
-      {_id: false}
-    );
-
-    const CountryDetailsSchema = new Schema<CountryDetails>(
-      {
-        name: {
-          common: String,
-          official: String,
-          nativeName: Schema.Types.Mixed, // flexible for multi-language data
-        },
-        tld: [String],
-        cca2: String,
-        cca3: String,
-        ccn3: String,
-        cioc: String,
-        independent: Boolean,
-        status: String,
-        unMember: Boolean,
-        currencies: Schema.Types.Mixed,
-        idd: {
-          root: String,
-          suffixes: [String],
-        },
-        capital: [String],
-        altSpellings: [String],
-        region: String,
-        subregion: String,
-        languages: Schema.Types.Mixed,
-        latlng: [Number],
-        landlocked: Boolean,
-        borders: [String],
-        area: Number,
-        demonyms: Schema.Types.Mixed,
-        translations: Schema.Types.Mixed,
-        flag: String,
-        flags: {png: String, svg: String, alt: String},
-        coatOfArms: {png: String, svg: String},
-        maps: {googleMaps: String, openStreetMaps: String},
-        population: Number,
-        fifa: String,
-        car: {signs: [String], side: String},
-        timezones: [String],
-        continents: [String],
-        startOfWeek: String,
-        capitalInfo: {latlng: [Number]},
-        postalCode: {format: String, regex: String},
-      },
-      {_id: false}
-    );
-
-    const AddedBySchema = new Schema<AddedBy>(
-      {
-        username: String,
-        name: String,
-        email: String,
-        role: String,
-        contactNumber: String,
-        addedAt: Date,
-      },
-      {_id: false}
-    );
-
-    const GoogleMapLocationSchema = new Schema<GoogleMapLocation>(
-      {
-        lat: Number,
-        lng: Number,
-        embeddedUrl: {type: String, default: ''},
-      },
-      {_id: false}
-    );
-
-    return {
-      PropertyImageSchema,
-      PropertyDocSchema,
-      AddressSchema,
-      CountryDetailsSchema,
-      AddedBySchema,
-      GoogleMapLocationSchema,
-    };
-  }
-
-  /** Build the main schema, attach virtuals and indexes. */
+  /** Build the main Property schema, attach virtuals and indexes. */
   public static buildSchema(): Schema<IProperty> {
-    const {
-      PropertyImageSchema,
-      PropertyDocSchema,
-      AddressSchema,
-      CountryDetailsSchema,
-      AddedBySchema,
-      GoogleMapLocationSchema,
-    } = this.buildSubSchemas();
+    const imageSchema = PropertyImageSubSchemaBuilder.buildSchema();
+    const docSchema = PropertyDocSubSchemaBuilder.buildSchema();
+    const addressSchema = PropertyAddressSubSchemaBuilder.buildSchema();
+    const countryDetailsSchema = CountryDetailsSubSchemaBuilder.buildSchema();
+    const addedBySchema = AddedBySubSchemaBuilder.buildSchema();
+    const googleMapLocationSchema = GoogleMapLocationSubSchemaBuilder.buildSchema();
 
-    const PropertySchema = new Schema<IProperty>(
+    const propertySchema: Schema<IProperty> = new Schema<IProperty>(
       {
         // Basic
-        id: {type: String, unique: true, required: true, index: true},
-        title: {type: String, required: true, default: 'Property Title'},
+        id: {
+          type: String,
+          unique: true,
+          required: true,
+          index: true,
+        },
+        title: {
+          type: String,
+          required: true,
+          default: 'Property Title',
+        },
         type: {
           type: String,
-          enum: ['apartment', 'house', 'villa', 'commercial', 'land', 'studio'],
+          enum: [ 'apartment', 'house', 'villa', 'commercial', 'land', 'studio' ],
           required: true,
           default: 'apartment',
         },
         listing: {
           type: String,
-          enum: ['sale', 'rent', 'sold', 'rented'],
+          enum: [ 'sale', 'rent', 'sold', 'rented' ],
           required: true,
           default: 'sale',
         },
-        description: {type: String, required: true, default: ''},
+        description: {
+          type: String,
+          required: true,
+          default: '',
+        },
 
         // Location
-        countryDetails: {type: CountryDetailsSchema, default: {}},
-        address: {type: AddressSchema, default: {}},
-        location: {type: GoogleMapLocationSchema, default: {}},
+        countryDetails: {
+          type: countryDetailsSchema,
+          required: true,
+          default: {},
+        },
+        address: {
+          type: addressSchema,
+          required: true,
+          default: {},
+        },
+        location: {
+          type: googleMapLocationSchema,
+          required: false,
+          default: undefined,
+        },
 
         // Specs
-        totalArea: {type: Number, required: true, default: 0},
-        builtInArea: {type: Number, required: true, default: 0},
-        livingRooms: {type: Number, required: true, default: 0},
-        balconies: {type: Number, required: true, default: 0},
-        kitchen: {type: Number, required: true, default: 0},
-        bedrooms: {type: Number, required: true, default: 0},
-        bathrooms: {type: Number, required: true, default: 0},
-        maidrooms: {type: Number, required: true, default: 0},
-        driverRooms: {type: Number, required: true, default: 0},
+        totalArea: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
+        builtInArea: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
+        livingRooms: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
+        balconies: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
+        kitchen: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
+        bedrooms: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
+        bathrooms: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
+        maidrooms: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
+        driverRooms: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
         furnishingStatus: {
           type: String,
-          enum: ['furnished', 'semi-furnished', 'unfurnished'],
+          enum: [ 'furnished', 'semi-furnished', 'unfurnished' ],
           required: true,
           default: 'unfurnished',
         },
-        totalFloors: {type: Number, required: true, default: 0},
-        numberOfParking: {type: Number, required: true, default: 0},
+        totalFloors: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
+        numberOfParking: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
 
         // Build & age
-        builtYear: {type: Number, required: true, default: 0},
+        builtYear: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
         propertyCondition: {
           type: String,
-          enum: ['new', 'old', 'excellent', 'good', 'needs renovation'],
+          enum: [ 'new', 'old', 'excellent', 'good', 'needs renovation' ],
           required: true,
           default: 'new',
         },
-        developerName: {type: String, required: true, default: ''},
-        projectName: {type: String, default: ''},
+        developerName: {
+          type: String,
+          required: true,
+          default: '',
+        },
+        projectName: {
+          type: String,
+          required: false,
+          default: '',
+        },
         ownerShipType: {
           type: String,
-          enum: ['freehold', 'leasehold', 'company', 'trust'],
+          enum: [ 'freehold', 'leasehold', 'company', 'trust' ],
           required: true,
           default: 'freehold',
         },
 
         // Financial
-        price: {type: Number, required: true, default: 0},
-        currency: {type: String, required: true, default: 'lkr'},
-        pricePerSqurFeet: {type: Number, required: true, default: 0},
-        expectedRentYearly: {type: Number, default: 0},
-        expectedRentQuartely: {type: Number, default: 0},
-        expectedRentMonthly: {type: Number, default: 0},
-        expectedRentDaily: {type: Number, default: 0},
-        maintenanceFees: {type: Number, required: true, default: 0},
-        serviceCharges: {type: Number, required: true, default: 0},
-        transferFees: {type: Number, default: 0},
+        price: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
+        currency: {
+          type: String,
+          required: true,
+          default: 'lkr',
+        },
+        pricePerSqurFeet: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
+        expectedRentYearly: {
+          type: Number,
+          required: false,
+          default: 0,
+        },
+        expectedRentQuartely: {
+          type: Number,
+          required: false,
+          default: 0,
+        },
+        expectedRentMonthly: {
+          type: Number,
+          required: false,
+          default: 0,
+        },
+        expectedRentDaily: {
+          type: Number,
+          required: false,
+          default: 0,
+        },
+        maintenanceFees: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
+        serviceCharges: {
+          type: Number,
+          required: true,
+          default: 0,
+        },
+        transferFees: {
+          type: Number,
+          required: false,
+          default: 0,
+        },
         availabilityStatus: {
           type: String,
-          enum: ['available', 'not available', 'pending', 'ready to move'],
+          enum: [ 'available', 'not available', 'pending', 'ready to move' ],
+          required: true,
           default: 'available',
         },
 
         // Features
-        featuresAndAmenities: {type: [String], default: []},
+        featuresAndAmenities: {
+          type: [ String ],
+          required: true,
+          default: [],
+        },
 
         // Media
-        images: {type: [PropertyImageSchema], required: true, default: []},
-        documents: {type: [PropertyDocSchema], required: true, default: []},
-        videoTour: {type: String, default: ''},
-        virtualTour: {type: String, default: ''},
+        images: {
+          type: [ imageSchema ],
+          required: true,
+          default: [],
+        },
+        documents: {
+          type: [ docSchema ],
+          required: true,
+          default: [],
+        },
+        videoTour: {
+          type: String,
+          required: false,
+          default: '',
+        },
+        virtualTour: {
+          type: String,
+          required: false,
+          default: '',
+        },
 
         // Listing management
-        listingDate: {type: Date, required: true, default: null},
-        availabilityDate: {type: Date, default: null},
-        listingExpiryDate: {type: Date, default: null},
-        rentedDate: {type: Date, default: null},
-        soldDate: {type: Date, default: null},
-        addedBy: {type: AddedBySchema, required: true, default: {}},
-        owner: {type: String, required: true, default: ''},
+        listingDate: {
+          type: Date,
+          required: true,
+          default: null,
+        },
+        availabilityDate: {
+          type: Date,
+          required: false,
+          default: null,
+        },
+        listingExpiryDate: {
+          type: Date,
+          required: false,
+          default: null,
+        },
+        rentedDate: {
+          type: Date,
+          required: false,
+          default: null,
+        },
+        soldDate: {
+          type: Date,
+          required: false,
+          default: null,
+        },
+        addedBy: {
+          type: addedBySchema,
+          required: true,
+          default: {},
+        },
+        owner: {
+          type: String,
+          required: true,
+          default: '',
+        },
 
         // Admin / internal
-        referenceCode: {type: String, required: true, default: ''},
+        referenceCode: {
+          type: String,
+          required: true,
+          default: '',
+        },
         verificationStatus: {
           type: String,
-          enum: ['pending', 'verified', 'rejected', 'approved'],
+          enum: [ 'pending', 'verified', 'rejected', 'approved' ],
           required: true,
           default: 'verified',
         },
         priority: {
           type: String,
-          enum: ['high', 'medium', 'low'],
+          enum: [ 'high', 'medium', 'low' ],
           required: true,
           default: 'medium',
         },
         status: {
           type: String,
-          enum: ['draft', 'published', 'archived'],
+          enum: [ 'draft', 'published', 'archived' ],
           required: true,
           default: 'published',
         },
-        internalNote: {type: String, required: true, default: ''},
+        internalNote: {
+          type: String,
+          required: true,
+          default: '',
+        },
       },
       {
         timestamps: true,
-        toJSON: {virtuals: true},
-        toObject: {virtuals: true},
-      }
+        toJSON: { virtuals: true },
+        toObject: { virtuals: true },
+      },
     );
 
-    // ── Virtuals (computed, not stored)
+    // ────────────────────────────────────────────────────────────────────────
+    // Virtuals (computed)
+    // ────────────────────────────────────────────────────────────────────────
 
-    PropertySchema.virtual('fullAddress').get(function(this: IProperty) {
-      const a = this.address || ({} as Address);
-      const parts = [a.houseNumber, a.street, a.city, a.stateOrProvince, a.postcode, a.country]
-        .filter(Boolean)
-        .map((x) => String(x).trim());
-      return parts.join(', ');
-    });
+    propertySchema
+      .virtual( 'fullAddress' )
+      .get( function ( this: IProperty ): string {
+        const a: Address = this.address || ( {} as Address );
+        const parts: string[] = [
+          a.houseNumber,
+          a.street,
+          a.city,
+          a.stateOrProvince,
+          a.postcode,
+          a.country,
+        ]
+          .filter( Boolean )
+          .map( ( value ) => String( value ).trim() );
+        return parts.join( ', ' );
+      } );
 
-    PropertySchema.virtual('mainImageURL').get(function(this: IProperty) {
-      if(Array.isArray(this.images) && this.images.length > 0) {
-        return this.images[0]?.imageURL || '';
-      }
-      return '';
-    });
+    propertySchema
+      .virtual( 'mainImageURL' )
+      .get( function ( this: IProperty ): string {
+        if ( Array.isArray( this.images ) && this.images.length > 0 ) {
+          return this.images[ 0 ]?.imageURL ?? '';
+        }
+        return '';
+      } );
 
-    PropertySchema.virtual('pricePerSquareFoot').get(function(this: IProperty) {
-      const area = Number(this.totalArea || 0);
-      if(!area) return null;
-      return Number((this.price / area).toFixed(2));
-    });
+    propertySchema
+      .virtual( 'pricePerSquareFoot' )
+      .get( function ( this: IProperty ): number | null {
+        const area: number = Number( this.totalArea || 0 );
+        if ( !area ) {
+          return null;
+        }
+        return Number( ( this.price / area ).toFixed( 2 ) );
+      } );
 
-    PropertySchema.virtual('pricePerSquareMeter').get(function(this: IProperty) {
-      const areaFt2 = Number(this.totalArea || 0);
-      if(!areaFt2) return null;
-      const areaM2 = areaFt2 / 10.7639; // 1 m² ≈ 10.7639 ft²
-      if(!areaM2) return null;
-      return Number((this.price / areaM2).toFixed(2));
-    });
+    propertySchema
+      .virtual( 'pricePerSquareMeter' )
+      .get( function ( this: IProperty ): number | null {
+        const areaFt2: number = Number( this.totalArea || 0 );
+        if ( !areaFt2 ) {
+          return null;
+        }
+        const areaM2: number = areaFt2 / 10.7639; // 1 m² ≈ 10.7639 ft²
+        if ( !areaM2 ) {
+          return null;
+        }
+        return Number( ( this.price / areaM2 ).toFixed( 2 ) );
+      } );
 
-    PropertySchema.virtual('isAvailable').get(function(this: IProperty) {
-      const listing = String(this.listing || '').toLowerCase();
-      const status = String(this.availabilityStatus || '').toLowerCase();
-      if(listing === 'sold' || listing === 'rented') return false;
-      return status === 'available' || status === 'ready to move';
-    });
+    propertySchema
+      .virtual( 'isAvailable' )
+      .get( function ( this: IProperty ): boolean {
+        const listing: string = String( this.listing || '' ).toLowerCase();
+        const status: string = String( this.availabilityStatus || '' ).toLowerCase();
 
-    PropertySchema.virtual('daysOnMarket').get(function(this: IProperty) {
-      const start = this.listingDate ? new Date(this.listingDate).getTime() : NaN;
-      if(Number.isNaN(start)) return 0;
-      const now = Date.now();
-      return Math.max(0, Math.floor((now - start) / (1000 * 60 * 60 * 24)));
-    });
+        if ( listing === 'sold' || listing === 'rented' ) {
+          return false;
+        }
+        return status === 'available' || status === 'ready to move';
+      } );
 
-    // ── Indexes (search & filtering)
-    PropertySchema.index({
+    propertySchema
+      .virtual( 'daysOnMarket' )
+      .get( function ( this: IProperty ): number {
+        const start: number = this.listingDate
+          ? new Date( this.listingDate ).getTime()
+          : Number.NaN;
+
+        if ( Number.isNaN( start ) ) {
+          return 0;
+        }
+
+        const now: number = Date.now();
+        const diffDays: number = Math.floor(
+          ( now - start ) / ( 1000 * 60 * 60 * 24 ),
+        );
+
+        return Math.max( 0, diffDays );
+      } );
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Indexes (search & filtering)
+    // ────────────────────────────────────────────────────────────────────────
+
+    propertySchema.index( {
       title: 'text',
       description: 'text',
+    } );
+
+    propertySchema.index( {
       type: 1,
       listing: 1,
       'address.city': 1,
@@ -504,20 +1009,21 @@ export class PropertyModelBuilder {
       bathrooms: 1,
       priority: 1,
       status: 1,
-    });
+    } );
 
-    return PropertySchema;
+    return propertySchema;
   }
 
-  /** Create and return the Mongoose model instance (single source). */
+  /** Create and return the Mongoose model instance. */
   public static getModel(): Model<IProperty> {
-    const schema = this.buildSchema();
-    // Explicit collection name keeps consistency: 'properties'
-    return model<IProperty>('Property', schema, 'properties');
+    const schema: Schema<IProperty> = this.buildSchema();
+    // explicit collection name for consistency across environments
+    return model<IProperty>( 'Property', schema, 'properties' );
   }
 }
 
 /* ============================================================================
- * 3) Export a ready-to-use model instance
+ * 4) Export ready-to-use model instance
  * ==========================================================================*/
-export const PropertyModel = PropertyModelBuilder.getModel();
+
+export const PropertyModel: Model<IProperty> = PropertyModelBuilder.getModel();

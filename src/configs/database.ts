@@ -74,7 +74,7 @@ export default class Database {
         ? (mongoose.connection.db?.databaseName ?? '(unknown)')
         : (this.dbName ?? '(unknown)');
 
-    console.log(`[db] connected → ${this.uri}${this.uriHasDb(this.uri) ? '' : '/' + dbNameShown}`);
+    console.log( `[DB:] connected → ${ this.uri }${ this.uriHasDb( this.uri ) ? '' : '/' + dbNameShown }`, '\n' );
   }
 
   /** Close the Mongoose connection */
@@ -83,7 +83,7 @@ export default class Database {
     try {
       await mongoose.disconnect();
     } finally {
-      console.log('[db] connection closed');
+      console.log( '[DB:] connection closed', '\n' );
     }
   }
 
@@ -129,7 +129,7 @@ export default class Database {
       changeStreams = false; // standalone server
     }
 
-    console.log(`[db] handshake ${name}: version=${version} changeStreams=${changeStreams}`);
+    console.log( `[DB:] handshake ${ name }: version=${ version } changeStreams=${ changeStreams }`, '\n' );
     return {name, version, changeStreams};
   }
 
