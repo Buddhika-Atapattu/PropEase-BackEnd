@@ -1,150 +1,140 @@
-// src/types/api-message.ts
-import { IComplaint } from '../models/complaint.model';
-import { UserDocumentEntity } from '../models/file-upload.model';
-import { LeasePayload, LeasePayloadWithProperty } from '../models/lease.model';
-import { IProperty } from '../models/property.model';
-import { ITenant } from '../models/tenant.model';
-import { User } from '../models/user.model';
-import { ITeamManagement } from '../models/teamManagement/teamManagement.model';
-import type { IWorkItem } from '../models/teamManagement/workItem.model';
-import type { IWorkEvent } from '../models/teamManagement/workEvent.model';
+// Path: src/types/api-message.ts
+// ============================================================================
+// API Message Types (Backend → Frontend contract)
+// ----------------------------------------------------------------------------
+// Design goals:
+//  - One consistent ApiResponse shape for every endpoint
+//  - Strong typing for domain payloads (SystemData)
+//  - Optional "other" payload without using `any`
+//  - Pagination/validation are consistent across modules
+//  - Avoid leaking Mongoose Document types into API layer
+// ============================================================================
 
-/* ──────────────────────────────────────────────────────────────
-   Basic status type for consistency across all APIs
-   ────────────────────────────────────────────────────────────── */
-export type ApiStatus = 'success' | 'error' | 'fail';
+import type { IComplaint } from "../models/complaint.model";
+import type { UserDocumentEntity } from "../models/file-upload.model";
+import type { LeasePayload, LeasePayloadWithProperty } from "../models/lease.model";
+import type { IProperty } from "../models/property.model";
+import type { ITenant } from "../models/tenant.model";
+import type { User } from "../models/user.model";
 
-/* ──────────────────────────────────────────────────────────────
-   Pagination meta sent from backend to frontend
-   ────────────────────────────────────────────────────────────── */
+// IMPORTANT:
+// Do NOT import ITeamManagement (extends Document) into API contracts.
+// Use a DTO/Base type from the model file instead.
+// After you rename custom id to teamCode, export TeamManagementBase/Dto from that model file.
+import type { TeamManagementDto } from "../models/teamManagement/teamManagement.model";
+
+import type { IWorkItem } from "../models/teamManagement/workItem.model";
+import type { IWorkEvent } from "../models/teamManagement/workEvent.model";
+
+// ──────────────────────────────────────────────────────────────
+// 1) Core primitives
+// ──────────────────────────────────────────────────────────────
+
+export type ApiStatus = "success" | "error" | "fail";
+
+// ──────────────────────────────────────────────────────────────
+// 2) Shared utility payloads
+// ──────────────────────────────────────────────────────────────
 
 export interface DateRange {
    start: string | Date;
    end: string | Date;
 }
+
 export interface PaginationMeta {
-   /** Zero-based page index used internally (ex: 0, 1, 2...) */
    index?: number;
-
-   /** Page size (limit per page) */
    limit?: number;
-
-   /** Total number of records in DB (after filters/search) */
    total?: number;
 
-   /** First record position in this page (0-based) */
-   start?: number | undefined;
-
-   /** Last record position in this page (0-based, inclusive) */
+   start?: number;
    end?: number;
 
-   /** Optional search term used to filter data */
    search?: string;
-
-   /** Optional date range term used to filter data */
    dateRange?: DateRange;
 
-   /** Convenience flags – can be calculated on backend or frontend */
    hasNext?: boolean;
-
    hasPrevious?: boolean;
-
    hasResults?: boolean;
-
    hasMore?: boolean;
 
-   nextCursor?: string | undefined;
+   nextCursor?: string;
 }
 
-/* ──────────────────────────────────────────────────────────────
-   Validation payload (JWT, CSRF, etc.)
-   Extend this later if you want more validation info.
-   ────────────────────────────────────────────────────────────── */
 export interface ValidationUnit {
-   /** Access / session / CSRF token */
    token?: string;
-
-   /** Explicit flag for validity – optional */
    isValid?: boolean;
-
-   /** ISO string expiry time if relevant (ex: JWT exp) */
    expiresAt?: string;
 }
 
-
-
 /**
  * Minimal file metadata used across backend.
- * Pure JSON (no File, no Buffer here).
+ * NOTE: You already also have FileMetaBase in teamManagement.model.ts.
+ * Prefer a single source later (export and reuse) to avoid drift.
  */
 export interface FileMetaBase {
-   /** Original filename sent by client (as uploaded) */
    originalName: string;
-
-   /** Stored filename on disk or in bucket (unique) */
    storedName: string;
-
-   /** File extension without dot, e.g. "pdf", "jpg" */
    extension: string;
-
-   /** MIME type, e.g. "application/pdf", "image/jpeg" */
    mimeType: string;
-
-   /** Size in bytes */
    sizeBytes: number;
 }
 
-/* ──────────────────────────────────────────────────────────────
-   Strongly-typed system data payload
-   (All your core domain models live here)
-   ────────────────────────────────────────────────────────────── */
+// ──────────────────────────────────────────────────────────────
+// 3) Domain payload (SystemData)
+//    This is the “typed dictionary” of your business models.
+// ──────────────────────────────────────────────────────────────
+
 export interface SystemData {
+   // Users
    user?: User;
    users?: User[];
 
+   // Leases
    lease?: LeasePayload;
    leases?: LeasePayload[];
-
    leaseWithProperty?: LeasePayloadWithProperty;
    leaseWithProperties?: LeasePayloadWithProperty[];
 
+   // Properties
    property?: IProperty;
    properties?: IProperty[];
 
+   // Tenants
    tenant?: ITenant;
    tenants?: ITenant[];
 
+   // Complaints
    complaint?: IComplaint;
    complaints?: IComplaint[];
 
+   // Files
    fileUpload?: UserDocumentEntity;
    fileUploads?: UserDocumentEntity[];
-
-   team?: ITeamManagement;
-   teams?: ITeamManagement[];
-
-   workItem?: IWorkItem;
-   workItems?: IWorkItem[];
-
-   event?: IWorkEvent;
-   events?: IWorkEvent[];
-
    file?: FileMetaBase;
    files?: FileMetaBase[];
 
+   // Team Management
+   // DTO ONLY (plain JSON) — safe for aggregate() results
+   team?: TeamManagementDto;
+   teams?: TeamManagementDto[];
 
-   /** Optional numeric summaries – very common in dashboards */
+   // Work items / events
+   workItem?: IWorkItem;
+   workItems?: IWorkItem[];
+   event?: IWorkEvent;
+   events?: IWorkEvent[];
+
+   // Dashboard summaries
    totalUsers?: number;
    totalProperties?: number;
    totalTenants?: number;
    totalComplaints?: number;
 }
 
-/* ──────────────────────────────────────────────────────────────
-   Generic Data wrapper
-   - TSystem: shape of "system" (domain) payload
-   - TOther:  any extra payload (charts, filters, etc.) WITHOUT using `any`
-   ────────────────────────────────────────────────────────────── */
+// ──────────────────────────────────────────────────────────────
+// 4) Generic wrappers (ApiData, ApiResponse)
+// ──────────────────────────────────────────────────────────────
+
 export interface ApiData<
    TSystem = SystemData,
    TOther extends Record<string, unknown> = Record<string, unknown>
@@ -153,120 +143,81 @@ export interface ApiData<
    validation?: ValidationUnit;
    system?: TSystem;
 
-   /**
-    * Extra data that doesn’t belong to core domain models.
-    * Example:
-    *  - chartData
-    *  - filters
-    *  - temporary UI hints
-    */
+  /**
+   * Extra payload that is NOT core domain data.
+   * Keep this typed (Record<string, unknown>) instead of any.
+   */
    other?: TOther;
 }
 
-/* ──────────────────────────────────────────────────────────────
-   Base API response shape used everywhere
-   ────────────────────────────────────────────────────────────── */
 export interface ApiResponse<TData = ApiData> {
-   /** Quick boolean flag for client checks (if (!res.success) ...) */
    success: boolean;
-
-   /** Narrowed status values for better type safety */
    status: ApiStatus;
-
-   /** Human-readable message (toast/alert) */
    message: string;
 
-   /** Main payload */
    data: TData | null;
 
-   /** Optional: ISO timestamp of response generation */
    timestamp?: string;
-
-   /** Optional: backend route path (useful for logging/debugging) */
    path?: string;
-
-   /** Optional: correlation ID / request ID for tracing */
    requestId?: string;
 }
 
-/* ──────────────────────────────────────────────────────────────
-   Backwards-compatible alias (your old MSG name)
-   ────────────────────────────────────────────────────────────── */
+// Backwards-compatible alias
 export type MSG<TData = ApiData> = ApiResponse<TData>;
 
-export type PaginationType = NonNullable<MSG[ 'data' ]>[ 'pagination' ];
+// ──────────────────────────────────────────────────────────────
+// 5) Convenience extraction types
+// ──────────────────────────────────────────────────────────────
 
-export type ValidationType = NonNullable<MSG[ 'data' ]>[ 'validation' ];
+export type PaginationType = NonNullable<MSG[ "data" ]>[ "pagination" ];
+export type ValidationType = NonNullable<MSG[ "data" ]>[ "validation" ];
+export type SystemType = NonNullable<MSG[ "data" ]>[ "system" ];
+export type OtherType = NonNullable<MSG[ "data" ]>[ "other" ];
 
-export type SystemType = NonNullable<MSG[ 'data' ]>[ 'system' ];
-
-export type OtherType = NonNullable<MSG[ 'data' ]>[ 'other' ];
-
-// Keep your existing imports and interfaces above...
-
-/* ──────────────────────────────────────────────────────────────
-   Narrowed "views" of SystemData for specific modules
-   (These help us strongly type each endpoint)
-   ────────────────────────────────────────────────────────────── */
+// ──────────────────────────────────────────────────────────────
+// 6) System slices (module-specific strong typing)
+//    These are “views” of SystemData for specific endpoints.
+// ──────────────────────────────────────────────────────────────
 
 // Lease-focused system slice
 export type LeaseSystemData = Pick<
    SystemData,
-   'lease' | 'leases' | 'leaseWithProperty' | 'leaseWithProperties'
+   "lease" | "leases" | "leaseWithProperty" | "leaseWithProperties"
 >;
 
 // Property-focused system slice
-export type PropertySystemData = Pick<
-   SystemData,
-   'property' | 'properties'
->;
+export type PropertySystemData = Pick<SystemData, "property" | "properties">;
 
 // Tenant-focused system slice
-export type TenantSystemData = Pick<
-   SystemData,
-   'tenant' | 'tenants'
->;
+export type TenantSystemData = Pick<SystemData, "tenant" | "tenants">;
 
 // Complaint-focused system slice
-export type ComplaintSystemData = Pick<
-   SystemData,
-   'complaint' | 'complaints'
->;
+export type ComplaintSystemData = Pick<SystemData, "complaint" | "complaints">;
 
 // File upload-focused system slice
-export type FileUploadSystemData = Pick<
-   SystemData,
-   'fileUpload' | 'fileUploads'
->;
+export type FileUploadSystemData = Pick<SystemData, "fileUpload" | "fileUploads">;
 
-// Team management system slice
-export type TeamManagementData = Pick<
-   SystemData,
-   'team' | 'teams'
->;
+// Team management system slice (DTO)
+export type TeamManagementSystemData = Pick<SystemData, "team" | "teams">;
 
-// File management system slice
-export type FileMetaBaseData = Pick<
-   SystemData,
-   'file' | 'files'
->;
+// File meta slice
+export type FileMetaSystemData = Pick<SystemData, "file" | "files">;
 
-// You can also define dashboard summaries:
+// Dashboard summary slice
 export type DashboardSystemData = Pick<
    SystemData,
-   | 'totalUsers'
-   | 'totalProperties'
-   | 'totalTenants'
-   | 'totalComplaints'
+   "totalUsers" | "totalProperties" | "totalTenants" | "totalComplaints"
 >;
 
-/* Convenience aliases for ApiData with those slices */
+// ──────────────────────────────────────────────────────────────
+// 7) Convenience ApiData aliases per module
+// ──────────────────────────────────────────────────────────────
 
 export type LeaseApiData = ApiData<LeaseSystemData>;
 export type PropertyApiData = ApiData<PropertySystemData>;
 export type TenantApiData = ApiData<TenantSystemData>;
 export type ComplaintApiData = ApiData<ComplaintSystemData>;
 export type FileUploadApiData = ApiData<FileUploadSystemData>;
+export type TeamManagementApiData = ApiData<TeamManagementSystemData>;
+export type FileMetaApiData = ApiData<FileMetaSystemData>;
 export type DashboardApiData = ApiData<DashboardSystemData>;
-
-

@@ -307,6 +307,7 @@ export default class UserRoute {
 
           // NEW: nationality (required by model)
           const nationality = String( req.body.nationality || "" ).trim();
+          const nicOrPassport = String( req.body.nicOrPassport || "" ).trim();
 
           // Required numerics / dates
           const age = this.toNum( req.body.age, NaN );
@@ -364,6 +365,13 @@ export default class UserRoute {
             ApiResponseBuilder.validationError(
               res,
               "Nationality is required"
+            );
+            return;
+          }
+          if ( !nicOrPassport ) {
+            ApiResponseBuilder.validationError(
+              res,
+              "NIC / Passport number is required"
             );
             return;
           }
@@ -474,6 +482,7 @@ export default class UserRoute {
             autoDelete: this.toBool( req.body.autoDelete, true ),
             creator,
             nationality,
+            nicOrPassport,
           } );
 
           await newUserDoc.save();
@@ -641,6 +650,10 @@ export default class UserRoute {
 
           if ( "nationality" in body ) {
             updates.nationality = String( body.nationality || "" ).trim();
+          }
+
+          if ( "nicOrPassport" in body ) {
+            updates.nicOrPassport = String( body.nicOrPassport || "" ).trim();
           }
 
           // phoneNumber (new object model)

@@ -1040,6 +1040,16 @@ export const GUARD_ROUTES: ReadonlyArray<GuardRouteDefinition> = [
         description: "List all users with their team membership (paged via query)",
     },
 
+    // GET /api-team-management/task/:taskId/
+    {
+        id: "team:get-all-team-tasks",
+        method: "GET",
+        pattern: /^\/api-team-management\/task\/get-tasks\/[^/]+\/?$/,
+        module: "TeamManagement",
+        action: "view",
+        description: "Get all tasks for a given team task ID",
+    },
+
     // =========================================================================
     // WORK EVENTS (/api-work-event)
     // =========================================================================
@@ -1247,6 +1257,80 @@ export const GUARD_ROUTES: ReadonlyArray<GuardRouteDefinition> = [
         module: "TenantManagement",
         action: "view",
         description: "Get comments for a complaint by complaint code",
+    },
+
+    // =========================================================================
+    // KPI MANAGEMENT (/api-kpis)
+    // =========================================================================
+
+    // POST /api-kpis/facts/deals
+    {
+        id: "kpi:deal-fact",
+        method: "POST",
+        pattern: /^\/api-kpis\/facts\/deals$/,
+        module: "KpiManagement",
+        action: "create",
+        description: "Submit deal fact",
+    },
+
+    // POST /api-kpis/facts/satisfaction
+    {
+        id: "kpi:satisfaction-fact",
+        method: "POST",
+        pattern: /^\/api-kpis\/facts\/satisfaction$/,
+        module: "KpiManagement",
+        action: "create",
+        description: "Submit satisfaction fact",
+    },
+
+    // POST /api-kpis/facts/maintenance/events
+    {
+        id: "kpi:maintenance-event",
+        method: "POST",
+        pattern: /^\/api-kpis\/facts\/maintenance\/events$/,
+        module: "KpiManagement",
+        action: "create",
+        description: "Submit maintenance event",
+    },
+
+    // POST /api-kpis/facts/team/tasks
+    {
+        id: "kpi:team-task-fact",
+        method: "POST",
+        pattern: /^\/api-kpis\/facts\/team\/tasks$/,
+        module: "KpiManagement",
+        action: "create",
+        description: "Submit team task fact",
+    },
+
+    // POST /api-kpis/facts/team/task-evidence
+    {
+        id: "kpi:team-task-evidence",
+        method: "POST",
+        pattern: /^\/api-kpis\/facts\/team\/task-evidence$/,
+        module: "KpiManagement",
+        action: "create",
+        description: "Submit team task evidence",
+    },
+
+    // POST /api-kpis/facts/team/task-events
+    {
+        id: "kpi:team-task-event",
+        method: "POST",
+        pattern: /^\/api-kpis\/facts\/team\/task-events$/,
+        module: "KpiManagement",
+        action: "create",
+        description: "Submit team task event",
+    },
+
+    // GET /api-kpis/realtime/health
+    {
+        id: "kpi:realtime-health",
+        method: "GET",
+        pattern: /^\/api-kpis\/realtime\/health$/,
+        module: "KpiManagement",
+        action: "view",
+        description: "Realtime KPI health",
     },
 
     // =====================================================================

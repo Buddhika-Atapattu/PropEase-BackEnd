@@ -9,9 +9,10 @@ import {
     TenantSystemData,
     ComplaintSystemData,
     FileUploadSystemData,
-    type TeamManagementData,
-    type FileMetaBaseData,
+    type TeamManagementApiData,
     type FileMetaBase,
+    type TeamManagementSystemData,
+    type FileMetaSystemData,
 } from '../types/api-message';
 import { LeasePayload, LeasePayloadWithProperty } from '../models/lease.model';
 import { IProperty } from '../models/property.model';
@@ -173,33 +174,33 @@ export class FileUploadDataBuilder extends ApiDataBuilder<FileUploadSystemData> 
     }
 }
 
-export class TeamManagementBuilder extends ApiDataBuilder<TeamManagementData> {
+export class TeamManagementBuilder extends ApiDataBuilder<TeamManagementSystemData> {
     public withTeam( team: ITeamManagement ): this {
-        const current = ( this as any ).system as TeamManagementData | undefined;
-        const next: TeamManagementData = { ...( current ?? {} ), team };
+        const current = ( this as any ).system as TeamManagementSystemData | undefined;
+        const next: TeamManagementSystemData = { ...( current ?? {} ), team };
         this.withSystem( next );
         return this;
     }
 
     public withTeams( teams: ITeamManagement[] ): this {
-        const current = ( this as any ).system as TeamManagementData | undefined;
-        const next: TeamManagementData = { ...( current ?? {} ), teams };
+        const current = ( this as any ).system as TeamManagementSystemData | undefined;
+        const next: TeamManagementSystemData = { ...( current ?? {} ), teams };
         this.withSystem( next );
         return this;
     }
 }
 
-export class FileMetaBaseBuilder extends ApiDataBuilder<FileMetaBaseData> {
+export class FileMetaBaseBuilder extends ApiDataBuilder<FileMetaSystemData> {
     public withTeam( file: FileMetaBase ): this {
-        const current = ( this as any ).system as FileMetaBaseData | undefined;
-        const next: FileMetaBaseData = { ...( current ?? {} ), file };
+        const current = ( this as any ).system as FileMetaSystemData | undefined;
+        const next: FileMetaSystemData = { ...( current ?? {} ), file };
         this.withSystem( next );
         return this;
     }
 
     public withTeams( files: FileMetaBase[] ): this {
-        const current = ( this as any ).system as FileMetaBaseData | undefined;
-        const next: FileMetaBaseData = { ...( current ?? {} ), files };
+        const current = ( this as any ).system as FileMetaSystemData | undefined;
+        const next: FileMetaSystemData = { ...( current ?? {} ), files };
         this.withSystem( next );
         return this;
     }

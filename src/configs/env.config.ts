@@ -219,4 +219,4 @@ export const ENV = {
     }
 };
 
-console.log( `[ENV] Loaded environment: ${ NODE_ENV }` , '\n');
+console.log( `[ENV:] Loaded environment: ${ NODE_ENV }`, '\n' );

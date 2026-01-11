@@ -43,6 +43,7 @@ import Payments from '../api/payment';
 import UploadsRoutes from '../api/uploads';
 import TeamManagement from '../api/teamManagement/teamManagement';
 import TeamTaskManagement from '../api/teamManagement/teamTask';
+import { KpiRoutes } from '../KPIs/api/kpi.routes';
 
 // Notifications, reports, auth, MFA
 import NotificationController from '../controller/notification.controller';
@@ -117,6 +118,8 @@ export class AppServer {
   private readonly uploadsRoutes: UploadsRoutes;
   private readonly teamManagement: TeamManagement;
   private readonly teamTaskRouter: TeamTaskManagement;
+  private readonly kpis: KpiRoutes;
+
 
   // Notifications / reports / auth / mfa
   private readonly notificationService: NotificationService;
@@ -191,7 +194,8 @@ export class AppServer {
         'X-Guard-Token',
         'X-Session-Token',
         'X-Mfa-Verification',
-        'X-Forwarded-For'
+        'X-Forwarded-For',
+        'X-Device-ID'
       ],
       optionsSuccessStatus: 204
     };
@@ -236,6 +240,7 @@ export class AppServer {
     this.uploadsRoutes = new UploadsRoutes();
     this.teamManagement = new TeamManagement();
     this.teamTaskRouter = new TeamTaskManagement();
+    this.kpis = new KpiRoutes();
 
     // Notification / report / auth / MFA
     this.notificationService = new NotificationService();
@@ -344,7 +349,9 @@ export class AppServer {
       validator: this.validator,
       payments: this.payments,
       teamManagement: this.teamManagement,
-      teamTaskRouter: this.teamTaskRouter
+      teamTaskRouter: this.teamTaskRouter,
+      kpis: this.kpis,
+
     });
 
     routesBootstrap.registerAll();

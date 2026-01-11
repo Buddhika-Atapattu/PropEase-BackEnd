@@ -40,6 +40,9 @@ export default class TeamTaskManagement {
 
         // File uploads specific to tasks
         this.registerUploadTaskEvidence();  // POST /upload/evidence/:teamId/:taskId
+
+        // Get all tasks for a team (helper)
+        this.router.get( '/get-tasks/:teamId', this.getAllTasksForTeam.bind( this ) );
     }
 
     public get route(): Router {
@@ -408,5 +411,46 @@ export default class TeamTaskManagement {
                 }
             },
         );
+    }
+
+    // ========================================================================
+    // GET ALL TASKS FOR A TEAM (helper)
+    // ========================================================================
+    private async getAllTasksForTeam( req: Request, res: Response ): Promise<void> {
+        try {
+            const teamId = String( req.params.teamId ?? "" ).trim();
+            if ( !teamId ) {
+                ApiResponseBuilder.validationError(
+                    res,
+                    "Team ID is required to get tasks",
+                );
+                return;
+            }
+
+            const team = await TeamManagementModel.findOne( { teamCode: teamId } ).exec();
+
+            if ( !team ) {
+                ApiResponseBuilder.validationError(
+                    res,
+                    "Team not found for getAllTasksForTeam",
+                );
+                return;
+            }
+
+            const tasks = team.assignTasks || [];
+
+            ApiResponseBuilder.ok(
+                res,
+                "other",
+                { tasks },
+                "Tasks retrieved successfully",
+            );
+            return;
+        }
+        catch ( error ) {
+            console.error( "[Error during getAllTasksForTeam]:\n", error );
+            ApiResponseBuilder.internalError( res, error );
+            return;
+        }
     }
 }

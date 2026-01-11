@@ -9,9 +9,9 @@ import {
 } from '../models/guard.model';
 import { UserModel, type IUser, type User } from '../models/user.model';
 
-/* ============================================================================
+/* ============================================================================ *
  *  Token lifetime & behaviour
- * ==========================================================================*/
+ * ========================================================================== */
 
 /**
  * 30 days session lifetime (stable token).
@@ -37,43 +37,27 @@ const GUARD_OVERLAP_WINDOW_MS = 10_000; // purely for reasoning/documentation
  */
 const TOKEN_BYTES = 32;
 
-/* ============================================================================
+/* ============================================================================ *
  *  DTOs
- * ==========================================================================*/
+ * ========================================================================== */
 
-/**
- * IssuedTokens
- * ------------
- * Tiny DTO representing:
- *  - sessionToken: 30-day stable token (stored in cookies / headers)
- *  - guardToken  : short-lived / rotating token (extra protection)
- */
 export interface IssuedTokens {
+    /** 30-day stable token (per device). */
     sessionToken: string;
+    /** Short-lived / rotating token. */
     guardToken: string;
+    /** Device identifier used for this row. */
+    deviceID: string;
 }
 
-/* ============================================================================
+/* ============================================================================ *
  *  GuardTokenService
- * ==========================================================================*/
+ * ========================================================================== */
 
 /**
  * GuardTokenService
  * -----------------
  * Single responsibility: manage guard-token documents.
- *
- * Responsibilities:
- *  - Issue both session + guard tokens for a user.
- *  - Reuse existing valid session if available.
- *  - Rotate guard token (keep same session token).
- *  - Resolve user from (sessionToken, guardToken).
- *  - Resolve user from sessionToken only (for WebSocket handshake).
- *  - Revoke tokens on logout.
- *
- * IMPORTANT:
- *  - We deliberately do NOT swallow errors here. Controllers / guards
- *    are expected to wrap calls in try/catch and respond with proper
- *    API errors. This keeps debugging easier.
  */
 export class GuardTokenService {
 
@@ -89,27 +73,33 @@ export class GuardTokenService {
         return new Date( Date.now() + SESSION_TTL_MS );
     }
 
+    /** Normalise deviceID (trim + basic guard). */
+    private normalizeDeviceId( deviceID: string | null | undefined ): string {
+        return String( deviceID ?? '' ).trim();
+    }
+
     /* ───────────────────────── Issuing tokens ────────────────────────── */
 
-    /**
-     * issueForUser
-     * ------------
-     * Always issues a fresh sessionToken + guardToken for the given user.
-     * Overwrites any existing GuardTokenDocument for that user (upsert).
-     *
-     * Typical usage:
-     *  - MFA-less login flows.
-     *  - Forced re-login (e.g. admin revoke & re-issue).
-     */
-    public async issueForUser( user: User ): Promise<IssuedTokens | null> {
+  /**
+   * issueForUser
+   * ------------
+   * Always issues a fresh sessionToken + guardToken for the given user+device.
+   * Overwrites any existing GuardTokenDocument for that (userId, deviceID).
+   *
+   * Typical usage:
+   *  - MFA-less login flows.
+   *  - Forced re-login on a specific device.
+   */
+    public async issueForUser( user: User, deviceID: string ): Promise<IssuedTokens | null> {
+        const safeDeviceID: string = this.normalizeDeviceId( deviceID );
 
-        const username: string = user.username;
-
-        if ( !username ) {
+        if ( !user?.username || !safeDeviceID ) {
             return null;
         }
 
-        const modelUser: IUser | null = await UserModel.findOne( { username } ).exec();
+        const modelUser: IUser | null = await UserModel
+            .findOne( { username: user.username } )
+            .exec();
 
         if ( !modelUser ) {
             return null;
@@ -123,57 +113,70 @@ export class GuardTokenService {
         const expiresAt: Date = this.computeSessionExpiry();
         const now: Date = new Date();
 
+        // IMPORTANT:
+        //   - Match by (userId + deviceID) so each device has its own row.
         await GuardTokenModel.findOneAndUpdate(
-            { userId },
-            {
-                userId,
-                username,
-                sessionToken,
-                guardToken,
-                previousGuardToken: undefined,
-                expiresAt,
-                createdAt: now,
-                updatedAt: now
-            },
-            {
-                upsert: true,
-                new: true,
-                setDefaultsOnInsert: true
-            }
-        ).exec();
+          {
+              userId,
+              deviceID: safeDeviceID
+          },
+          {
+              userId,
+              username: user.username,
+              sessionToken,
+              guardToken,
+            deviceID: safeDeviceID,
+              previousGuardToken: undefined,
+              expiresAt,
+              createdAt: now,
+              updatedAt: now
+          },
+          {
+              upsert: true,
+              new: true,
+              setDefaultsOnInsert: true
+          }
+      ).exec();
 
-        return { sessionToken, guardToken };
+        return { sessionToken, guardToken, deviceID: safeDeviceID };
     }
 
-    /**
-     * getOrIssueForUser
-     * -----------------
-     * Preferred entry point for login:
-     *
-     * 1) Try to find an existing GuardTokenDocument for this user
-     *    where expiresAt > now (session still valid).
-     * 2) If found → reuse sessionToken + guardToken.
-     *    Also sync username if it changed.
-     * 3) If not found → call issueForUser(user).
-     *
-     * This keeps a single stable session per user (per device) instead of
-     * spamming new rows on every login.
-     */
-    public async getOrIssueForUser( user: User ): Promise<IssuedTokens | null> {
-        const now: Date = new Date();
+  /**
+   * getOrIssueForUser
+   * -----------------
+   * Preferred entry point for login (per device):
+   *
+   * 1) Try to find an existing GuardTokenDocument for this (userId, deviceID)
+   *    where expiresAt > now (session still valid).
+   * 2) If found → reuse sessionToken + guardToken.
+   * 3) If not found → call issueForUser(user, deviceID).
+   *
+   * This gives "one stable session per device" instead of global per-user.
+   */
+    public async getOrIssueForUser( user: User, deviceID: string ): Promise<IssuedTokens | null> {
+        const safeDeviceID: string = this.normalizeDeviceId( deviceID );
 
-        const userModel: IUser | null = await UserModel.findOne( { username: user.username } );
+        if ( !user?.username || !safeDeviceID ) {
+            return null;
+        }
+
+        const userModel: IUser | null = await UserModel
+            .findOne( { username: user.username } )
+            .exec();
 
         if ( !userModel ) {
             return null;
         }
 
+        const now: Date = new Date();
+
         const existing: GuardTokenDocument | null = await GuardTokenModel
             .findOne( {
                 userId: userModel._id,
-                expiresAt: { $gt: now }
-            } )
-            .exec();
+              deviceID: safeDeviceID,
+              expiresAt: { $gt: now }
+          } )
+          .exec();
 
         if ( existing ) {
             // Keep username snapshot in sync if user changed username.
@@ -183,45 +186,45 @@ export class GuardTokenService {
                 await existing.save();
             }
 
-            return {
-                sessionToken: existing.sessionToken,
-                guardToken: existing.guardToken
-            };
-        }
+          return {
+              sessionToken: existing.sessionToken,
+              guardToken: existing.guardToken,
+              deviceID: existing.deviceID
+          };
+      }
 
-        // No valid session → issue fresh tokens.
-        return this.issueForUser( user );
+        // No valid session for this device → issue fresh tokens.
+        return this.issueForUser( user, safeDeviceID );
     }
 
     /* ───────────────────────── Rotation ──────────────────────────────── */
 
-    /**
-     * rotateGuardToken
-     * ----------------
-     * Changes only guardToken, keeps same sessionToken.
-     *
-     * Intended usage:
-     *  - Called periodically from WebSocket lifecycle (e.g. every 5 seconds).
-     *  - resolveUserFromTokens accepts BOTH current + previous guardToken,
-     *    giving you ~ GUARD_OVERLAP_WINDOW_MS of overlap.
-     *
-     * NOTE:
-     *  - If sessionToken is expired → returns null (caller should treat as
-     *    “user logged out / session dead”).
-     */
+  /**
+   * rotateGuardToken
+   * ----------------
+   * Changes only guardToken, keeps same sessionToken.
+   *
+   * Used by:
+   *  - WebSocket layer every N seconds.
+   *
+   * NOTE:
+   *  - This method is sessionToken-centric (per device), which is OK because
+   *    each device stores its own unique sessionToken.
+   */
     public async rotateGuardToken( sessionToken: string ): Promise<string | null> {
         if ( !sessionToken || !sessionToken.trim() ) {
             return null;
         }
 
+        const trimmedSession = sessionToken.trim();
         const now: Date = new Date();
 
         const doc: GuardTokenDocument | null = await GuardTokenModel
             .findOne( {
-                sessionToken: sessionToken.trim(),
-                expiresAt: { $gt: now }
-            } )
-            .exec();
+              sessionToken: trimmedSession,
+              expiresAt: { $gt: now }
+          } )
+          .exec();
 
         if ( !doc ) {
             // Session either not found or expired
@@ -290,7 +293,6 @@ export class GuardTokenService {
         }
 
         const user: IUser | null = await UserModel.findById( doc.userId ).exec();
-
         if ( !user ) {
             return null;
         }
@@ -334,15 +336,11 @@ export class GuardTokenService {
 
     /* ───────────────────────── Revocation / cleanup ──────────────────── */
 
-    /**
-     * revokeForUser
-     * -------------
-     * Completely remove all sessions for a given user (global logout).
-     *
-     * Example usage:
-     *  - Admin disables user.
-     *  - Security incident → force logout from all devices.
-     */
+  /**
+   * revokeForUser
+   * -------------
+   * Completely remove all sessions for a given user (global logout from all devices).
+   */
     public async revokeForUser( userId: Types.ObjectId ): Promise<void> {
         await GuardTokenModel.deleteMany( { userId } ).exec();
     }
@@ -365,22 +363,31 @@ export class GuardTokenService {
         } ).exec();
     }
 
-    // Inside GuardTokenService class
-    public async findBySessionToken( sessionToken: string ) {
+    /**
+     * findBySessionToken
+     * ------------------
+     * Helper for diagnostics / admin tooling.
+     */
+    public async findBySessionToken(
+        sessionToken: string
+    ): Promise<GuardTokenDocument | null> {
         if ( !sessionToken || !sessionToken.trim() ) {
             return null;
         }
 
         try {
-            const tokenDoc = await GuardTokenModel
-                .findOne( { sessionToken: sessionToken.trim() } )
-                .exec();
+          const tokenDoc: GuardTokenDocument | null = await GuardTokenModel
+              .findOne( { sessionToken: sessionToken.trim() } )
+              .exec();
 
-            return tokenDoc;
-        } catch ( error ) {
-            console.error( "[GuardTokenService.findBySessionToken] error:", error );
+          return tokenDoc;
+      } catch ( error ) {
+            console.error(
+                '[Error:] [GuardTokenService.findBySessionToken] error:\n',
+                error,
+                '\n'
+            );
             return null;
         }
     }
-
 }

@@ -24,13 +24,14 @@ import {
 
 import QRCode from 'qrcode';
 
-import { ApiResponseBuilder } from '../utils/api-combiner.builder';
-import { UserModel, type IUser, type User } from '../models/user.model';
-import { MfaService } from '../services/mfa.service';
+import { NODE_ENV } from '../configs/env.config';
 import { MfaPairingDocument } from '../models/mfa/mfa-pairing.model';
+import { UserModel, type IUser, type User } from '../models/user.model';
 import { GuardTokenService } from '../services/guard-token.service';
-import { WsTokenRegistryProvider } from '../services/ws-service//ws-token-registry.provider.service';
+import { MfaService } from '../services/mfa.service';
+import { WsTokenRegistryProvider } from '../services/ws-service/ws-token-registry.provider.service';
 import type { MfaStrength, WsTokenRecord } from '../types/ws-token.types';
+import { ApiResponseBuilder } from '../utils/api-combiner.builder';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Request body types (for better clarity/typing)
@@ -51,10 +52,6 @@ interface InitialVerifyBody {
     code?: string;
 }
 
-interface UserVerifyBody {
-    token?: string;
-    code?: string;
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Controller
@@ -81,6 +78,9 @@ export class MfaController {
 
     // Optional central TTL for Redis-backed wsTokens (seconds)
     private readonly wsTokenTtlSeconds: number = 300;
+    private static readonly SESSION_COOKIE_NAME: string = "sessionToken";
+    private static readonly GUARD_COOKIE_NAME: string = "guardToken";
+    private static readonly DEVICE_COOKIE_NAME: string = "deviceID";
 
     public constructor () {
         this.router = Router();
@@ -107,14 +107,14 @@ export class MfaController {
         // Confirmation after scan (foreign app → backend)
         this.router.post(
             '/confirm',
-          this.confirmMultiAuth.bind( this ),
-      );
+            this.confirmMultiAuth.bind( this ),
+        );
 
         // Optional: alias for backward compatibility
         this.router.post(
             '/activate',
-          this.confirmMultiAuth.bind( this ),
-      );
+            this.confirmMultiAuth.bind( this ),
+        );
 
         // Status check (for polling from FE)
         this.router.get(
@@ -156,25 +156,11 @@ export class MfaController {
     /**
      * Builds a safe user payload (never exposing sensitive fields like password).
      */
-    private buildSafeUserPayload( user: User | null ): User | null {
+    private buildSafeUserPayload( user: IUser | null ): User | null {
         if ( !user ) {
             return null;
         }
-
-        const plain: any = ( typeof ( user as any ).toObject === 'function' )
-            ? ( user as any ).toObject()
-            : user;
-
-        // Explicitly omit password and other sensitive fields if present
-        const {
-            password,
-            resetToken,
-            resetTokenExpiresAt,
-            // add more sensitive fields here if needed
-            ...safeUser
-        } = plain;
-
-        return safeUser;
+        return user.toSafeDTO();
     }
 
     /**
@@ -226,15 +212,15 @@ export class MfaController {
     // Handlers
     // ────────────────────────────────────────────────────────────────────────────
 
-  /**
-   * initiateMultiAuth
-   * -----------------
-   * Body:
-   *   { username: string }
-   *
-   * In a fully locked-down system this would usually derive the user
-   * from the session (auth middleware) and not accept username directly.
-   */
+    /**
+     * initiateMultiAuth
+     * -----------------
+     * Body:
+     *   { username: string }
+     *
+     * In a fully locked-down system this would usually derive the user
+     * from the session (auth middleware) and not accept username directly.
+     */
     private async initiateMultiAuth(
         req: Request<unknown, unknown, InitiateMultiAuthBody>,
         res: Response,
@@ -246,10 +232,10 @@ export class MfaController {
                 ApiResponseBuilder.error(
                     res,
                     400,
-                'Username is required to initiate multi-auth.',
-            );
-            return;
-        }
+                    'Username is required to initiate multi-auth.',
+                );
+                return;
+            }
 
             const user: IUser | null = await UserModel.findOne( { username } ).exec();
 
@@ -257,48 +243,48 @@ export class MfaController {
                 ApiResponseBuilder.error(
                     res,
                     404,
-                'User not found.',
-            );
-            return;
-        }
+                    'User not found.',
+                );
+                return;
+            }
 
             if ( ( user as any ).multiAuthEnabled ) {
                 ApiResponseBuilder.error(
                     res,
                     400,
-                'Multi-authentication is already enabled for this user.',
-            );
-            return;
-        }
+                    'Multi-authentication is already enabled for this user.',
+                );
+                return;
+            }
 
             // Create pairing record + URI string
             const pairing = await this.mfaService.createPairingForUser( user );
 
             // Generate QR as a PNG data URL
             const qrDataUrl: string = await QRCode.toDataURL( pairing.uri, {
-            errorCorrectionLevel: 'M',
-        } );
+                errorCorrectionLevel: 'M',
+            } );
 
             ApiResponseBuilder.ok(
                 res,
                 'other',
                 {
                     username: user.username,
-                qr: qrDataUrl,                       // <img [src]="qr"> in Angular
-                pairingToken: pairing.pairingToken,  // mostly for debugging; FE usually does not need it
-                expiresAt: pairing.expiresAt.toISOString(),
-                uri: pairing.uri,                    // if FE wants to generate QR itself
-            },
-            'Multi-auth pairing QR generated.',
-        );
+                    qr: qrDataUrl,                       // <img [src]="qr"> in Angular
+                    pairingToken: pairing.pairingToken,  // mostly for debugging; FE usually does not need it
+                    expiresAt: pairing.expiresAt.toISOString(),
+                    uri: pairing.uri,                    // if FE wants to generate QR itself
+                },
+                'Multi-auth pairing QR generated.',
+            );
             return;
         } catch ( error ) {
-            console.error( '[mfa/initiate] error:', error );
+            console.error( '[Error:] [MFA] initiate error:', error, '\n' );
             ApiResponseBuilder.error(
                 res,
                 500,
-            'Failed to initiate multi-authentication.',
-        );
+                'Failed to initiate multi-authentication.',
+            );
             return;
         }
     }
@@ -328,25 +314,25 @@ export class MfaController {
                 ApiResponseBuilder.error(
                     res,
                     400,
-                'Pairing token is required.',
-            );
-            return;
-        }
+                    'Pairing token is required.',
+                );
+                return;
+            }
 
-            const user: User | null = await this.mfaService.confirmPairing(
+            const user: IUser | null = await this.mfaService.confirmPairing(
                 pairingToken,
                 deviceName,
-            devicePlatform,
-        );
+                devicePlatform,
+            );
 
             if ( !user ) {
                 ApiResponseBuilder.error(
                     res,
                     400,
-                'Invalid or expired pairing token.',
-            );
-            return;
-        }
+                    'Invalid or expired pairing token.',
+                );
+                return;
+            }
 
             const safeUser = this.buildSafeUserPayload( user );
 
@@ -358,19 +344,19 @@ export class MfaController {
             ApiResponseBuilder.ok(
                 res,
                 'user',
-            safeUser,
-            'Multi-authentication activated successfully.',
-            {
-                other: {
-                    multiAuthEnabled: true,
-                    deviceName: deviceName ?? null,
-                    devicePlatform: devicePlatform ?? null,
+                safeUser,
+                'Multi-authentication activated successfully.',
+                {
+                    other: {
+                        multiAuthEnabled: true,
+                        deviceName: deviceName ?? null,
+                        devicePlatform: devicePlatform ?? null,
+                    },
                 },
-            },
-        );
+            );
             return;
         } catch ( error ) {
-            console.error( '[mfa/confirm] error:', error );
+            console.error( '[Error:] [MFA] confirm error:', error, '\n' );
             ApiResponseBuilder.error(
                 res,
                 500,
@@ -412,12 +398,12 @@ export class MfaController {
             );
             return;
         } catch ( error ) {
-            console.error( '[mfa/status] error:', error );
+            console.error( '[Error:] [MFA] status error:', error, '\n' );
             ApiResponseBuilder.error(
                 res,
                 500,
-            'Failed to resolve multi-auth pairing status.',
-        );
+                'Failed to resolve multi-auth pairing status.',
+            );
             return;
         }
     }
@@ -442,7 +428,7 @@ export class MfaController {
                 return;
             }
 
-            const user: User | null = await this.mfaService.deactivateMultiAuth( username );
+            const user: IUser | null = await this.mfaService.deactivateMultiAuth( username );
 
             if ( !user ) {
                 ApiResponseBuilder.error( res, 404, 'Failed to update user.' );
@@ -464,7 +450,7 @@ export class MfaController {
             );
             return;
         } catch ( error ) {
-            console.error( '[mfa/deactivate] error:', error );
+            console.error( '[Error:] [MFA] deactivate error:', error, '\n' );
             ApiResponseBuilder.internalError( res, error );
             return;
         }
@@ -519,7 +505,7 @@ export class MfaController {
             );
             return;
         } catch ( error ) {
-            console.error( '[mfa/initial-verify] error:', error );
+            console.error( '[Error:] [MFA] initial-verify error:', error, '\n' );
             ApiResponseBuilder.internalError( res, error );
             return;
         }
@@ -557,56 +543,78 @@ export class MfaController {
                 ApiResponseBuilder.validationError( res, 'Code is required.' );
                 return;
             }
+            const deviceCheck = this.extractAndValidateDeviceId( req );
 
-            const user: User | null = await this.mfaService.verifyUser( token, code );
+            if ( deviceCheck.error ) {
+                ApiResponseBuilder.error(
+                    res,
+                    400,
+                    deviceCheck.error,
+                );
+                return;
+            }
 
-            if ( !user ) {
+            const deviceID: string = deviceCheck.deviceId ?? '';
+
+
+            if ( !deviceID ) {
+                ApiResponseBuilder.error(
+                    res,
+                    400,
+                    "Device ID is required!",
+                );
+                return;
+            }
+
+            console.log( deviceID )
+
+            const userDoc: IUser | null = await this.mfaService.verifyUser( token, code );
+
+            if ( !userDoc ) {
                 ApiResponseBuilder.error( res, 406, 'User or code does not match.' );
                 return;
             }
 
-            const safeUser = this.buildSafeUserPayload( user );
 
-            if ( !safeUser ) {
-                ApiResponseBuilder.error( res, 404, 'User does not found!' );
-                return;
-            }
-
-            // 5) Issue session + guard tokens (JWT-based)
-            const tokens = await this.guardTokenService.issueForUser( user );
+            // 5) Issue session + guard tokens (JWT-based) for this user
+            const tokens = await this.guardTokenService.issueForUser( userDoc, deviceID );
 
             if ( !tokens ) {
-                ApiResponseBuilder.error( res, 406, 'Failed to generate user tokens!' );
+                ApiResponseBuilder.error( res, 406, "Failed to generate user tokens!" );
                 return;
             }
 
-            const isProd = process.env.NODE_ENV === 'production';
+            const isProd: boolean = this.isProductionEnv();
 
             // 6) Set secure cookies for 30 days
-            res.cookie( 'sessionToken', tokens.sessionToken, {
-                httpOnly: true,
-                secure: isProd,
-                sameSite: 'strict',
-                maxAge: 30 * 24 * 60 * 60 * 1000,
-            } );
+            res.cookie(
+                MfaController.SESSION_COOKIE_NAME,
+                tokens.sessionToken,
+                this.buildCookieOptions( isProd ),
+            );
 
-            res.cookie( 'guardToken', tokens.guardToken, {
-                httpOnly: true,
-                secure: isProd,
-                sameSite: 'strict',
-                maxAge: 30 * 24 * 60 * 60 * 1000,
-            } );
+            res.cookie(
+                MfaController.GUARD_COOKIE_NAME,
+                tokens.guardToken,
+                this.buildCookieOptions( isProd ),
+            );
+
+            res.cookie(
+                MfaController.DEVICE_COOKIE_NAME,
+                deviceID,
+                this.buildCookieOptions( isProd )
+            );
 
             // 7) Issue WebSocket-only token (Redis-backed registry)
-            //    FE uses this in socket.io `auth.wsToken` on initial connection.
-            const mfaStrength: MfaStrength = 'password_plus_totp';
+            // Use sessionToken as the session identifier for wsTokens.
+            const mfaStrength: MfaStrength = userDoc.multiAuthEnabled
+                ? "password_plus_totp"  // or whatever you named the "full MFA" mode
+                : "password_only";
 
             let wsRecord: WsTokenRecord | null = null;
             try {
-                // We know `user` is a full Mongoose document compatible with IUser
-                const wsUser: IUser = user as unknown as IUser;
                 wsRecord = await this.issueWsTokenForResponse(
-                    wsUser,
+                    userDoc,
                     tokens.sessionToken,
                     mfaStrength,
                     req,
@@ -615,33 +623,145 @@ export class MfaController {
                 // If WS token creation fails, we STILL allow HTTP login
                 // but log this clearly because realtime will not work.
                 console.warn(
-                    '[mfa/user-verify] Failed to issue Redis wsToken for user:',
-                    user.username,
-                    err,
+                    "[Warning:] Failed to issue Redis wsToken for user:",
+                    userDoc.username,
+                    err, '\n'
                 );
             }
 
+            // 8) Final response: send safe DTO as "user" payload
+            const safeUser: User = userDoc.toSafeDTO();
+
             ApiResponseBuilder.ok(
                 res,
-                'user',
+                "user", // uses the "user" overload of ApiResponseBuilder
                 safeUser,
-                'Login successful',
+                "Login successful",
                 {
                     other: {
-                        sessionToken: tokens.sessionToken, // FE still uses this for HTTP
+                        // NOTE: You can remove these from payload later if you move to cookie-only auth.
+                        sessionToken: tokens.sessionToken,
                         guardToken: tokens.guardToken,
                         wsToken: wsRecord ? wsRecord.token : null,
+                        // Preserve the same semantics as old WsTokenRegistry:
+                        // numeric timestamps for issuedAt / validUntil
                         wsTokenIssuedAt: wsRecord ? wsRecord.createdAt.getTime() : null,
                         wsTokenValidUntil: wsRecord ? wsRecord.expiresAt.getTime() : null,
                         mfaVerify: true,
+                        deviceID,
                     },
                 },
             );
             return;
         } catch ( error ) {
-            console.error( '[mfa/user-verify] error:', error );
+            console.error( '[Error:] [MFA] user-verify error:', error, '\n' );
             ApiResponseBuilder.internalError( res, error );
             return;
         }
     }
+
+
+    /** True when running in production mode. */
+    private isProductionEnv(): boolean {
+        return NODE_ENV === "production";
+    }
+
+    /** Build standard cookie options (30-day, httpOnly, sameSite=strict). */
+    private buildCookieOptions( isProd: boolean ): {
+        httpOnly: boolean;
+        secure: boolean;
+        sameSite: "strict";
+        maxAge: number;
+    } {
+        return {
+            httpOnly: true,
+            secure: isProd,
+            sameSite: "strict",
+            maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+        };
+    }
+
+
+
+    /**
+     * Extract and validate device ID from:
+     *   1) Header: x-device-id          (preferred for all authenticated calls)
+     *   2) Body:   deviceId             (used by initial /login or legacy clients)
+     *   3) Cookie: DEVICE_COOKIE_NAME   (fallback only)
+     *
+     * Rules:
+     *  - If both header + body are present and DIFFERENT → treat as suspicious
+     *    and return an error string.
+     *  - Otherwise return the first non-empty value in priority order:
+     *      header → body → cookie.
+     */
+    private extractAndValidateDeviceId(
+        req: Request
+    ): { deviceId?: string; error?: string; } {
+        // 1) Header (preferred)
+        const headerRaw: string | undefined =
+            typeof req.get === 'function'
+                ? ( req.get( 'x-device-id' ) ?? undefined )
+                : undefined;
+
+        const headerId: string | undefined =
+            headerRaw && headerRaw.trim().length > 0
+                ? headerRaw.trim()
+                : undefined;
+
+        // 2) Body (used mainly on /login)
+        let bodyId: string | undefined;
+        if ( req.body && typeof req.body.deviceId === 'string' ) {
+            const v = req.body.deviceId.trim();
+            if ( v.length > 0 ) {
+                bodyId = v;
+            }
+        }
+
+        // 3) Cookie (fallback – mostly for debugging / older flows)
+        const reqWithCookies = req as Request & { cookies?: Record<string, unknown>; };
+        let cookieId: string | undefined;
+        if ( reqWithCookies.cookies ) {
+            const rawCookie = reqWithCookies.cookies[ MfaController.DEVICE_COOKIE_NAME ];
+            if ( typeof rawCookie === 'string' && rawCookie.trim().length > 0 ) {
+                cookieId = rawCookie.trim();
+            }
+        }
+
+        // ── Consistency checks ────────────────────────────────────────────────
+
+        // header vs body mismatch → suspicious → reject
+        if ( headerId && bodyId && headerId !== bodyId ) {
+            console.warn(
+                '[Warning:] [MAF] deviceId mismatch between header and body:',
+                { headerId, bodyId },
+                '\n'
+            );
+            return {
+                error: 'Device ID mismatch between header and body.'
+            };
+        }
+
+        // header vs cookie mismatch (only if both exist)
+        if ( headerId && cookieId && headerId !== cookieId ) {
+            console.warn(
+                '[Warning:] [MFA] deviceId mismatch between header and cookie:',
+                { headerId, cookieId },
+                '\n'
+            );
+            // We still prefer header here, but you could choose to reject instead:
+            // return { error: 'Device ID mismatch between header and cookie.' };
+        }
+
+        // ── Canonical value (priority: header → body → cookie) ───────────────
+
+        const deviceId: string | undefined = headerId ?? bodyId ?? cookieId;
+
+        if ( !deviceId ) {
+            return { deviceId: '' };
+        }
+
+        return { deviceId };
+    }
+
 }

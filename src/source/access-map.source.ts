@@ -357,4 +357,16 @@ export const ACCESS_OPTIONS = [
     ] as const,
   },
 
+  // ─────────────── KPI Management ───────────────
+  {
+    module: "KpiManagement",
+    label: "KPI Management",
+    actions: [
+      { id: "view", label: "View KPI dashboards & health" },
+      { id: "create", label: "Submit KPI facts (ingest)" },
+      { id: "update", label: "Recompute / rebuild KPI projections" }, // optional (future)
+    ] as const,
+  },
+
+
 ] as const satisfies ReadonlyArray<AccessModuleOption>;

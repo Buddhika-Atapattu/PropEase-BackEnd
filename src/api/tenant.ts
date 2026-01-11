@@ -1793,7 +1793,7 @@ export default class Tenant {
           {
             pagination: {
               hasMore,
-              nextCursor,
+              nextCursor: nextCursor ?? '',
             }
           }
         );

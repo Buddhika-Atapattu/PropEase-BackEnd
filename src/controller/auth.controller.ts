@@ -23,29 +23,29 @@
 //       * Generate a new MFA login challenge for a given username
 // ============================================================================
 
-import "dotenv/config";
-import { Router, type Request, type Response } from "express";
 import * as Argon2 from "argon2";
+import { Router, type Request, type Response } from "express";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Models
 // ──────────────────────────────────────────────────────────────────────────────
-import { USER_MODEL_PROJECTION, UserModel, type IUser, type User } from "../models/user.model";
+import { UserModel, type IUser, type User } from "../models/user.model";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Services
 // ──────────────────────────────────────────────────────────────────────────────
 import { GuardTokenService } from "../services/guard-token.service";
 // Legacy file-based WsTokenRegistry REMOVED
-import { WsTokenRegistryProvider } from "../services/ws-service/ws-token-registry.provider.service";
 import { MfaService } from "../services/mfa.service";
+import { WsTokenRegistryProvider } from "../services/ws-service/ws-token-registry.provider.service";
 import { SocketServerProvider } from '../socket/socket-server.provider';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Utils
 // ──────────────────────────────────────────────────────────────────────────────
-import { ApiResponseBuilder } from "../utils/api-combiner.builder";
+import { NODE_ENV } from "../configs/env.config";
 import type { MfaStrength, WsTokenRecord } from "../types/ws-token.types";
+import { ApiResponseBuilder } from "../utils/api-combiner.builder";
 
 // ============================================================================
 // Controller
@@ -65,6 +65,7 @@ export class AuthController {
   // Cookie names (centralised to avoid typos)
   private static readonly SESSION_COOKIE_NAME: string = "sessionToken";
   private static readonly GUARD_COOKIE_NAME: string = "guardToken";
+  private static readonly DEVICE_COOKIE_NAME: string = "deviceID";
 
   public constructor () {
     this.router = Router();
@@ -127,6 +128,8 @@ export class AuthController {
       const username: string = String( req.body.username ?? "" ).trim();
       const password: string = String( req.body.password ?? "" ).trim();
 
+
+
       // 1) Basic input validation
       if ( !username || !password ) {
         ApiResponseBuilder.error(
@@ -136,6 +139,27 @@ export class AuthController {
         );
         return;
       }
+      const deviceCheck = this.extractAndValidateDeviceId( req );
+
+      if ( deviceCheck.error ) {
+        ApiResponseBuilder.error(
+          res,
+          400,
+          deviceCheck.error,
+        );
+        return;
+      }
+
+      const deviceID: string = deviceCheck.deviceId ?? '';
+      if ( !deviceID ) {
+        ApiResponseBuilder.error(
+          res,
+          400,
+          "Device ID is required!",
+        );
+        return;
+      }
+
 
       // 2) Load user by username (Mongoose document)
       const userDoc: IUser | null = await UserModel.findOne( { username } ).exec();
@@ -178,6 +202,7 @@ export class AuthController {
             multiAuthEnabled: true,
             username: userDoc.username,
             challenge,
+            deviceID
           },
           "User verified, multi-authentication required.",
         );
@@ -185,7 +210,7 @@ export class AuthController {
       }
 
       // 5) Issue session + guard tokens (JWT-based) for this user
-      const tokens = await this.guardTokenService.issueForUser( userDoc );
+      const tokens = await this.guardTokenService.issueForUser( userDoc, deviceID );
 
       if ( !tokens ) {
         ApiResponseBuilder.error( res, 406, "Failed to generate user tokens!" );
@@ -207,9 +232,17 @@ export class AuthController {
         this.buildCookieOptions( isProd ),
       );
 
+      res.cookie(
+        AuthController.DEVICE_COOKIE_NAME,
+        deviceID,
+        this.buildCookieOptions( isProd )
+      );
+
       // 7) Issue WebSocket-only token (Redis-backed registry)
       // Use sessionToken as the session identifier for wsTokens.
-      const mfaStrength: MfaStrength = userDoc.multiAuthEnabled ? "password_only" : "none";
+      const mfaStrength: MfaStrength = userDoc.multiAuthEnabled
+        ? "password_plus_totp"  // or whatever you named the "full MFA" mode
+        : "password_only";
 
       let wsRecord: WsTokenRecord | null = null;
       try {
@@ -223,9 +256,10 @@ export class AuthController {
         // If WS token creation fails, we STILL allow HTTP login
         // but log this clearly because realtime will not work.
         console.warn(
-          "[auth.login] Failed to issue Redis wsToken for user:",
+          "[Warning:] [AUTH] Failed to issue Redis wsToken for user:",
           userDoc.username,
           err,
+          '\n'
         );
       }
 
@@ -248,12 +282,13 @@ export class AuthController {
             wsTokenIssuedAt: wsRecord ? wsRecord.createdAt.getTime() : null,
             wsTokenValidUntil: wsRecord ? wsRecord.expiresAt.getTime() : null,
             mfaVerify: null,
+            deviceID,
           },
         },
       );
       return;
     } catch ( error ) {
-      console.error( "[auth.login] error:", error );
+      console.error( "[Error:] [AUTH] login error:", error, '\n' );
       ApiResponseBuilder.error(
         res,
         500,
@@ -290,7 +325,7 @@ export class AuthController {
         try {
           await this.guardTokenService.revokeBySessionToken( sessionToken );
         } catch ( err ) {
-          console.warn( "[auth.logout] revokeBySessionToken failed:", err );
+          console.warn( "[Warning:] [AUTH] revokeBySessionToken failed:", err, '\n' );
           // Continue with wsToken + cookie cleanup; logout remains idempotent.
         }
 
@@ -299,18 +334,18 @@ export class AuthController {
           const wsRegistry = await WsTokenRegistryProvider.getInstance();
           await wsRegistry.revokeAllForSession( sessionToken );
         } catch ( err ) {
-          console.warn( "[Error: auth logout] revokeAllForSession(wsToken) failed:", err, '\n' );
+          console.warn( "[Warning:] [AUTH] revokeBySessionToken failed:", err, '\n' );
         }
       } else {
         console.warn(
-          "[Warning: auth logout] no session token found; treating as already logged out", '\n'
+          "[Warning:] [AUTH] no session token found; treating as already logged out", '\n'
         );
       }
 
       // (Optional) logoutUsername is currently not used for ws cleanup anymore.
       // Keep it if you later want to log audit events per user.
       if ( logoutUsername ) {
-        console.info( "[Info: auth logout] logout requested for user:", logoutUsername, '\n' );
+        console.info( "[Info:] [AUTH] logout requested for user:", logoutUsername, '\n' );
       }
 
       // 5) Clear cookies (must match options used in login)
@@ -326,6 +361,12 @@ export class AuthController {
         sameSite: "strict",
       } );
 
+      res.clearCookie( AuthController.DEVICE_COOKIE_NAME, {
+        httpOnly: true,
+        secure: isProd,
+        sameSite: "strict",
+      } );
+
       // 6) Always respond 200 – logout is idempotent
       ApiResponseBuilder.ok(
         res,
@@ -335,7 +376,7 @@ export class AuthController {
       );
       return;
     } catch ( error ) {
-      console.error( "[auth.logout] error:", error );
+      console.error( "[Error:] [AUTH] logout error:", error, '\n' );
       ApiResponseBuilder.error(
         res,
         500,
@@ -388,7 +429,7 @@ export class AuthController {
       );
       return;
     } catch ( error ) {
-      console.error( "[auth.generateNewChallenge] error:", error );
+      console.error( "[Error:] [AUTH] generateNewChallenge error:", error, '\n' );
       ApiResponseBuilder.internalError( res, error );
       return;
     }
@@ -397,9 +438,15 @@ export class AuthController {
   private async rotateWsToken( req: Request<{ username: string; }>, res: Response ): Promise<void> {
     try {
       const username = String( req.params.username ?? '' ).trim();
+      const deviceCheck = this.extractAndValidateDeviceId( req );
+      const deviceID: string = deviceCheck.deviceId ?? '';
 
       if ( !username ) {
         ApiResponseBuilder.validationError( res, 'Username is required!' );
+        return;
+      }
+      if ( !deviceID ) {
+        ApiResponseBuilder.validationError( res, 'Device ID is required!' );
         return;
       }
 
@@ -410,7 +457,7 @@ export class AuthController {
         return;
       }
 
-      const tokens = await this.guardTokenService.getOrIssueForUser( user );
+      const tokens = await this.guardTokenService.getOrIssueForUser( user, deviceID );
       const sessionId = tokens?.sessionToken;
 
       if ( !sessionId ) {
@@ -436,7 +483,7 @@ export class AuthController {
       );
     }
     catch ( error ) {
-      console.error( '[Error:]', error, '\n' );
+      console.error( '[Error:] rotate wsToken error:', error, '\n' );
       ApiResponseBuilder.internalError( res, error );
       return;
     }
@@ -457,7 +504,7 @@ export class AuthController {
 
   /** True when running in production mode. */
   private isProductionEnv(): boolean {
-    return process.env.NODE_ENV === "production";
+    return NODE_ENV === "production";
   }
 
   /** Build standard cookie options (30-day, httpOnly, sameSite=strict). */
@@ -508,4 +555,86 @@ export class AuthController {
     const raw: string = req.body.username.trim();
     return raw.length > 0 ? raw : undefined;
   }
+
+  /**
+   * Extract and validate device ID from:
+   *   1) Header: x-device-id          (preferred for all authenticated calls)
+   *   2) Body:   deviceId             (used by initial /login or legacy clients)
+   *   3) Cookie: DEVICE_COOKIE_NAME   (fallback only)
+   *
+   * Rules:
+   *  - If both header + body are present and DIFFERENT → treat as suspicious
+   *    and return an error string.
+   *  - Otherwise return the first non-empty value in priority order:
+   *      header → body → cookie.
+   */
+  private extractAndValidateDeviceId(
+    req: Request
+  ): { deviceId?: string; error?: string; } {
+    // 1) Header (preferred)
+    const headerRaw: string | undefined =
+      typeof req.get === 'function'
+        ? ( req.get( 'x-device-id' ) ?? undefined )
+        : undefined;
+
+    const headerId: string | undefined =
+      headerRaw && headerRaw.trim().length > 0
+        ? headerRaw.trim()
+        : undefined;
+
+    // 2) Body (used mainly on /login)
+    let bodyId: string | undefined;
+    if ( req.body && typeof req.body.deviceId === 'string' ) {
+      const v = req.body.deviceId.trim();
+      if ( v.length > 0 ) {
+        bodyId = v;
+      }
+    }
+
+    // 3) Cookie (fallback – mostly for debugging / older flows)
+    const reqWithCookies = req as Request & { cookies?: Record<string, unknown>; };
+    let cookieId: string | undefined;
+    if ( reqWithCookies.cookies ) {
+      const rawCookie = reqWithCookies.cookies[ AuthController.DEVICE_COOKIE_NAME ];
+      if ( typeof rawCookie === 'string' && rawCookie.trim().length > 0 ) {
+        cookieId = rawCookie.trim();
+      }
+    }
+
+    // ── Consistency checks ────────────────────────────────────────────────
+
+    // header vs body mismatch → suspicious → reject
+    if ( headerId && bodyId && headerId !== bodyId ) {
+      console.warn(
+        '[Warning:] [AUTH] deviceId mismatch between header and body:',
+        { headerId, bodyId },
+        '\n'
+      );
+      return {
+        error: 'Device ID mismatch between header and body.'
+      };
+    }
+
+    // header vs cookie mismatch (only if both exist)
+    if ( headerId && cookieId && headerId !== cookieId ) {
+      console.warn(
+        '[Warning:] [AUTH] deviceId mismatch between header and cookie:',
+        { headerId, cookieId },
+        '\n'
+      );
+      // We still prefer header here, but you could choose to reject instead:
+      // return { error: 'Device ID mismatch between header and cookie.' };
+    }
+
+    // ── Canonical value (priority: header → body → cookie) ───────────────
+
+    const deviceId: string | undefined = headerId ?? bodyId ?? cookieId;
+
+    if ( !deviceId ) {
+      return { deviceId: '' };
+    }
+
+    return { deviceId };
+  }
+
 }

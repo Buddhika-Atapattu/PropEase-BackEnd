@@ -143,6 +143,7 @@ export interface IUser extends Document {
   phoneNumber?: PhoneNumber;
   bio: string;
   nationality: string;
+  nicOrPassport: string
 
   // Role & access
   role: Role;
@@ -555,6 +556,12 @@ export class UserModelBuilder {
           trim: true,
         },
         nationality: {
+          type: String,
+          default: '',
+          trim: true,
+          required: true,
+        },
+        nicOrPassport: {
           type: String,
           default: '',
           trim: true,

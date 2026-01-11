@@ -1,5 +1,6 @@
 // Path: src/bootstrap/routes.bootstrap.ts
 
+import { NODE_ENV } from '../configs/env.config';
 import path from 'path';
 import type {
   Express,
@@ -33,7 +34,8 @@ import Payments from '../api/payment';
 import UploadsRoutes from '../api/uploads';
 import TeamManagement from '../api/teamManagement/teamManagement';
 import TeamTaskManagement from '../api/teamManagement/teamTask';
-import { NODE_ENV } from '../configs/env.config';
+import { KpiRoutes } from '../KPIs/api/kpi.routes';
+
 
 const isProd: boolean = NODE_ENV === 'production';
 const APP_TAG: string = 'PropEase';
@@ -59,6 +61,7 @@ interface RoutesBootstrapDeps {
   payments: Payments;
   teamManagement: TeamManagement;
   teamTaskRouter: TeamTaskManagement;
+  kpis: KpiRoutes;
 }
 
 export class RoutesBootstrap {
@@ -83,6 +86,7 @@ export class RoutesBootstrap {
   private readonly payments: Payments;
   private readonly teamManagement: TeamManagement;
   private readonly teamTaskRouter: TeamTaskManagement;
+  private readonly kpis: KpiRoutes;
 
   public constructor(deps: RoutesBootstrapDeps) {
     this.app = deps.app;
@@ -106,6 +110,7 @@ export class RoutesBootstrap {
     this.payments = deps.payments;
     this.teamManagement = deps.teamManagement;
     this.teamTaskRouter = deps.teamTaskRouter;
+    this.kpis = deps.kpis;
   }
 
   public registerAll(): void {
@@ -236,7 +241,8 @@ export class RoutesBootstrap {
     this.app.use('/api-validator', apiGuard, this.validator.route);
     this.app.use('/api-payments', apiGuard, this.payments.route);
     this.app.use('/api-team-management', apiGuard, this.teamManagement.route);
-    this.app.use('/api-team-management', apiGuard, this.teamTaskRouter.route);
+    this.app.use( '/api-team-management/task', apiGuard, this.teamTaskRouter.route );
+    this.app.use('/api-kpis', apiGuard, this.kpis.getRouter());
   }
 
   private registerIndexPage(): void {

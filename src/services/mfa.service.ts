@@ -131,7 +131,7 @@ export class MfaService {
     pairingToken: string,
     deviceName?: string,
     devicePlatform?: string,
-  ): Promise<User | null> {
+  ): Promise<IUser | null> {
     // 1) Basic sanitisation
     const token: string = String( pairingToken ?? '' ).trim();
     if ( !token ) {
@@ -173,9 +173,7 @@ export class MfaService {
     userDoc.multiAuthSecret = pairing.multiAuthSecret;
     await userDoc.save();
 
-    // 6) Return safe DTO
-    const safeUser: User = userDoc.toSafeDTO();
-    return safeUser;
+    return userDoc;
   }
 
 
@@ -189,7 +187,7 @@ export class MfaService {
    *  - Clears user's MFA flags and secret
    *  - Deletes any pairing records for this user
    */
-  public async deactivateMultiAuth( username: string ): Promise<User | null> {
+  public async deactivateMultiAuth( username: string ): Promise<IUser | null> {
     try {
       const safeUsername: string = this.sanitizeString( username );
 
@@ -214,7 +212,7 @@ export class MfaService {
       // 3) Save user
       await user.save();
 
-      return user.toSafeDTO();
+      return user;
     } catch ( error ) {
       console.error( '[deactivateMultiAuth] error:', error );
       return null;
@@ -319,7 +317,7 @@ export class MfaService {
    *  - Checks that multiAuthSecret exists
    *  - Validates the TOTP code
    */
-  public async verifyUser( token: string, code: string ): Promise<User | null> {
+  public async verifyUser( token: string, code: string ): Promise<IUser | null> {
     try {
       const safeToken: string = this.sanitizeString( token );
       const safeCode: string = this.sanitizeString( code );
@@ -362,7 +360,7 @@ export class MfaService {
         throw new Error( 'Code does not match.' );
       }
 
-      return user.toSafeDTO();
+      return user;
     } catch ( error ) {
       console.error( '[verifyUser] error:', error );
       return null;
