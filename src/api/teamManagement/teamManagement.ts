@@ -1,17 +1,7 @@
 // Path: src/api/teamManagement/teamManagement.ts
 // ============================================================================
-// Team Management Router (class-based)
+// Team Management Router (class-based) — FIXED
 // ----------------------------------------------------------------------------
-// Key design updates you requested:
-//   1) Custom team ID renamed: id -> teamCode
-//      Reason: Mongoose Document already has "id" (virtual getter for _id.toString()).
-//      Having your own "id" field causes type collisions and confusion.
-//
-//   2) When fetching teams (single or list), enrich members and captain with User model data:
-//      - members[].user (safe projection from UserModel)
-//      - captain.user   (safe projection from UserModel)
-//
-//   3) Centralise helper methods so pipelines are reused, consistent, and maintainable.
 // ============================================================================
 
 import express, { Request, Response, Router } from "express";
@@ -31,6 +21,11 @@ import {
     TEAM_ROLES,
     RoleInTeam,
     type TeamManagementDto,
+    type TaskTiming,
+    type TaskAuditMeta,
+    type TaskSlaPolicy,
+    type TaskRuntimeMetrics,
+    type TaskCompletionConfirmation,
 } from "../../models/teamManagement/teamManagement.model";
 
 import {
@@ -39,12 +34,10 @@ import {
     UserModel,
 } from "../../models/user.model";
 
-import { FileMetaBase, PaginationMeta } from "../../types/api-message";
+import { FileMetaPacket, PaginationMeta } from "../../types/api-message";
 import { ApiResponseBuilder } from "../../utils/api-combiner.builder";
-import FileUploader from "../../utils/file-uploader.helper";
+import FileUploader, { type UploadResultPacket } from "../../utils/file-uploader.helper";
 import NotificationService from "../../services/notification.service";
-
-
 
 // ---------------------------------------------------------------------------
 // Shape for aggregated "user + team" view
@@ -61,9 +54,6 @@ interface AllUserWithTeams extends User {
     }[];
 }
 
-// ============================================================================
-// Router class
-// ============================================================================
 export default class TeamManagement {
     /**
      * Base public URL root (relative) for team uploads.
@@ -90,56 +80,62 @@ export default class TeamManagement {
     // ─────────────────────────────────────────────
     public constructor () {
         this.router = express.Router();
-
-        // Core team operations
-        this.registerCreateTeam(); // POST   /create
-        this.getTeamByTeamName(); // GET    /teamName/:teamName
-        this.registerGetAllTeams(); // GET   /all
-        this.registerGetTeamByCode(); // GET   /:teamCode
-        this.registerUpdateTeam(); // PATCH /update/:teamCode
-        this.registerDeleteTeam(); // DELETE /delete/:teamCode
-
-        // File upload only
-        this.registerUploadTeamLogo(); // POST /upload/logo/:teamCode
-
-        // Totals
-        this.registerGetAllTeamTotals(); // GET /stats/teams-total
-        this.registerGetTeamTotalByDomain(); // GET /stats/teams-total/domain/:domain
-
-        // User membership analytics (global)
-        this.registerUsersWithoutAnyTeam(); // GET /users/no-team
-        this.registerUsersWithoutAnyTeamCount(); // GET /users/no-team/count
-        this.registerUsersInAnyTeam(); // GET /users/in-teams
-        this.registerUsersInAnyTeamCount(); // GET /users/in-teams/count
-
-        // User membership analytics (domain-specific)
-        this.registerUsersWithoutTeamByDomain(); // GET /users/no-team/domain/:domain
-        this.registerUsersWithoutTeamByDomainCount(); // GET /users/no-team/domain/:domain/count
-        this.registerUsersInTeamByDomain(); // GET /users/in-teams/domain/:domain
-        this.registerUsersInTeamByDomainCount(); // GET /users/in-teams/domain/:domain/count
-
-        // All users + team/domain mapping
-        this.registerGetAllUsersWithTeams(); // GET /users/all?index=&limit=&search=
+        this.registerRoutes();
     }
 
     public get route(): Router {
         return this.router;
     }
 
+    private registerRoutes(): void {
+        // ─────────────────────────────────────────────
+        // IMPORTANT: register "fixed-prefix" routes first
+        // ─────────────────────────────────────────────
+
+        // Core team operations (fixed paths first)
+        this.registerCreateTeam();     // POST   /create
+        this.getTeamByTeamName();      // GET    /teamName/:teamName
+        this.registerGetAllTeams();    // GET    /all
+
+        // File upload only
+        this.registerUploadTeamLogo(); // POST   /upload/logo/:teamCode
+
+        // Totals
+        this.registerGetAllTeamTotals();      // GET /stats/teams-total
+        this.registerGetTeamTotalByDomain();  // GET /stats/teams-total/domain/:domain
+
+        // User membership analytics (global)
+        this.registerUsersWithoutAnyTeam();       // GET /users/no-team
+        this.registerUsersWithoutAnyTeamCount();  // GET /users/no-team/count
+        this.registerUsersInAnyTeam();            // GET /users/in-teams
+        this.registerUsersInAnyTeamCount();       // GET /users/in-teams/count
+
+        // User membership analytics (domain-specific)
+        this.registerUsersWithoutTeamByDomain();       // GET /users/no-team/domain/:domain
+        this.registerUsersWithoutTeamByDomainCount();  // GET /users/no-team/domain/:domain/count
+        this.registerUsersInTeamByDomain();            // GET /users/in-teams/domain/:domain
+        this.registerUsersInTeamByDomainCount();       // GET /users/in-teams/domain/:domain/count
+
+        // All users + team/domain mapping
+        this.registerGetAllUsersWithTeams(); // GET /users/all?index=&limit=&search=
+
+        // Mutations
+        this.registerUpdateTeam(); // PATCH /update/:teamCode
+        this.registerDeleteTeam(); // DELETE /delete/:teamCode
+
+        // ─────────────────────────────────────────────
+        // ✅ CATCH-ALL MUST BE LAST (prevents route hijacking)
+        // ─────────────────────────────────────────────
+        this.registerGetTeamByCode(); // GET /:teamCode
+    }
     // ========================================================================
     // 1) Generic helpers (centralised)
     // ========================================================================
 
-    /**
-     * Runtime validator for TeamDomain values.
-     */
     private isValidTeamDomain( domain: string ): domain is TeamDomain {
         return this.ALLOWED_TEAM_DOMAINS.includes( domain as TeamDomain );
     }
 
-  /**
-   * Parse pagination query parameters into safe values.
-   */
     private parsePagination(
         req: Request,
         fallbackLimit: number = 10
@@ -153,9 +149,6 @@ export default class TeamManagement {
         return { index, limit, skip: index * limit };
     }
 
-  /**
-   * Parse boolean query parameter (`?isActive=true/false/1/0`).
-   */
     private parseBooleanQuery( value: unknown ): boolean | undefined {
         if ( typeof value === "boolean" ) return value;
         if ( typeof value === "string" ) {
@@ -170,10 +163,6 @@ export default class TeamManagement {
     // 2) Core ID + parsing helpers (centralised)
     // ========================================================================
 
-    /**
-     * Generates a human and machine-friendly team identity:
-     *   PROPEASE-TEAM-YYYYMMDD-HHMMSS-sss-RANDOM-CHECKSUM
-     */
     private generateTeamIdentity(): string {
         const PREFIX = "PROPEASE-TEAM";
         const now = new Date();
@@ -240,9 +229,6 @@ export default class TeamManagement {
         }
     }
 
-  /**
-   * Normalise/validate role against TEAM_ROLES.
-   */
     private resolveRoleInTeam( raw: unknown ): RoleInTeam | undefined {
         if ( typeof raw !== "string" ) return undefined;
         const r = raw.trim().toLowerCase();
@@ -252,9 +238,6 @@ export default class TeamManagement {
         return matched ? ( matched as RoleInTeam ) : undefined;
     }
 
-  /**
-   * Convert array payload into TeamMember[].
-   */
     private extractTeamMembersFromArray( input: unknown ): TeamMember[] {
         if ( !Array.isArray( input ) ) return [];
 
@@ -315,9 +298,6 @@ export default class TeamManagement {
         return result;
     }
 
-  /**
-   * Convert single payload into TeamMember.
-   */
     private extractTeamMember( input: unknown ): TeamMember | undefined {
         if ( !input || typeof input !== "object" ) return undefined;
 
@@ -379,10 +359,10 @@ export default class TeamManagement {
             uploadedById?: Types.ObjectId;
             uploadedByName?: string;
             uploadedAt?: string;
-            fileMeta?: FileMetaBase;
+            fileMeta?: FileMetaPacket;
         };
 
-        const fileMeta: FileMetaBase | undefined = anyMeta?.fileMeta;
+        const fileMeta: FileMetaPacket | undefined = anyMeta?.fileMeta;
         const storageKey: string = anyMeta?.storageKey ?? "";
         const url: string = anyMeta?.url ?? storageKey;
 
@@ -414,45 +394,106 @@ export default class TeamManagement {
             id?: string;
             name?: string;
             description?: string;
+
             location?: unknown;
             address?: unknown;
+
             assignedMembers?: unknown;
             assignedTaskCaptain?: unknown;
+
             status?: string;
             priority?: string;
+
             plannedStartAt?: string;
             plannedEndAt?: string;
-            completedAt?: string;
+
+            timing?: Partial<TaskTiming> | null;
+            sla?: Partial<TaskSlaPolicy> | null;
+            metrics?: Partial<TaskRuntimeMetrics> | null;
+
+            blockedWindows?: unknown;
+            assigneeHistory?: unknown;
+
+            completionConfirmation?: unknown;
+
             evidence?: unknown[];
             notes?: string;
+
+            labels?: unknown;
+
+            audit?: Partial<TaskAuditMeta> | null;
         };
 
-        if ( !t.name ) throw new Error( "Task name is required." );
+        const nowIso: string = new Date().toISOString();
 
-        const assignedMembers = this.extractUserIdsFromArray( t.assignedMembers );
-        const assignedCaptain = this.extractUserId( t.assignedTaskCaptain );
+        const name: string = String( t.name ?? "" ).trim();
+        if ( !name ) throw new Error( "Task name is required." );
 
-        const idTrimmed = typeof t.id === "string" ? t.id.trim() : "";
+        const assignedMembers: Types.ObjectId[] = this.extractUserIdsFromArray( t.assignedMembers );
+        const assignedCaptain: Types.ObjectId | undefined = this.extractUserId( t.assignedTaskCaptain );
+
+        const idTrimmed: string = typeof t.id === "string" ? t.id.trim() : "";
+
+        // ✅ timing normalization (this is your canonical created/updated)
+        const incomingTiming: Partial<TaskTiming> =
+            t.timing && typeof t.timing === "object" ? t.timing : {};
+
+        const timing: TaskTiming = {
+            ...incomingTiming,
+            createdAt: incomingTiming.createdAt ?? nowIso,
+            updatedAt: nowIso, // always refresh on write
+        };
+
+        // ✅ status-driven anchors (router side, to avoid relying only on pre-save)
+        const statusLower = String( t.status ?? "draft" ).trim().toLowerCase();
+
+        if ( statusLower === "in_progress" && !timing.startedAt ) timing.startedAt = nowIso;
+        if ( statusLower === "blocked" ) timing.lastBlockedAt = nowIso;
+
+        if (
+            ( statusLower === "completed" || statusLower === "completed_pending_confirmation" ) &&
+            !timing.completedAt
+        ) {
+            timing.completedAt = nowIso;
+        }
+
+        if ( statusLower === "cancelled" && !timing.cancelledAt ) timing.cancelledAt = nowIso;
 
         const task: AssignedTask = {
             id: idTrimmed || this.buildAssignedTaskId(),
-            name: t.name,
-            description: t.description ?? "",
+
+            name,
+            description: String( t.description ?? "" ).trim(),
+
             status: ( t.status as AssignedTask[ "status" ] ) ?? "draft",
             priority: ( t.priority as AssignedTask[ "priority" ] ) ?? "medium",
-            plannedStartAt: t.plannedStartAt ?? "",
-            plannedEndAt: t.plannedEndAt ?? "",
-            completedAt: t.completedAt ?? "",
-            notes: t.notes ?? "",
+
+            plannedStartAt: typeof t.plannedStartAt === "string" ? t.plannedStartAt : "",
+            plannedEndAt: typeof t.plannedEndAt === "string" ? t.plannedEndAt : "",
+
+            timing, // ✅ canonical anchors
+
+            notes: String( t.notes ?? "" ).trim(),
+
+            // Keep as arrays (KPI-safe defaults)
+            blockedWindows: Array.isArray( t.blockedWindows ) ? ( t.blockedWindows as any ) : [],
+            assigneeHistory: Array.isArray( t.assigneeHistory ) ? ( t.assigneeHistory as any ) : [],
+            labels: Array.isArray( t.labels ) ? ( t.labels as string[] ) : [],
+            evidence: Array.isArray( t.evidence ) ? ( t.evidence as TaskEvidence[] ) : [],
         };
 
         if ( assignedMembers.length > 0 ) task.assignedMembers = assignedMembers;
         if ( assignedCaptain ) task.assignedTaskCaptain = assignedCaptain;
+
         if ( t.location ) task.location = t.location as GeoLocation;
         if ( t.address ) task.address = t.address as Address;
 
-        if ( Array.isArray( t.evidence ) && t.evidence.length > 0 ) {
-            task.evidence = t.evidence as TaskEvidence[];
+        // Optional KPI blocks (keep only if provided)
+        if ( t.sla && typeof t.sla === "object" ) task.sla = t.sla as TaskSlaPolicy;
+        if ( t.metrics && typeof t.metrics === "object" ) task.metrics = t.metrics as TaskRuntimeMetrics;
+        if ( t.audit && typeof t.audit === "object" ) task.audit = t.audit as TaskAuditMeta;
+        if ( t.completionConfirmation && typeof t.completionConfirmation === "object" ) {
+            task.completionConfirmation = t.completionConfirmation as TaskCompletionConfirmation;
         }
 
         return task;
@@ -462,45 +503,14 @@ export default class TeamManagement {
     // 3) Centralised USER SAFE projection for lookups
     // ========================================================================
 
-    /**
-     * Teaching note:
-     * MongoDB $project (used in $lookup pipelines) is like:
-     * - SQL: SELECT field1, field2...
-     * - JS: pick({field1, field2})
-     *
-     * We must include _id because we match users back to members by ObjectId.
-     */
     private getUserSafeProjectionForLookup(): typeof USER_MODEL_PROJECTION {
         return USER_MODEL_PROJECTION;
     }
-
-
 
     // ========================================================================
     // 4) Centralised TEAM -> USER enrichment pipeline stages
     // ========================================================================
 
-    /**
-     * This is the single most important centralisation:
-     * We reuse these stages for:
-     *  - GET /all
-     *  - GET /:teamCode
-     *
-     * MongoDB keywords used (teach-yourself mapping):
-     * - $addFields : add computed fields (like doc.memberIds = ...)
-     * - $map       : JS array.map()
-     * - $lookup    : SQL JOIN
-     * - let        : variables passed into lookup pipeline
-     * - pipeline   : sub-aggregation run inside lookup
-     * - $expr      : allows field-to-field / variable-to-field comparisons
-     * - $in        : SQL IN
-     * - $eq        : equality
-     * - $filter    : JS array.filter()
-     * - $first     : take first element from an array
-     * - $project   : remove temp fields / control output
-     */
-    //  Only allow stages that are valid inside $facet pipelines
-    //  Only allow stages that are valid inside $facet pipelines
     private buildTeamUserEnrichmentStages(): PipelineStage.FacetPipelineStage[] {
         const usersCollection: string = UserModel.collection.name;
         const teamsCollection: string = TeamManagementModel.collection.name;
@@ -508,9 +518,6 @@ export default class TeamManagement {
         const safeUserProject: Record<string, unknown> = this.getUserSafeProjectionForLookup();
 
         const stages: PipelineStage.FacetPipelineStage[] = [
-            // =========================================================================
-            // STAGE 1: Precompute reusable arrays
-            // =========================================================================
             {
                 $addFields: {
                     memberIds: { $map: { input: "$members", as: "m", in: "$$m.id" } },
@@ -519,7 +526,6 @@ export default class TeamManagement {
                     captainId: "$captain.id",
                     captainUsername: "$captain.username",
 
-                    // IMPORTANT: ids only (teams store ids)
                     allUserIds: {
                         $setUnion: [
                             { $map: { input: "$members", as: "m", in: "$$m.id" } },
@@ -529,15 +535,22 @@ export default class TeamManagement {
                 },
             },
 
-            // =========================================================================
-            // STAGE 2: Lookup ALL users we might need (members + captain) by id OR username
-            // =========================================================================
             {
                 $lookup: {
                     from: usersCollection,
                     let: {
-                        ids: { $setUnion: [ "$memberIds", { $cond: [ { $ifNull: [ "$captain.id", null ] }, [ "$captain.id" ], [] ] } ] },
-                        usernames: { $setUnion: [ "$memberUsernames", { $cond: [ { $ifNull: [ "$captain.username", null ] }, [ "$captain.username" ], [] ] } ] },
+                        ids: {
+                            $setUnion: [
+                                "$memberIds",
+                                { $cond: [ { $ifNull: [ "$captain.id", null ] }, [ "$captain.id" ], [] ] },
+                            ],
+                        },
+                        usernames: {
+                            $setUnion: [
+                                "$memberUsernames",
+                                { $cond: [ { $ifNull: [ "$captain.username", null ] }, [ "$captain.username" ], [] ] },
+                            ],
+                        },
                     },
                     pipeline: [
                         {
@@ -556,9 +569,6 @@ export default class TeamManagement {
                 },
             },
 
-            // =========================================================================
-            // STAGE 3: Lookup ALL teams that contain ANY of these people (by ids only)
-            // =========================================================================
             {
                 $lookup: {
                     from: teamsCollection,
@@ -602,13 +612,13 @@ export default class TeamManagement {
                                     $map: {
                                         input: "$members",
                                         as: "m",
-                                in: {
-                                    id: "$$m.id",
-                                    joinedAt: "$$m.joinedAt",
-                                    roleInTeam: "$$m.roleInTeam",
-                                    reason: "$$m.reason",
-                        },
-                            },
+                                        in: {
+                                            id: "$$m.id",
+                                            joinedAt: "$$m.joinedAt",
+                                            roleInTeam: "$$m.roleInTeam",
+                                            reason: "$$m.reason",
+                                        },
+                                    },
                                 },
                             },
                         },
@@ -617,9 +627,6 @@ export default class TeamManagement {
                 },
             },
 
-            // =========================================================================
-            // STAGE 4: Rebuild members[] (id -> username -> null) AND captain (same rule)
-            // =========================================================================
             {
                 $addFields: {
                     members: {
@@ -629,8 +636,6 @@ export default class TeamManagement {
                             in: {
                                 $let: {
                                     vars: {
-                                        // --- USER RESOLUTION (STRICT PRIORITY) ---
-                                        // Collect both candidates (may be 0,1,2 docs)
                                         userCandidates: {
                                             $filter: {
                                                 input: "$allUsersResolved",
@@ -644,7 +649,6 @@ export default class TeamManagement {
                                             },
                                         },
 
-                                        // Teams for this member
                                         memberTeamDocs: {
                                             $filter: {
                                                 input: "$allTeamsForPeople",
@@ -671,7 +675,6 @@ export default class TeamManagement {
                                             },
                                         },
 
-                                        // Membership snapshots (for latest)
                                         memberMemberships: {
                                             $map: {
                                                 input: {
@@ -774,10 +777,6 @@ export default class TeamManagement {
                                     in: {
                                         $let: {
                                             vars: {
-                                                // Pick the best user:
-                                                // - If any candidate matches by _id => rank 0
-                                                // - Else username match => rank 1
-                                                // Then take first. If none => null.
                                                 resolvedUser: {
                                                     $let: {
                                                         vars: {
@@ -845,7 +844,6 @@ export default class TeamManagement {
                                                 id: { $toString: "$$m.id" },
                                                 username: "$$m.username",
 
-                                                // ALWAYS present (doc or null)
                                                 user: { $ifNull: [ "$$resolvedUser", null ] },
 
                                                 teams: {
@@ -871,7 +869,6 @@ export default class TeamManagement {
                         },
                     },
 
-                    // ---------------- CAPTAIN (same logic: id -> username -> null) ----------------
                     captain: {
                         $let: {
                             vars: {
@@ -1083,7 +1080,6 @@ export default class TeamManagement {
                                         id: { $toString: "$captain.id" },
                                         username: "$captain.username",
 
-                                        // ALWAYS present (doc or null)
                                         user: { $ifNull: [ "$$resolvedCaptainUser", null ] },
 
                                         teams: {
@@ -1109,9 +1105,6 @@ export default class TeamManagement {
                 },
             },
 
-            // =========================================================================
-            // STAGE 5: Cleanup helper fields
-            // =========================================================================
             {
                 $project: {
                     memberIds: 0,
@@ -1128,15 +1121,40 @@ export default class TeamManagement {
         return stages;
     }
 
+    // ========================================================================
+    // 4.1) Enrichment fetch helpers (used by create/update/teamName)
+    // ========================================================================
 
+    private async fetchEnrichedTeamByCode( teamCode: string ): Promise<TeamManagementDto | null> {
+        const pipeline: PipelineStage[] = [
+            { $match: { teamCode } },
+            ...this.buildTeamUserEnrichmentStages(),
+            { $limit: 1 },
+        ];
 
+        const rows: TeamManagementDto[] = await TeamManagementModel.aggregate<TeamManagementDto>( pipeline ).exec();
+        return rows.length > 0 && rows[ 0 ] ? rows[ 0 ] : null;
+    }
 
+    private async fetchEnrichedTeamByName( teamName: string ): Promise<TeamManagementDto | null> {
+        const escaped = teamName.replace( /[.*+?^${}()|[\]\\]/g, "\\$&" );
 
+        const pipeline: PipelineStage[] = [
+            {
+                $match: {
+                    teamName: { $regex: `^${ escaped }$`, $options: "i" },
+                },
+            },
+            ...this.buildTeamUserEnrichmentStages(),
+            { $limit: 1 },
+        ];
 
-
+        const rows: TeamManagementDto[] = await TeamManagementModel.aggregate<TeamManagementDto>( pipeline ).exec();
+        return rows.length > 0 && rows[ 0 ] ? rows[ 0 ] : null;
+    }
 
     // ========================================================================
-    // 5) Helper – user membership vs teams (unchanged logic, but uses fields safely)
+    // 5) Helper – user membership vs teams
     // ========================================================================
 
     private async collectTeamUserIdsByDomain( domain?: TeamDomain ): Promise<Types.ObjectId[]> {
@@ -1157,11 +1175,7 @@ export default class TeamManagement {
                         $setUnion: [
                             "$memberIds",
                             {
-                                $cond: [
-                                    { $ifNull: [ "$captainId", null ] },
-                                    [ "$captainId" ],
-                                    [],
-                                ],
+                                $cond: [ { $ifNull: [ "$captainId", null ] }, [ "$captainId" ], [] ],
                             },
                         ],
                     },
@@ -1178,11 +1192,12 @@ export default class TeamManagement {
     // ========================================================================
     // POST /create
     // ========================================================================
+
     private registerCreateTeam(): void {
         this.router.post( "/create", async ( req: Request, res: Response ): Promise<void> => {
             try {
                 const nowIso: string = new Date().toISOString();
-                const teamCode: string = this.generateTeamIdentity(); // renamed var for clarity
+                const teamCode: string = this.generateTeamIdentity();
                 const root = `${ req.protocol }://${ req.get( "host" ) }`;
 
                 let payload: any = {};
@@ -1194,7 +1209,7 @@ export default class TeamManagement {
                 if ( isMultipart ) {
                     const uploadSubPath: string = `team-management/${ teamCode }/logo`;
 
-                    let uploadedFiles: FileMetaBase[] = [];
+                    let uploadedFiles: UploadResultPacket | null = null
                     try {
                         uploadedFiles = await FileUploader.handleUpload( uploadSubPath, "teamLogo", req );
                     } catch ( uploadError ) {
@@ -1203,7 +1218,10 @@ export default class TeamManagement {
 
                     const rawTeamField: unknown = ( req.body as any )?.team;
                     if ( typeof rawTeamField !== "string" || !rawTeamField.trim() ) {
-                        ApiResponseBuilder.validationError( res, "Invalid team payload: expected JSON string in 'team' field" );
+                        ApiResponseBuilder.validationError(
+                            res,
+                            "Invalid team payload: expected JSON string in 'team' field"
+                        );
                         return;
                     }
 
@@ -1215,8 +1233,8 @@ export default class TeamManagement {
                         return;
                     }
 
-                    if ( Array.isArray( uploadedFiles ) && uploadedFiles.length > 0 ) {
-                        const fileMeta: FileMetaBase | undefined = uploadedFiles[ 0 ];
+                    if ( Array.isArray( uploadedFiles?.byField.teamLogo ) && uploadedFiles?.byField.teamLogo.length > 0 ) {
+                        const fileMeta: FileMetaPacket | undefined = uploadedFiles?.byField.teamLogo[ 0 ];
                         if ( !fileMeta ) {
                             ApiResponseBuilder.error( res, 404, "File not found!" );
                             return;
@@ -1228,8 +1246,6 @@ export default class TeamManagement {
                             name: fileMeta.originalName,
                             storageKey: relativePath,
                             url: `${ root }/${ relativePath }`,
-                            category: "team_logo",
-                            refId: teamCode,
                             fileMeta,
                         } );
                     }
@@ -1274,7 +1290,6 @@ export default class TeamManagement {
                 }
 
                 const createDocBase: Partial<ITeamManagement> = {
-                    // IMPORTANT CHANGE: business ID is teamCode
                     teamCode,
                     teamName,
                     domain,
@@ -1292,11 +1307,18 @@ export default class TeamManagement {
                     ( createDocBase as ITeamManagement ).teamLogo = teamLogoEvidence;
                 }
 
-                const doc: ITeamManagement = await TeamManagementModel.create( createDocBase as ITeamManagement );
+                await TeamManagementModel.create( createDocBase as ITeamManagement );
 
-                ApiResponseBuilder.ok( res, "team", doc, "Team created successfully" );
+                // ✅ return enriched immediately
+                const enriched = await this.fetchEnrichedTeamByCode( teamCode );
+                if ( !enriched ) {
+                    ApiResponseBuilder.ok( res, "team", createDocBase as unknown as ITeamManagement, "Team created successfully" );
+                    return;
+                }
 
-                // Notification (kept same, but uses teamCode in refId)
+                ApiResponseBuilder.ok( res, "team", enriched as unknown as ITeamManagement, "Team created successfully" );
+
+                // Notification (same as yours)
                 const notificationService = new NotificationService();
                 const io = req.app.get( "io" ) as import( "socket.io" ).Server;
 
@@ -1323,40 +1345,39 @@ export default class TeamManagement {
     }
 
     // ========================================================================
-    // GET /teamName/:teamName
+    // GET /teamName/:teamName  (✅ NOW ENRICHED)
     // ========================================================================
+
     private getTeamByTeamName(): void {
-        this.router.get( "/teamName/:teamName", async ( req: Request<{ teamName: string; }>, res: Response ): Promise<void> => {
-            try {
-                const name: string = typeof req.params.teamName === "string" ? req.params.teamName.trim() : "";
-                if ( !name ) {
-                    ApiResponseBuilder.validationError( res, "Team name is required!" );
+        this.router.get(
+            "/teamName/:teamName",
+            async ( req: Request<{ teamName: string; }>, res: Response ): Promise<void> => {
+                try {
+                    const name: string = typeof req.params.teamName === "string" ? req.params.teamName.trim() : "";
+                    if ( !name ) {
+                        ApiResponseBuilder.validationError( res, "Team name is required!" );
+                        return;
+                    }
+
+                    const enriched = await this.fetchEnrichedTeamByName( name );
+                    if ( !enriched ) {
+                        ApiResponseBuilder.notFound( res, "Team not found under the given name." );
+                        return;
+                    }
+
+                    ApiResponseBuilder.ok( res, "team", enriched as unknown as ITeamManagement, "Team found successfully!" );
+                    return;
+                } catch ( error ) {
+                    console.error( "[Error:] [TeamManagement] getTeamByTeamName error.\n", error );
+                    ApiResponseBuilder.internalError( res, error );
                     return;
                 }
-
-                const escaped = name.replace( /[.*+?^${}()|[\]\\]/g, "\\$&" );
-
-                const team: ITeamManagement | null = await TeamManagementModel.findOne( {
-                    teamName: { $regex: `^${ escaped }$`, $options: "i" },
-                } ).exec();
-
-                if ( !team ) {
-                    ApiResponseBuilder.notFound( res, "Team not found under the given name." );
-                    return;
-                }
-
-                ApiResponseBuilder.ok( res, "team", team, "Team found successfully!" );
-                return;
-            } catch ( error ) {
-                console.error( "[Error:] [TeamManagement] getTeamByTeamName error.\n", error );
-                ApiResponseBuilder.internalError( res, error );
-                return;
             }
-        } );
+        );
     }
 
     // ========================================================================
-    // GET /all  (with enrichment: members[].user + captain.user)
+    // GET /all  (enriched)
     // ========================================================================
 
     private registerGetAllTeams(): void {
@@ -1370,9 +1391,7 @@ export default class TeamManagement {
 
                 const match: FilterQuery<ITeamManagement> = {};
 
-                if ( search ) {
-                    match.teamName = { $regex: search, $options: "i" };
-                }
+                if ( search ) match.teamName = { $regex: search, $options: "i" };
 
                 if ( domainRaw ) {
                     const domainLower = domainRaw.toLowerCase();
@@ -1383,9 +1402,7 @@ export default class TeamManagement {
                     match.domain = domainLower as TeamDomain;
                 }
 
-                if ( isActiveParam !== undefined ) {
-                    match.isActive = isActiveParam;
-                }
+                if ( isActiveParam !== undefined ) match.isActive = isActiveParam;
 
                 const pipeline: PipelineStage[] = this.buildGetAllTeamsPipeline( match, skip, limit );
 
@@ -1397,7 +1414,6 @@ export default class TeamManagement {
 
                 const pagination: PaginationMeta = { total: metaTotal, index, limit };
 
-                // If ApiResponseBuilder expects Document types, update overloads to accept DTO.
                 ApiResponseBuilder.ok( res, "teams", rows as unknown as ITeamManagement[], "Teams fetched successfully", {
                     pagination,
                 } );
@@ -1418,18 +1434,12 @@ export default class TeamManagement {
         return [
             { $match: match },
             { $sort: { createdAt: -1 } },
-
-            // $facet = run 2 pipelines in parallel:
-            // meta: total count
-            // rows: paginated + enriched teams
             {
                 $facet: {
                     meta: [ { $count: "total" } ],
                     rows: [ { $skip: skip }, { $limit: limit }, ...this.buildTeamUserEnrichmentStages() ],
                 },
             },
-
-            // meta default (if no documents matched)
             {
                 $addFields: {
                     meta: {
@@ -1441,7 +1451,7 @@ export default class TeamManagement {
     }
 
     // ========================================================================
-    // GET /:teamCode  (single team by business ID + enrichment)
+    // GET /:teamCode  (enriched)  ✅ Registered LAST in constructor
     // ========================================================================
 
     private registerGetTeamByCode(): void {
@@ -1453,26 +1463,13 @@ export default class TeamManagement {
                     return;
                 }
 
-                // Pipeline explanation:
-                // - $match: filter to single team (SQL WHERE)
-                // - enrichment stages: $lookup users and attach under members/captain
-                // - $limit: defensive (ensure one output)
-                const pipeline: PipelineStage[] = [
-                    { $match: { teamCode } },
-                    ...this.buildTeamUserEnrichmentStages(),
-                    { $limit: 1 },
-                ];
-
-                const rows: TeamManagementDto[] = await TeamManagementModel.aggregate<TeamManagementDto>( pipeline ).exec();
-                const team: TeamManagementDto | null = rows.length > 0 ? ( rows[ 0 ] ? rows[ 0 ] : null ) : null;
-
-                if ( !team ) {
+                const enriched = await this.fetchEnrichedTeamByCode( teamCode );
+                if ( !enriched ) {
                     ApiResponseBuilder.notFound( res, "Team not found for the provided code" );
                     return;
                 }
 
-                // Update ApiResponseBuilder typing to accept DTO; until then cast.
-                ApiResponseBuilder.ok( res, "team", team as unknown as ITeamManagement, "Team fetched successfully" );
+                ApiResponseBuilder.ok( res, "team", enriched as unknown as ITeamManagement, "Team fetched successfully" );
                 return;
             } catch ( error ) {
                 console.error( "[Error:] [TeamManagement] Error while fetching team by code.\n", error );
@@ -1507,7 +1504,7 @@ export default class TeamManagement {
                 if ( isMultipart ) {
                     const uploadSubPath: string = `team-management/${ teamCode }/logo`;
 
-                    let uploadedFiles: FileMetaBase[] = [];
+                    let uploadedFiles: UploadResultPacket | null = null;
                     try {
                         uploadedFiles = await FileUploader.handleUpload( uploadSubPath, "teamLogo", req );
                     } catch ( uploadError ) {
@@ -1527,8 +1524,8 @@ export default class TeamManagement {
                         payload = {};
                     }
 
-                    if ( Array.isArray( uploadedFiles ) && uploadedFiles.length > 0 ) {
-                        const fileMeta: FileMetaBase | undefined = uploadedFiles[ 0 ];
+                    if ( Array.isArray( uploadedFiles?.byField.teamLogo ) && uploadedFiles?.byField.teamLogo.length > 0 ) {
+                        const fileMeta: FileMetaPacket | undefined = uploadedFiles?.byField.teamLogo[ 0 ];
                         if ( !fileMeta ) {
                             ApiResponseBuilder.error( res, 404, "File not found!" );
                             return;
@@ -1540,8 +1537,6 @@ export default class TeamManagement {
                             name: fileMeta.originalName,
                             storageKey: relativePath,
                             url: `${ root }/${ relativePath }`,
-                            category: "team_logo",
-                            refId: teamCode,
                             fileMeta,
                         } );
                     }
@@ -1598,7 +1593,7 @@ export default class TeamManagement {
                 update.updatedAt = nowIso;
 
                 const updated: ITeamManagement | null = await TeamManagementModel.findOneAndUpdate(
-                    { teamCode }, //  changed
+                    { teamCode },
                     { $set: update },
                     { new: true }
                 ).exec();
@@ -1608,7 +1603,14 @@ export default class TeamManagement {
                     return;
                 }
 
-                ApiResponseBuilder.ok( res, "team", updated, "Team updated successfully" );
+                // ✅ return enriched immediately
+                const enriched = await this.fetchEnrichedTeamByCode( teamCode );
+                ApiResponseBuilder.ok(
+                    res,
+                    "team",
+                    ( enriched ?? ( updated as unknown ) ) as ITeamManagement,
+                    "Team updated successfully"
+                );
 
                 const notificationService = new NotificationService();
                 const io = req.app.get( "io" ) as import( "socket.io" ).Server;
@@ -1698,14 +1700,14 @@ export default class TeamManagement {
 
                 const subPath = `team-management/${ teamCode }/logo`;
 
-                const files: FileMetaBase[] = await FileUploader.handleUpload( subPath, "teamLogo", req );
+                const files: UploadResultPacket = await FileUploader.handleUpload( subPath, "teamLogo", req );
 
-                if ( !Array.isArray( files ) || files.length === 0 ) {
+                if ( !Array.isArray( files.byField.teamLogo ) || files.byField.teamLogo.length === 0 ) {
                     ApiResponseBuilder.validationError( res, "No files were uploaded for team logo" );
                     return;
                 }
 
-                ApiResponseBuilder.ok( res, "files", files, "Team logo uploaded successfully" );
+                ApiResponseBuilder.ok( res, "files", files.byField.teamLogo, "Team logo uploaded successfully" );
                 return;
             } catch ( error ) {
                 console.error( "[Error:] [TeamManagement] Error during team logo upload.\n", error );
@@ -1716,7 +1718,7 @@ export default class TeamManagement {
     }
 
     // ========================================================================
-    // STATS ROUTES (unchanged except references)
+    // STATS ROUTES
     // ========================================================================
 
     private registerGetAllTeamTotals(): void {
@@ -1730,7 +1732,7 @@ export default class TeamManagement {
 
                 const domainTotals: Record<TeamDomain, number> = {} as Record<TeamDomain, number>;
                 for ( const domain of this.ALLOWED_TEAM_DOMAINS ) {
-                // eslint-disable-next-line no-await-in-loop
+                    // eslint-disable-next-line no-await-in-loop
                     const countForDomain: number = await TeamManagementModel.countDocuments( { domain } ).exec();
                     domainTotals[ domain ] = countForDomain;
                 }
@@ -1796,7 +1798,7 @@ export default class TeamManagement {
     }
 
     // ========================================================================
-    // USER MEMBERSHIP (GLOBAL + DOMAIN) (kept mostly same; teamCode rename not needed)
+    // USER MEMBERSHIP (GLOBAL + DOMAIN) — ✅ count responses made consistent
     // ========================================================================
 
     private registerUsersWithoutAnyTeam(): void {
@@ -1834,7 +1836,7 @@ export default class TeamManagement {
 
                 const total: number = await UserModel.countDocuments( filter ).exec();
 
-                ApiResponseBuilder.ok( res, "other", {}, "Total users without any team fetched successfully", {
+                ApiResponseBuilder.ok( res, "other", { total }, "Total users without any team fetched successfully", {
                     pagination: { total },
                 } );
                 return;
@@ -1882,14 +1884,11 @@ export default class TeamManagement {
         this.router.get( "/users/in-teams/count", async ( _req: Request, res: Response ): Promise<void> => {
             try {
                 const teamUserIds: Types.ObjectId[] = await this.collectTeamUserIdsByDomain();
-                if ( teamUserIds.length === 0 ) {
-                    ApiResponseBuilder.ok( res, "other", { total: 0 }, "Total users in teams fetched successfully" );
-                    return;
-                }
+                const total: number = teamUserIds.length === 0
+                    ? 0
+                    : await UserModel.countDocuments( { _id: { $in: teamUserIds } } ).exec();
 
-                const total: number = await UserModel.countDocuments( { _id: { $in: teamUserIds } } ).exec();
-
-                ApiResponseBuilder.ok( res, "other", {}, "Total users in teams fetched successfully", {
+                ApiResponseBuilder.ok( res, "other", { total }, "Total users in teams fetched successfully", {
                     pagination: { total },
                 } );
                 return;
@@ -1953,7 +1952,7 @@ export default class TeamManagement {
 
                 const total: number = await UserModel.countDocuments( filter ).exec();
 
-                ApiResponseBuilder.ok( res, "other", { domain }, "Total users without team for domain fetched successfully", {
+                ApiResponseBuilder.ok( res, "other", { domain, total }, "Total users without team for domain fetched successfully", {
                     pagination: { total },
                 } );
                 return;
@@ -2019,14 +2018,11 @@ export default class TeamManagement {
                 const domain = rawDomain as TeamDomain;
                 const teamUserIds: Types.ObjectId[] = await this.collectTeamUserIdsByDomain( domain );
 
-                if ( teamUserIds.length === 0 ) {
-                    ApiResponseBuilder.ok( res, "other", { domain, total: 0 }, "Total users in teams for domain fetched successfully" );
-                    return;
-                }
+                const total: number = teamUserIds.length === 0
+                    ? 0
+                    : await UserModel.countDocuments( { _id: { $in: teamUserIds } } ).exec();
 
-                const total: number = await UserModel.countDocuments( { _id: { $in: teamUserIds } } ).exec();
-
-                ApiResponseBuilder.ok( res, "other", { domain }, "Total users in teams for domain fetched successfully", {
+                ApiResponseBuilder.ok( res, "other", { domain, total }, "Total users in teams for domain fetched successfully", {
                     pagination: { total },
                 } );
                 return;
@@ -2041,6 +2037,7 @@ export default class TeamManagement {
     // ========================================================================
     // GET /users/all?index=&limit=&search=
     // ========================================================================
+
     private registerGetAllUsersWithTeams(): void {
         this.router.get( "/users/all", async ( req: Request, res: Response ): Promise<void> => {
             try {
@@ -2055,10 +2052,7 @@ export default class TeamManagement {
 
                 if ( search ) {
                     const rx = new RegExp( search, "i" );
-
-                    //  id -> teamCode here
                     teamFilter.$or = [ { teamName: rx }, { domain: rx }, { teamCode: rx } ];
-
                     userFilter.$or = [ { name: rx }, { username: rx }, { email: rx } ];
                 }
 
@@ -2072,9 +2066,7 @@ export default class TeamManagement {
                             pipeline: [
                                 {
                                     $match: {
-                                        ...( Array.isArray( teamFilter.$or ) && teamFilter.$or.length > 0
-                                            ? { $or: teamFilter.$or }
-                                            : {} ),
+                                        ...( Array.isArray( teamFilter.$or ) && teamFilter.$or.length > 0 ? { $or: teamFilter.$or } : {} ),
                                         $expr: {
                                             $gt: [
                                                 {
@@ -2176,15 +2168,12 @@ export default class TeamManagement {
                         },
                     },
 
-                    // Remove password + helper array
                     { $project: { password: 0, latestTeam: 0 } },
 
                     { $sort: { createdAt: -1 } },
                     { $skip: skip },
                     { $limit: limit },
 
-                    // If USER_MODEL_PROJECTION is an include-list, it can drop computed fields.
-                    // Recommended: make USER_MODEL_PROJECTION an exclude-list or merge carefully.
                     { $project: USER_MODEL_PROJECTION },
                 ];
 
@@ -2194,7 +2183,12 @@ export default class TeamManagement {
                 ] );
 
                 ApiResponseBuilder.ok( res, "other", { users }, "Users with latest team/domain loaded successfully.", {
-                    pagination: { index, limit, total: totalCount, hasMore: index * limit + users.length < totalCount },
+                    pagination: {
+                        index,
+                        limit,
+                        total: totalCount,
+                        hasMore: index * limit + users.length < totalCount,
+                    },
                 } );
                 return;
             } catch ( error ) {

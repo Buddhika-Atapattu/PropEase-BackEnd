@@ -60,6 +60,20 @@ export interface KpiDbWindow {
   to: Date;
 }
 
+export interface KpiTeamCompletionRow {
+  teamId: string;
+  totalTasks: number;
+  completedCount: number;
+  inProgressCount: number;
+  overdueCount: number;
+  completionPercent: number;
+}
+
+export interface KpiMemberOverdueRow {
+  memberId: string;
+  overdueCount: number;
+}
+
 /**
  * Result wrapper used for leaderboard queries.
  * (This is not a UI table yet; UI shaping can be done by registry.)
@@ -80,7 +94,7 @@ export interface KpiTopAgentRow {
 export class KpiQueryService {
   private readonly pct: KpiPercentageUtil;
 
-  public constructor() {
+  public constructor () {
     this.pct = new KpiPercentageUtil();
   }
 
@@ -112,8 +126,8 @@ export class KpiQueryService {
       $match: {
         status: 'won',
         closedAt: { $gte: window.from, $lte: window.to },
-        ...this.buildScopeMatch(target),
-        ...this.buildDealFilterMatch(filters),
+        ...this.buildScopeMatch( target ),
+        ...this.buildDealFilterMatch( filters ),
       },
     };
 
@@ -130,13 +144,13 @@ export class KpiQueryService {
 
           totalDeals: { $sum: 1 },
 
-          saleCount: { $sum: { $cond: [{ $eq: ['$dealType', 'sale'] }, 1, 0] } },
-          rentCount: { $sum: { $cond: [{ $eq: ['$dealType', 'rent'] }, 1, 0] } },
+          saleCount: { $sum: { $cond: [ { $eq: [ '$dealType', 'sale' ] }, 1, 0 ] } },
+          rentCount: { $sum: { $cond: [ { $eq: [ '$dealType', 'rent' ] }, 1, 0 ] } },
 
           totalValue: { $sum: '$dealValue' },
 
-          saleValue: { $sum: { $cond: [{ $eq: ['$dealType', 'sale'] }, '$dealValue', 0] } },
-          rentValue: { $sum: { $cond: [{ $eq: ['$dealType', 'rent'] }, '$dealValue', 0] } },
+          saleValue: { $sum: { $cond: [ { $eq: [ '$dealType', 'sale' ] }, '$dealValue', 0 ] } },
+          rentValue: { $sum: { $cond: [ { $eq: [ '$dealType', 'rent' ] }, '$dealValue', 0 ] } },
 
           commissionTotal: { $sum: '$commissionAmount' },
 
@@ -161,8 +175,8 @@ export class KpiQueryService {
       },
     ];
 
-    const rows = await Deal.aggregate(pipeline).exec();
-    const row = rows[0] ?? {
+    const rows = await Deal.aggregate( pipeline ).exec();
+    const row = rows[ 0 ] ?? {
       totalDeals: 0,
       saleCount: 0,
       rentCount: 0,
@@ -177,8 +191,8 @@ export class KpiQueryService {
     // NOTE:
     // - denominator = totalDeals
     // - clamp 0..100
-    const salePercent = this.pct.round(this.pct.toPercent(row.saleCount, row.totalDeals), 2);
-    const rentPercent = this.pct.round(this.pct.toPercent(row.rentCount, row.totalDeals), 2);
+    const salePercent = this.pct.round( this.pct.toPercent( row.saleCount, row.totalDeals ), 2 );
+    const rentPercent = this.pct.round( this.pct.toPercent( row.rentCount, row.totalDeals ), 2 );
 
     const actuals: KpiActualValue[] = [
       { key: 'totalDeals', unit: 'count', value: row.totalDeals, label: 'Total Deals' },
@@ -209,7 +223,7 @@ export class KpiQueryService {
     // IMPORTANT (exactOptionalPropertyTypes):
     // - Do NOT set note: undefined
     // - Only attach note when it's a real string
-    if (noteText) {
+    if ( noteText ) {
       result.note = noteText;
     }
 
@@ -242,8 +256,8 @@ export class KpiQueryService {
         $match: {
           status: 'won',
           closedAt: { $gte: window.from, $lte: window.to },
-          ...this.buildScopeMatch(target),
-          ...this.buildDealFilterMatch(filters),
+          ...this.buildScopeMatch( target ),
+          ...this.buildDealFilterMatch( filters ),
         },
       },
       {
@@ -258,8 +272,8 @@ export class KpiQueryService {
       { $project: { _id: 0, totalValue: 1, commissionTotal: 1, currencyCode: 1, totalDeals: 1 } },
     ];
 
-    const rows = await Deal.aggregate(pipeline).exec();
-    const row = rows[0] ?? {
+    const rows = await Deal.aggregate( pipeline ).exec();
+    const row = rows[ 0 ] ?? {
       totalValue: 0,
       commissionTotal: 0,
       currencyCode: filters?.currencyCode ?? 'LKR',
@@ -267,7 +281,7 @@ export class KpiQueryService {
     };
 
     const commissionPercent = this.pct.round(
-      this.pct.toPercent(row.commissionTotal, row.totalValue),
+      this.pct.toPercent( row.commissionTotal, row.totalValue ),
       2,
     );
 
@@ -288,7 +302,7 @@ export class KpiQueryService {
       actuals,
     };
 
-    if (noteText) {
+    if ( noteText ) {
       result.note = noteText;
     }
 
@@ -318,8 +332,8 @@ export class KpiQueryService {
       {
         $match: {
           submittedAt: { $gte: window.from, $lte: window.to },
-          ...this.buildScopeMatchForSatisfaction(target),
-          ...this.buildSatisfactionFilterMatch(filters),
+          ...this.buildScopeMatchForSatisfaction( target ),
+          ...this.buildSatisfactionFilterMatch( filters ),
         },
       },
       {
@@ -333,20 +347,20 @@ export class KpiQueryService {
         $project: {
           _id: 0,
           totalResponses: 1,
-          avgRating: { $ifNull: ['$avgRating', 0] },
+          avgRating: { $ifNull: [ '$avgRating', 0 ] },
         },
       },
     ];
 
-    const rows = await Feedback.aggregate(pipeline).exec();
-    const row = rows[0] ?? { totalResponses: 0, avgRating: 0 };
+    const rows = await Feedback.aggregate( pipeline ).exec();
+    const row = rows[ 0 ] ?? { totalResponses: 0, avgRating: 0 };
 
     // Convert rating (0..5) -> percent (0..100)
-    const satisfactionPercent = this.pct.round(this.pct.toPercent(row.avgRating, 5), 2);
+    const satisfactionPercent = this.pct.round( this.pct.toPercent( row.avgRating, 5 ), 2 );
 
     const actuals: KpiActualValue[] = [
       { key: 'totalResponses', unit: 'count', value: row.totalResponses, label: 'Responses' },
-      { key: 'avgRating', unit: 'rating_1_5', value: this.pct.round(row.avgRating, 2), label: 'Avg Rating (1–5)' },
+      { key: 'avgRating', unit: 'rating_1_5', value: this.pct.round( row.avgRating, 2 ), label: 'Avg Rating (1–5)' },
     ];
 
     const noteText: string | null =
@@ -357,7 +371,7 @@ export class KpiQueryService {
       actuals,
     };
 
-    if (noteText) {
+    if ( noteText ) {
       result.note = noteText;
     }
 
@@ -389,8 +403,8 @@ export class KpiQueryService {
         $match: {
           status: 'won',
           closedAt: { $gte: window.from, $lte: window.to },
-          ...this.buildScopeMatch(target),
-          ...this.buildDealFilterMatch(filters),
+          ...this.buildScopeMatch( target ),
+          ...this.buildDealFilterMatch( filters ),
         },
       },
       {
@@ -401,13 +415,13 @@ export class KpiQueryService {
           totalValue: { $sum: '$dealValue' },
           commissionTotal: { $sum: '$commissionAmount' },
 
-          saleCount: { $sum: { $cond: [{ $eq: ['$dealType', 'sale'] }, 1, 0] } },
-          rentCount: { $sum: { $cond: [{ $eq: ['$dealType', 'rent'] }, 1, 0] } },
+          saleCount: { $sum: { $cond: [ { $eq: [ '$dealType', 'sale' ] }, 1, 0 ] } },
+          rentCount: { $sum: { $cond: [ { $eq: [ '$dealType', 'rent' ] }, 1, 0 ] } },
         },
       },
       // Sort by total value (most impactful for real estate leaderboard)
       { $sort: { totalValue: -1 } },
-      { $limit: Math.max(1, Math.min(limit, 50)) },
+      { $limit: Math.max( 1, Math.min( limit, 50 ) ) },
       {
         $project: {
           _id: 0,
@@ -421,7 +435,7 @@ export class KpiQueryService {
       },
     ];
 
-    return await Deal.aggregate(pipeline).exec();
+    return await Deal.aggregate( pipeline ).exec();
   }
 
   // =========================================================================
@@ -457,8 +471,8 @@ export class KpiQueryService {
     const match: PipelineStage.Match = {
       $match: {
         occurredAt: { $gte: window.from, $lte: window.to },
-        ...this.buildScopeMatchForMaintenance(target),
-        ...this.buildMaintenanceFilterMatch(filters),
+        ...this.buildScopeMatchForMaintenance( target ),
+        ...this.buildMaintenanceFilterMatch( filters ),
       },
     };
 
@@ -473,14 +487,14 @@ export class KpiQueryService {
           // openedAt = earliest "opened" event time
           openedAt: {
             $min: {
-              $cond: [{ $eq: ['$eventType', 'opened'] }, '$occurredAt', null],
+              $cond: [ { $eq: [ '$eventType', 'opened' ] }, '$occurredAt', null ],
             },
           },
 
           // closedAt = earliest time among completed/closed
           closedAt: {
             $min: {
-              $cond: [{ $in: ['$eventType', ['completed', 'closed']] }, '$occurredAt', null],
+              $cond: [ { $in: [ '$eventType', [ 'completed', 'closed' ] ] }, '$occurredAt', null ],
             },
           },
 
@@ -501,13 +515,13 @@ export class KpiQueryService {
       {
         $addFields: {
           durationMinutes: {
-            $divide: [{ $subtract: ['$closedAt', '$openedAt'] }, 60000],
+            $divide: [ { $subtract: [ '$closedAt', '$openedAt' ] }, 60000 ],
           },
           isCompliant: {
             $cond: [
               {
                 $lte: [
-                  { $divide: [{ $subtract: ['$closedAt', '$openedAt'] }, 60000] },
+                  { $divide: [ { $subtract: [ '$closedAt', '$openedAt' ] }, 60000 ] },
                   '$slaMinutes',
                 ],
               },
@@ -533,20 +547,20 @@ export class KpiQueryService {
           _id: 0,
           totalClosedTickets: 1,
           compliantCount: 1,
-          avgResolutionMinutes: { $ifNull: ['$avgResolutionMinutes', 0] },
+          avgResolutionMinutes: { $ifNull: [ '$avgResolutionMinutes', 0 ] },
         },
       },
     ];
 
-    const rows = await Ev.aggregate(pipeline).exec();
-    const row = rows[0] ?? { totalClosedTickets: 0, compliantCount: 0, avgResolutionMinutes: 0 };
+    const rows = await Ev.aggregate( pipeline ).exec();
+    const row = rows[ 0 ] ?? { totalClosedTickets: 0, compliantCount: 0, avgResolutionMinutes: 0 };
 
-    const slaPercent = this.pct.round(this.pct.toPercent(row.compliantCount, row.totalClosedTickets), 2);
+    const slaPercent = this.pct.round( this.pct.toPercent( row.compliantCount, row.totalClosedTickets ), 2 );
 
     const actuals: KpiActualValue[] = [
       { key: 'totalClosedTickets', unit: 'count', value: row.totalClosedTickets, label: 'Closed Tickets' },
       { key: 'compliantCount', unit: 'count', value: row.compliantCount, label: 'SLA Compliant' },
-      { key: 'avgResolutionMinutes', unit: 'duration_ms', value: this.minutesToMs(row.avgResolutionMinutes), label: 'Avg Resolution (ms)' },
+      { key: 'avgResolutionMinutes', unit: 'duration_ms', value: this.minutesToMs( row.avgResolutionMinutes ), label: 'Avg Resolution (ms)' },
     ];
 
     const noteText: string | null =
@@ -557,7 +571,7 @@ export class KpiQueryService {
       actuals,
     };
 
-    if (noteText) {
+    if ( noteText ) {
       result.note = noteText;
     }
 
@@ -589,8 +603,8 @@ export class KpiQueryService {
     const match: PipelineStage.Match = {
       $match: {
         createdAtISO: { $gte: window.from, $lte: window.to },
-        ...this.buildScopeMatchForTasks(target),
-        ...this.buildTaskFilterMatch(filters),
+        ...this.buildScopeMatchForTasks( target ),
+        ...this.buildTaskFilterMatch( filters ),
       },
     };
 
@@ -603,8 +617,8 @@ export class KpiQueryService {
           _id: null,
           totalTasks: { $sum: 1 },
 
-          completedCount: { $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] } },
-          inProgressCount: { $sum: { $cond: [{ $eq: ['$status', 'in_progress'] }, 1, 0] } },
+          completedCount: { $sum: { $cond: [ { $eq: [ '$status', 'completed' ] }, 1, 0 ] } },
+          inProgressCount: { $sum: { $cond: [ { $eq: [ '$status', 'in_progress' ] }, 1, 0 ] } },
 
           // Overdue = dueAt exists and dueAt < now and not completed/cancelled
           overdueCount: {
@@ -612,9 +626,9 @@ export class KpiQueryService {
               $cond: [
                 {
                   $and: [
-                    { $ne: ['$dueAtISO', null] },
-                    { $lt: ['$dueAtISO', now] },
-                    { $not: [{ $in: ['$status', ['completed', 'cancelled']] }] },
+                    { $ne: [ '$dueAtISO', null ] },
+                    { $lt: [ '$dueAtISO', now ] },
+                    { $not: [ { $in: [ '$status', [ 'completed', 'cancelled' ] ] } ] },
                   ],
                 },
                 1,
@@ -627,10 +641,10 @@ export class KpiQueryService {
       { $project: { _id: 0, totalTasks: 1, completedCount: 1, inProgressCount: 1, overdueCount: 1 } },
     ];
 
-    const rows = await Task.aggregate(pipeline).exec();
-    const row = rows[0] ?? { totalTasks: 0, completedCount: 0, inProgressCount: 0, overdueCount: 0 };
+    const rows = await Task.aggregate( pipeline ).exec();
+    const row = rows[ 0 ] ?? { totalTasks: 0, completedCount: 0, inProgressCount: 0, overdueCount: 0 };
 
-    const completionPercent = this.pct.round(this.pct.toPercent(row.completedCount, row.totalTasks), 2);
+    const completionPercent = this.pct.round( this.pct.toPercent( row.completedCount, row.totalTasks ), 2 );
 
     const actuals: KpiActualValue[] = [
       { key: 'totalTasks', unit: 'count', value: row.totalTasks, label: 'Total Tasks' },
@@ -647,11 +661,157 @@ export class KpiQueryService {
       actuals,
     };
 
-    if (noteText) {
+    if ( noteText ) {
       result.note = noteText;
     }
 
     return result;
+  }
+
+  /**
+   * Org KPI — Task Completion Rate by Team (for bar charts / team comparisons)
+   *
+   * Mental model:
+   * - $match   = SQL WHERE (orgId + window + optional filters)
+   * - $group   = SQL GROUP BY teamId (counts per team)
+   * - $project = SELECT computed fields + percent
+   * - $sort    = ORDER BY completionPercent DESC / overdueCount DESC
+   */
+  public async getTaskCompletionRateByTeam(
+    orgTarget: KpiQueryTarget,
+    window: KpiDbWindow,
+    filters?: KpiQueryFilters,
+  ): Promise<KpiTeamCompletionRow[]> {
+    const Task = KpiModelAdapter.getTeamTaskFactModel();
+
+    // Force org scope here (caller should pass scope='org')
+    const match: PipelineStage.Match = {
+      $match: {
+        createdAtISO: { $gte: window.from, $lte: window.to },
+        ...this.buildScopeMatchForTasks( orgTarget ),
+        ...this.buildTaskFilterMatch( filters ),
+        teamId: { $ne: null }, // ignore tasks without teamId (keeps chart clean)
+      },
+    };
+
+    const now = new Date();
+
+    const pipeline: PipelineStage[] = [
+      match,
+      {
+        $group: {
+          _id: '$teamId',
+          totalTasks: { $sum: 1 },
+          completedCount: { $sum: { $cond: [ { $eq: [ '$status', 'completed' ] }, 1, 0 ] } },
+          inProgressCount: { $sum: { $cond: [ { $eq: [ '$status', 'in_progress' ] }, 1, 0 ] } },
+
+          overdueCount: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $ne: [ '$dueAtISO', null ] },
+                    { $lt: [ '$dueAtISO', now ] },
+                    { $not: [ { $in: [ '$status', [ 'completed', 'cancelled' ] ] } ] },
+                  ],
+                },
+                1,
+                0,
+              ],
+            },
+          },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          teamId: { $toString: '$_id' },
+          totalTasks: 1,
+          completedCount: 1,
+          inProgressCount: 1,
+          overdueCount: 1,
+          completionPercent: {
+            $cond: [
+              { $gt: [ '$totalTasks', 0 ] },
+              { $multiply: [ { $divide: [ '$completedCount', '$totalTasks' ] }, 100 ] },
+              0,
+            ],
+          },
+        },
+      },
+      { $sort: { completionPercent: -1, overdueCount: -1 } },
+    ];
+
+    const rows = await Task.aggregate( pipeline ).exec();
+
+    // Round percent in JS to keep consistent with your other KPIs
+    return rows.map( ( r: any ): KpiTeamCompletionRow => {
+      const pct = typeof r.completionPercent === 'number' ? r.completionPercent : 0;
+      return {
+        teamId: String( r.teamId ?? '' ),
+        totalTasks: Number( r.totalTasks ?? 0 ),
+        completedCount: Number( r.completedCount ?? 0 ),
+        inProgressCount: Number( r.inProgressCount ?? 0 ),
+        overdueCount: Number( r.overdueCount ?? 0 ),
+        completionPercent: this.pct.round( pct, 2 ),
+      };
+    } );
+  }
+
+  /**
+   * KPI — Most Critical Task Holders (overdue count leaderboard)
+   * Works for scope: org / team.
+   *
+   * Note:
+   * - We treat "critical" as "overdue and not completed/cancelled"
+   *   because your fact model keeps priority as free string (project-specific).
+   */
+  public async getTopOverdueTaskHolders(
+    target: KpiQueryTarget,
+    window: KpiDbWindow,
+    topN: number,
+    filters?: KpiQueryFilters,
+  ): Promise<KpiMemberOverdueRow[]> {
+    const Task = KpiModelAdapter.getTeamTaskFactModel();
+
+    const now = new Date();
+
+    const match: PipelineStage.Match = {
+      $match: {
+        createdAtISO: { $gte: window.from, $lte: window.to },
+        ...this.buildScopeMatchForTasks( target ),
+        ...this.buildTaskFilterMatch( filters ),
+
+        memberId: { $ne: null },
+
+        // overdue definition
+        dueAtISO: { $ne: null, $lt: now },
+        status: { $nin: [ 'completed', 'cancelled' ] },
+      },
+    };
+
+    const pipeline: PipelineStage[] = [
+      match,
+      { $group: { _id: '$memberId', overdueCount: { $sum: 1 } } },
+      {
+        $project: {
+          _id: 0,
+          memberId: { $toString: '$_id' },
+          overdueCount: 1,
+        },
+      },
+      { $sort: { overdueCount: -1 } },
+      { $limit: Math.max( 1, Math.min( 50, topN ) ) },
+    ];
+
+    const rows = await Task.aggregate( pipeline ).exec();
+
+    return rows.map( ( r: any ): KpiMemberOverdueRow => {
+      return {
+        memberId: String( r.memberId ?? '' ),
+        overdueCount: Number( r.overdueCount ?? 0 ),
+      };
+    } );
   }
 
   // =========================================================================
@@ -662,8 +822,8 @@ export class KpiQueryService {
    * Build scope match for deal facts.
    * This decides which field is compared against targetId depending on scope.
    */
-  private buildScopeMatch(target: KpiQueryTarget): Record<string, unknown> {
-    const id = this.toObjectId(target.targetId);
+  private buildScopeMatch( target: KpiQueryTarget ): Record<string, unknown> {
+    const id = this.toObjectId( target.targetId );
 
     // Rule:
     // - member scope => compare to agentId
@@ -671,20 +831,20 @@ export class KpiQueryService {
     // - org scope    => compare to orgId
     // - property scope => compare to propertyId
     // - region/branch supported too
-    if (target.scope === 'member') return { agentId: id };
-    if (target.scope === 'team') return { teamId: id };
-    if (target.scope === 'property') return { propertyId: id };
-    if (target.scope === 'branch') return { branchId: id };
-    if (target.scope === 'region') return { regionId: id };
+    if ( target.scope === 'member' ) return { agentId: id };
+    if ( target.scope === 'team' ) return { teamId: id };
+    if ( target.scope === 'property' ) return { propertyId: id };
+    if ( target.scope === 'branch' ) return { branchId: id };
+    if ( target.scope === 'region' ) return { regionId: id };
     return { orgId: id };
   }
 
   /**
    * Satisfaction facts use the same scope semantics as deals (agent/team/org/etc.).
    */
-  private buildScopeMatchForSatisfaction(target: KpiQueryTarget): Record<string, unknown> {
+  private buildScopeMatchForSatisfaction( target: KpiQueryTarget ): Record<string, unknown> {
     // Agent satisfaction is computed by agentId at member scope.
-    return this.buildScopeMatch(target);
+    return this.buildScopeMatch( target );
   }
 
   /**
@@ -695,14 +855,14 @@ export class KpiQueryService {
    * - propertyId
    * - branch/region
    */
-  private buildScopeMatchForMaintenance(target: KpiQueryTarget): Record<string, unknown> {
-    const id = this.toObjectId(target.targetId);
+  private buildScopeMatchForMaintenance( target: KpiQueryTarget ): Record<string, unknown> {
+    const id = this.toObjectId( target.targetId );
 
-    if (target.scope === 'member') return { memberId: id };
-    if (target.scope === 'team') return { teamId: id };
-    if (target.scope === 'property') return { propertyId: id };
-    if (target.scope === 'branch') return { branchId: id };
-    if (target.scope === 'region') return { regionId: id };
+    if ( target.scope === 'member' ) return { memberId: id };
+    if ( target.scope === 'team' ) return { teamId: id };
+    if ( target.scope === 'property' ) return { propertyId: id };
+    if ( target.scope === 'branch' ) return { branchId: id };
+    if ( target.scope === 'region' ) return { regionId: id };
     return { orgId: id };
   }
 
@@ -713,14 +873,14 @@ export class KpiQueryService {
    * - org => orgId
    * - property (optional) => propertyId
    */
-  private buildScopeMatchForTasks(target: KpiQueryTarget): Record<string, unknown> {
-    const id = this.toObjectId(target.targetId);
+  private buildScopeMatchForTasks( target: KpiQueryTarget ): Record<string, unknown> {
+    const id = this.toObjectId( target.targetId );
 
-    if (target.scope === 'member') return { memberId: id };
-    if (target.scope === 'team') return { teamId: id };
-    if (target.scope === 'property') return { propertyId: id };
-    if (target.scope === 'branch') return { branchId: id };
-    if (target.scope === 'region') return { regionId: id };
+    if ( target.scope === 'member' ) return { memberId: id };
+    if ( target.scope === 'team' ) return { teamId: id };
+    if ( target.scope === 'property' ) return { propertyId: id };
+    if ( target.scope === 'branch' ) return { branchId: id };
+    if ( target.scope === 'region' ) return { regionId: id };
     return { orgId: id };
   }
 
@@ -733,85 +893,85 @@ export class KpiQueryService {
    *
    * This returns additional $match fields.
    */
-  private buildDealFilterMatch(filters?: KpiQueryFilters): Record<string, unknown> {
+  private buildDealFilterMatch( filters?: KpiQueryFilters ): Record<string, unknown> {
     const match: Record<string, unknown> = {};
 
-    if (!filters) return match;
+    if ( !filters ) return match;
 
-    if (filters.dealType === 'sale' || filters.dealType === 'rent') {
+    if ( filters.dealType === 'sale' || filters.dealType === 'rent' ) {
       match.dealType = filters.dealType;
     }
 
-    if (filters.propertyType) {
+    if ( filters.propertyType ) {
       match.propertyType = filters.propertyType;
     }
 
-    if (filters.currencyCode) {
-      match.currencyCode = String(filters.currencyCode).toUpperCase();
+    if ( filters.currencyCode ) {
+      match.currencyCode = String( filters.currencyCode ).toUpperCase();
     }
 
     // Optional segmentation overrides:
     // (This is useful when scope=org but you want only one team or one agent)
-    if (filters.agentId) {
-      match.agentId = this.toObjectId(filters.agentId);
+    if ( filters.agentId ) {
+      match.agentId = this.toObjectId( filters.agentId );
     }
-    if (filters.teamId) {
-      match.teamId = this.toObjectId(filters.teamId);
+    if ( filters.teamId ) {
+      match.teamId = this.toObjectId( filters.teamId );
     }
 
     // Real estate dimensions
-    if (filters.branchId) {
-      match.branchId = this.toObjectId(filters.branchId);
+    if ( filters.branchId ) {
+      match.branchId = this.toObjectId( filters.branchId );
     }
-    if (filters.regionId) {
-      match.regionId = this.toObjectId(filters.regionId);
+    if ( filters.regionId ) {
+      match.regionId = this.toObjectId( filters.regionId );
     }
 
     return match;
   }
 
-  private buildSatisfactionFilterMatch(filters?: KpiQueryFilters): Record<string, unknown> {
+  private buildSatisfactionFilterMatch( filters?: KpiQueryFilters ): Record<string, unknown> {
     const match: Record<string, unknown> = {};
-    if (!filters) return match;
+    if ( !filters ) return match;
 
-    if (filters.agentId) match.agentId = this.toObjectId(filters.agentId);
-    if (filters.teamId) match.teamId = this.toObjectId(filters.teamId);
+    if ( filters.agentId ) match.agentId = this.toObjectId( filters.agentId );
+    if ( filters.teamId ) match.teamId = this.toObjectId( filters.teamId );
 
-    if (filters.branchId) match.branchId = this.toObjectId(filters.branchId);
-    if (filters.regionId) match.regionId = this.toObjectId(filters.regionId);
+    if ( filters.branchId ) match.branchId = this.toObjectId( filters.branchId );
+    if ( filters.regionId ) match.regionId = this.toObjectId( filters.regionId );
 
     return match;
   }
 
-  private buildMaintenanceFilterMatch(filters?: KpiQueryFilters): Record<string, unknown> {
+  private buildMaintenanceFilterMatch( filters?: KpiQueryFilters ): Record<string, unknown> {
     const match: Record<string, unknown> = {};
-    if (!filters) return match;
+    if ( !filters ) return match;
 
-    if (filters.priority) match.priority = filters.priority;
+    if ( filters.priority ) match.priority = filters.priority;
 
-    if (filters.teamId) match.teamId = this.toObjectId(filters.teamId);
-    if (filters.agentId) {
+    if ( filters.teamId ) match.teamId = this.toObjectId( filters.teamId );
+    if ( filters.agentId ) {
       // In maintenance world, "agentId" concept maps to "memberId" (technician).
-      match.memberId = this.toObjectId(filters.agentId);
+      match.memberId = this.toObjectId( filters.agentId );
     }
 
-    if (filters.branchId) match.branchId = this.toObjectId(filters.branchId);
-    if (filters.regionId) match.regionId = this.toObjectId(filters.regionId);
+    if ( filters.branchId ) match.branchId = this.toObjectId( filters.branchId );
+    if ( filters.regionId ) match.regionId = this.toObjectId( filters.regionId );
 
     return match;
   }
 
-  private buildTaskFilterMatch(filters?: KpiQueryFilters): Record<string, unknown> {
+  private buildTaskFilterMatch( filters?: KpiQueryFilters ): Record<string, unknown> {
     const match: Record<string, unknown> = {};
-    if (!filters) return match;
+    if ( !filters ) return match;
 
-    if (filters.priority) match.priority = filters.priority;
+    if ( filters.priority ) match.priority = filters.priority;
 
-    if (filters.teamId) match.teamId = this.toObjectId(filters.teamId);
-    if (filters.agentId) match.memberId = this.toObjectId(filters.agentId);
+    if ( filters.teamId ) match.teamId = this.toObjectId( filters.teamId );
+    if ( filters.agentId ) match.memberId = this.toObjectId( filters.agentId );
 
-    if (filters.branchId) match.branchId = this.toObjectId(filters.branchId);
-    if (filters.regionId) match.regionId = this.toObjectId(filters.regionId);
+    if ( filters.branchId ) match.branchId = this.toObjectId( filters.branchId );
+    if ( filters.regionId ) match.regionId = this.toObjectId( filters.regionId );
 
     return match;
   }
@@ -821,20 +981,20 @@ export class KpiQueryService {
    * - If invalid ObjectId string is passed, we throw (fail fast).
    * - This prevents silent wrong KPI calculations.
    */
-  private toObjectId(raw: string): Types.ObjectId {
-    if (!Types.ObjectId.isValid(raw)) {
+  private toObjectId( raw: string ): Types.ObjectId {
+    if ( !Types.ObjectId.isValid( raw ) ) {
       // Throwing here is intentional: invalid IDs should never produce KPIs.
-      throw new Error(`Invalid ObjectId: ${raw}`);
+      throw new Error( `Invalid ObjectId: ${ raw }` );
     }
-    return new Types.ObjectId(raw);
+    return new Types.ObjectId( raw );
   }
 
   /**
    * Converts minutes to milliseconds.
    * We store duration KPI unit as "duration_ms" to stay consistent across system.
    */
-  private minutesToMs(minutes: number): number {
-    if (!Number.isFinite(minutes) || minutes <= 0) return 0;
-    return Math.round(minutes * 60_000);
+  private minutesToMs( minutes: number ): number {
+    if ( !Number.isFinite( minutes ) || minutes <= 0 ) return 0;
+    return Math.round( minutes * 60_000 );
   }
 }

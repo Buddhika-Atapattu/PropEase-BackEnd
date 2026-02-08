@@ -1,76 +1,222 @@
-// src/models/user.model.ts
+// Path: src/models/user.model.ts
 // ─────────────────────────────────────────────────────────────────────────────
 // PURPOSE:
-//   User model (types + DB schema) in a class-based, composable pattern.
-//   - All sub-schemas are built via dedicated static-only builder classes.
-//   - No business logic: only structure & indexing.
-// NOTE:
-//   Controllers/services handle validation, hashing, and domain logic.
+//   Enterprise-grade User model (types + DB schema) designed for large org +
+//   future WhatsApp/Facebook-like features WITHOUT polluting the User document.
+//
+// KEY DESIGN (IMPORTANT):
+//   ✅ User model stores ONLY:
+//      - Identity + security + preferences
+//      - Access control (RBAC) as STRING KEYS (moduleKey + actionKey[])
+//      - Social graph pointers (contacts/following/followers/pins) as ID strings
+//      - Chat pointers (rooms membership, pinned rooms, pinned messages refs)
+//      - Blog pointers (saved posts refs, creator flags) as ID strings
+//
+//   ❌ User model does NOT store:
+//      - Messages, posts, comments, reactions, receipts (must be in dedicated collections)
+//      - Group definitions (must be in ChatRoom / Group collection)
+//      - Heavy arrays that grow unbounded (must be paged from their own collections)
+//
+// WHY:
+//   WhatsApp/Facebook-scale operations require separate collections with indexes,
+//   otherwise the User document becomes a hot-spot and will blow MongoDB limits.
+//
+// RULES:
+//   ✅ Class-based builders only (no loose helper functions)
+//   ✅ Hot-reload safe model registration (no OverwriteModelError)
+//   ✅ Sensitive fields always removed via projection + toJSON + toSafeDTO
+//   ✅ Keep "public/..." paths as relative for Electron compatibility
+//
+// ACCESS MAP NOTE:
+//   You imported AccessActionOption / AccessModuleOption for UI rendering.
+//   Those are UI option structures, NOT what you store in the DB.
+//   In the DB you MUST store only the KEYS:
+//     - module: AccessModuleKey (string)
+//     - actions: AccessActionKey[] (string ids)
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
   Schema,
   model,
+  models,
   type Document,
   type Model,
-} from 'mongoose';
+} from "mongoose";
 
-import type { Address } from './property.model';
+import type { Address } from "./property.model";
 
-// Import ONLY types from access-map to avoid runtime circular deps.
+// Import ONLY TYPES (no runtime circular deps).
 import type {
-  AccessModuleKey,
   AccessActionKey,
-} from '../source/access-map.source';
+  AccessModuleKey,
+} from "../source/access-map.source";
 
-/* ============================================================================
- * TYPES & INTERFACES
- * ==========================================================================*/
+/* ========================================================================== *
+ * SYSTEM ROLES
+ * ========================================================================== */
 
-/** Valid user roles within the system. */
 export type Role =
-  | 'admin'
-  | 'agent'
-  | 'tenant'
-  | 'owner'
-  | 'operator'
-  | 'manager'
-  | 'developer'
-  | 'user';
+  | "executive"
+  | "board"
+  | "director"
+  | "ceo"
+  | "cfo"
+  | "coo"
+  | "cto"
+  | "cio"
+  | "admin"
+  | "system"
+  | "user"
+  | "owner"
+  | "tenant"
+  | "agent"
+  | "broker"
+  | "landlord"
+  | "leasing"
+  | "leasing_manager"
+  | "property_manager"
+  | "facility_manager"
+  | "estate_manager"
+  | "operator"
+  | "manager"
+  | "lead"
+  | "supervisor"
+  | "captain"
+  | "member"
+  | "observer"
+  | "finance"
+  | "accountant"
+  | "accounts_payable"
+  | "accounts_receivable"
+  | "billing"
+  | "payroll"
+  | "procurement"
+  | "legal"
+  | "compliance"
+  | "auditor"
+  | "hr"
+  | "reception"
+  | "customer_support"
+  | "call_center"
+  | "developer"
+  | "qa"
+  | "devops"
+  | "it_support"
+  | "data_analyst"
+  | "mechanic"
+  | "carpenter"
+  | "electrician"
+  | "plumber"
+  | "technician"
+  | "welder"
+  | "driver"
+  | "cleaner"
+  | "security"
+  | "gardener"
+  | "painter"
+  | "mason"
+  | "helper"
+  | "inspector"
+  | "surveyor"
+  | "visitor"
+  ;
+
+export const DEFAULT_ROLES: Role[] = [
+  "executive",
+  "board",
+  "director",
+  "ceo",
+  "cfo",
+  "coo",
+  "cto",
+  "cio",
+  "admin",
+  "system",
+  "user",
+  "owner",
+  "tenant",
+  "agent",
+  "broker",
+  "landlord",
+  "leasing",
+  "leasing_manager",
+  "property_manager",
+  "facility_manager",
+  "estate_manager",
+  "operator",
+  "manager",
+  "lead",
+  "supervisor",
+  "captain",
+  "member",
+  "observer",
+  "finance",
+  "accountant",
+  "accounts_payable",
+  "accounts_receivable",
+  "billing",
+  "payroll",
+  "procurement",
+  "legal",
+  "compliance",
+  "auditor",
+  "hr",
+  "reception",
+  "customer_support",
+  "call_center",
+  "developer",
+  "qa",
+  "devops",
+  "it_support",
+  "data_analyst",
+  "mechanic",
+  "carpenter",
+  "electrician",
+  "plumber",
+  "technician",
+  "welder",
+  "driver",
+  "cleaner",
+  "security",
+  "gardener",
+  "painter",
+  "mason",
+  "helper",
+  "inspector",
+  "surveyor",
+  "visitor",
+];
+
+/* ========================================================================== *
+ * ACCESS CONTROL (DB STORES KEYS ONLY)
+ * ========================================================================== */
 
 /**
- * One permission entry for a given module.
- * - `module`  → must be one of AccessModuleKey (aligned with ACCESS_OPTIONS).
- * - `actions` → allowed actions for that module (AccessActionKey[]).
+ * Single permission entry stored under user.access.permissions
+ *
+ * module  : AccessModuleKey  (string)
+ * actions : AccessActionKey[] (string action ids)
  */
 export interface PermissionEntry {
   module: AccessModuleKey;
   actions: AccessActionKey[];
 }
 
-/** Role → list of permission entries. */
-export interface ROLE_ACCESS_MAP {
+/**
+ * User-level access object.
+ * - role is duplicated here intentionally so you can build "role templates"
+ *   and still allow per-user overrides.
+ * - services must ensure access.role == user.role (or decide to allow override).
+ */
+export interface RoleAccessMap {
   role: Role;
   permissions: PermissionEntry[];
 }
 
-/** Simple credential DTO (not stored directly in this collection). */
-export interface UserCredentials {
-  username: string;
-  password: string;
-  rememberMe?: boolean;
-}
+/* ========================================================================== *
+ * COUNTRY / PHONE
+ * ========================================================================== */
 
-/** Country DTO used elsewhere in the app (kept here for completeness). */
-export interface Country {
-  name: string;
-  code: string;
-  emoji: string;
-  unicode: string;
-  image: string;
-}
-
-/** Country code info for phone numbers. */
 export interface CountryCodes {
   name: string;
   code: string;
@@ -81,288 +227,399 @@ export interface CountryCodes {
   };
 }
 
-/** Phone number structure attached to User. */
 export interface PhoneNumber {
   code: CountryCodes;
   number: string;
 }
 
-/* --------------------------------------------------------------------------
- * FUTURE-READY SUPPORT TYPES
- * ------------------------------------------------------------------------*/
+/* ========================================================================== *
+ * SECURITY / PREFERENCES / META
+ * ========================================================================== */
 
-/**
- * Login metadata for security controls:
- * - failedLoginAttempts: for lockout rules
- * - lastLoginAt: last successful login (for audit)
- * - lastFailedLoginAt: last failed attempt
- * - lockedUntil: account temporarily locked until this date
- */
 export interface UserLoginMetadata {
   failedLoginAttempts: number;
   lastLoginAt?: Date | null;
   lastFailedLoginAt?: Date | null;
   lockedUntil?: Date | null;
+
+  // Extra audit signals (safe to store)
+  lastUserAgent?: string | null;
+  lastDeviceId?: string | null;
+  lastLocationHint?: string | null; // e.g. "Colombo, LK" (NOT precise GPS)
 }
 
-/**
- * Notification preferences (can be expanded later):
- * - email: enable/disable email notifications
- * - inApp: enable/disable in-app notifications
- */
-export interface UserNotificationPreferences {
-  email: boolean;
-  inApp: boolean;
-}
+export type UiTheme = "light" | "dark" | "system";
 
-/**
- * User preferences for UX:
- * - theme: 'light' | 'dark' | 'system'
- * - language: e.g. 'en', 'si'
- * - timeZone: e.g. 'Asia/Colombo'
- * - dateFormat: e.g. 'YYYY-MM-DD'
- */
 export interface UserPreferences {
-  theme: 'light' | 'dark' | 'system';
+  theme: UiTheme;
   language: string;
   timeZone?: string | null;
   dateFormat?: string | null;
+
+  // WhatsApp-like UX
+  autoDownloadMedia?: boolean;
+  enterToSend?: boolean;
+
+  // Privacy visibility (per-user defaults; rooms can override)
+  lastSeenVisibility?: "everyone" | "contacts" | "nobody";
+  profilePhotoVisibility?: "everyone" | "contacts" | "nobody";
+  aboutVisibility?: "everyone" | "contacts" | "nobody";
+  readReceiptsEnabled?: boolean;
 }
 
-/** Full Mongoose document representation for a User. */
+export interface UserNotificationPreferences {
+  email: boolean;
+  inApp: boolean;
+  push?: boolean;
+}
+
+/* ========================================================================== *
+ * PAYMENTS – USER-LEVEL PAYMENT PROFILE (refs only)
+ * ========================================================================== */
+
+export type PaymentCustomerProvider =
+  | "stripe"
+  | "paypal"
+  | "adyen"
+  | "braintree"
+  | "custom";
+
+export interface UserPaymentProfile {
+  provider: PaymentCustomerProvider;
+  customerId: string;
+  defaultCurrency: string; // "LKR", "USD", ...
+  billingEmail?: string | null;
+
+  defaultPaymentMethodRef?: string | null;
+  paymentMethodRefs: string[];
+}
+
+export interface WalletBalance {
+  currency: string;
+  available: number;
+  pending: number;
+  updatedAt?: Date | null;
+}
+
+export interface UserWallet {
+  enabled: boolean;
+  balances: WalletBalance[];
+}
+
+/* ========================================================================== *
+ * CHAT / SOCIAL – USER COMMUNICATION + GRAPH POINTERS
+ * ========================================================================== */
+
+/**
+ * Multi-device sessions (NO tokens/keys stored here).
+ * Tokens belong in Redis / session store / separate security collection.
+ */
+export type DevicePlatform = "web" | "desktop" | "android" | "ios" | "other";
+
+export interface UserDevice {
+  deviceId: string;              // "x-device-id"
+  name: string;                  // "Buddhika Desktop"
+  platform: DevicePlatform;
+  appVersion?: string | null;
+
+  lastSeenAt?: Date | null;
+  lastIp?: string | null;
+  revokedAt?: Date | null;
+}
+
+/**
+ * Chat room membership pointer (source of truth is ChatRoom collection).
+ * This is a "quick access list" for UI and routing.
+ */
+export type RoomRole = "owner" | "admin" | "member" | "viewer";
+
+export interface UserRoomMembership {
+  roomId: string;               // ChatRoom id (string form)
+  role: RoomRole;
+
+  mutedUntil?: Date | null;
+  pinned: boolean;
+  archived: boolean;
+
+  nickname?: string | null;
+  lastReadAt?: Date | null;     // used for unread calculations in services
+}
+
+/**
+ * Pinned message pointers (WhatsApp-like).
+ * Actual message content lives in Message collection.
+ */
+export interface UserPinnedMessage {
+  roomId: string;
+  messageId: string;            // Message id
+  pinnedAt?: Date | null;
+}
+
+/**
+ * Social / graph pointers:
+ * - contacts: like WhatsApp contacts (mutual or one-way depending on your rules)
+ * - following/followers: like Facebook/Instagram graph (blog/public profile)
+ * - pinnedUsers: "pin another user" (quick access)
+ */
+export interface UserSocialGraph {
+  contactUserIds: string[];
+  followingUserIds: string[];
+  followerUserIds: string[];
+  pinnedUserIds: string[];
+}
+
+/**
+ * Privacy / safety:
+ * - blockedUserIds: hard block
+ * - allow* rules: default gating for new chats/groups/calls
+ */
+export interface UserPrivacy {
+  blockedUserIds: string[];
+  allowMessagesFrom: "everyone" | "contacts" | "nobody";
+  allowCallsFrom: "everyone" | "contacts" | "nobody";
+  allowGroupAddsFrom: "everyone" | "contacts" | "nobody";
+}
+
+/**
+ * Presence snapshot. Real-time presence is usually computed in Redis/WS.
+ */
+export type PresenceState = "online" | "offline" | "away" | "dnd";
+
+export interface UserPresence {
+  state: PresenceState;
+  lastActiveAt?: Date | null;
+}
+
+/**
+ * Public profile / blog author identity.
+ * Posts themselves belong in Post collection.
+ */
+export interface UserSocialProfile {
+  handle: string;               // "@buddhika"
+  displayName: string;
+  about?: string | null;
+  avatarUrl?: string | null;    // "public/...."
+  coverUrl?: string | null;
+
+  isCreator: boolean;           // can publish blogs/feeds
+  isPublicProfile: boolean;
+}
+
+/**
+ * Saved content pointers:
+ * - savedPostIds: like Facebook "Saved"
+ * - pinnedPostIds: creator pin posts to profile (content stored elsewhere)
+ */
+export interface UserSavedContent {
+  savedPostIds: string[];
+  pinnedPostIds: string[];
+}
+
+/* ========================================================================== *
+ * MAIN USER DOCUMENT
+ * ========================================================================== */
+
 export interface IUser extends Document {
-  // Basic
+  // Core identity
   name: string;
   username: string;
   email: string;
   password: string;
+
   dateOfBirth: Date;
   age: number;
   gender: string;
+
   image?: string;
   phoneNumber?: PhoneNumber;
+
   bio: string;
   nationality: string;
-  nicOrPassport: string
+  nicOrPassport: string;
 
-  // Role & access
+  // Org role + access
   role: Role;
+  access: RoleAccessMap;
+
   address: Address;
   isActive: boolean;
-  access: ROLE_ACCESS_MAP;
 
-  // Verification
+  // Verification & OTP (legacy field name kept)
   otpVerifycation: boolean;
   otpToken: string;
-  otpTokenExpires: Date;
-  emailVerified: boolean;
-  emailVerificationToken?: string;
-  emailVerificationTokenExpires?: Date;
+  otpTokenExpires?: Date | null;
 
-  // Admin controls
+  emailVerified: boolean;
+  emailVerificationToken?: string | null;
+  emailVerificationTokenExpires?: Date | null;
+
+  // MFA
+  multiAuthEnabled: boolean;
+  multiAuthActivatedAt?: Date | null;
+  multiAuthSecret?: string | null;
+
+  // Reset
+  resetToken?: string | null;
+  resetTokenExpiresAt?: Date | null;
+
+  // Admin metadata
   autoDelete: boolean;
   creator: string;
   updator?: string;
 
-  // MFA
-  multiAuthEnabled: boolean;          // user chose to enable MFA
-  multiAuthActivatedAt?: Date | null; // when QR + foreign app completed
-  multiAuthSecret: string | null;
-
-  // Reset & recovery
-  resetToken?: string | null;
-  resetTokenExpiresAt?: Date | null;
-
-  // Future-ready: login metadata & preferences
+  // Preferences + notifications + security meta
   loginMeta: UserLoginMetadata;
   preferences: UserPreferences;
   notificationPreferences: UserNotificationPreferences;
 
-  // Timestamps (added automatically by Mongoose)
+  // Payments (refs only)
+  paymentProfile: UserPaymentProfile;
+  wallet: UserWallet;
+
+  // WhatsApp/Facebook-like pointers
+  devices: UserDevice[];
+  rooms: UserRoomMembership[];
+  pinnedMessages: UserPinnedMessage[];
+
+  socialGraph: UserSocialGraph;
+  privacy: UserPrivacy;
+  presence: UserPresence;
+
+  socialProfile: UserSocialProfile;
+  savedContent: UserSavedContent;
+
   createdAt: Date;
   updatedAt: Date;
 
-  // Helper: convert to safe DTO for API responses
   toSafeDTO(): User;
 }
 
-/** User interface without document internals + sensitive fields. */
+/**
+ * Safe DTO for API (no secrets).
+ * (You can move this into contracts later; for now it keeps your current style.)
+ */
 export interface User extends Omit<
   IUser,
-  // Remove Mongoose internals and sensitive fields for DTO:
-  | 'password'
-  | 'resetToken'
-  | 'resetTokenExpiresAt'
-  | 'toSafeDTO'
+  | "password"
+  | "resetToken"
+  | "resetTokenExpiresAt"
+  | "otpToken"
+  | "otpTokenExpires"
+  | "emailVerificationToken"
+  | "emailVerificationTokenExpires"
+  | "multiAuthSecret"
+  | "toSafeDTO"
   | keyof Document
 > {}
 
 export const USER_MODEL_PROJECTION = {
   password: 0,
+
   resetToken: 0,
   resetTokenExpiresAt: 0,
-  multiAuthSecret: 0,
+
   otpToken: 0,
   otpTokenExpires: 0,
+
   emailVerificationToken: 0,
   emailVerificationTokenExpires: 0,
+
+  multiAuthSecret: 0,
+
   __v: 0,
 };
 
-/** Optional: token map type (declared here if referenced externally). */
-export interface ITokenMap extends Document {
-  token: string;
-  username: string;
-  type: 'view' | 'email' | 'session' | string;
-  expiresAt: Date;
-}
+/* ========================================================================== *
+ * SUB-SCHEMA BUILDERS (STATIC-ONLY)
+ * ========================================================================== */
 
-/* ============================================================================
- * SUB-SCHEMA BUILDERS (STATIC-ONLY CLASSES)
- * ==========================================================================*/
-
-/**
- * AddressSubSchemaBuilder
- * -----------------------
- * Builds the inline Address sub-schema used on the User document.
- */
 export class AddressSubSchemaBuilder {
   private constructor () {}
 
   public static buildSchema(): Schema<Address> {
+    // NOTE:
+    // If your Address type is already defined elsewhere with different fields,
+    // align these keys exactly. This is a safe baseline.
     return new Schema<Address>(
       {
-        street: { type: String, required: true, trim: true },
-        houseNumber: { type: String, required: true, trim: true },
-        city: { type: String, required: true, trim: true },
-        postcode: { type: String, required: true, trim: true },
-        country: { type: String, trim: true },
-        stateOrProvince: { type: String, trim: true },
-      },
-      { _id: false },
+        street: { type: String, required: true, trim: true, default: "" },
+        houseNumber: { type: String, required: true, trim: true, default: "" },
+        city: { type: String, required: true, trim: true, default: "" },
+        postcode: { type: String, required: true, trim: true, default: "" },
+
+        country: { type: String, required: false, trim: true, default: "" },
+        stateOrProvince: { type: String, required: false, trim: true, default: "" },
+      } as Record<string, any>,
+      { _id: false }
     );
   }
 }
 
-/**
- * FlagsSubSchemaBuilder
- * ---------------------
- * Builds the flags object attached to country codes (PNG/SVG/alt).
- */
 export class FlagsSubSchemaBuilder {
   private constructor () {}
 
   public static buildSchema(): Schema<{ png: string; svg: string; alt?: string; }> {
     return new Schema<{ png: string; svg: string; alt?: string; }>(
       {
-        png: {
-          type: String,
-          required: true,
-          default: '',
-        },
-        svg: {
-          type: String,
-          required: true,
-          default: '',
-        },
-        alt: {
-          type: String,
-          required: false,
-          default: '',
-        },
+        png: { type: String, required: true, default: "" },
+        svg: { type: String, required: true, default: "" },
+        alt: { type: String, required: false, default: "" },
       },
-      { _id: false },
+      { _id: false }
     );
   }
 }
 
-/**
- * CountryCodeSubSchemaBuilder
- * ---------------------------
- * Builds the CountryCodes sub-schema (name, code, flags).
- */
 export class CountryCodeSubSchemaBuilder {
   private constructor () {}
 
   public static buildSchema(): Schema<CountryCodes> {
     return new Schema<CountryCodes>(
       {
-        name: {
-          type: String,
-          required: true,
-          default: '',
-        },
-        code: {
-          type: String,
-          required: true,
-          default: '',
-        },
-        flags: {
-          type: FlagsSubSchemaBuilder.buildSchema(),
-          required: true,
-        },
+        name: { type: String, required: true, default: "", trim: true },
+        code: { type: String, required: true, default: "", trim: true },
+        flags: { type: FlagsSubSchemaBuilder.buildSchema(), required: true },
       },
-      { _id: false },
+      { _id: false }
     );
   }
 }
 
-/**
- * PhoneNumberSubSchemaBuilder
- * ---------------------------
- * Builds the PhoneNumber sub-schema used in the User document.
- */
 export class PhoneNumberSubSchemaBuilder {
   private constructor () {}
 
   public static buildSchema(): Schema<PhoneNumber> {
     return new Schema<PhoneNumber>(
       {
-        code: {
-          type: CountryCodeSubSchemaBuilder.buildSchema(),
-          required: true,
-        },
-        number: {
-          type: String,
-          required: true,
-          default: '',
-        },
+        code: { type: CountryCodeSubSchemaBuilder.buildSchema(), required: true },
+        number: { type: String, required: true, default: "", trim: true },
       },
-      { _id: false },
+      { _id: false }
     );
   }
 }
 
-/**
- * PermissionEntrySubSchemaBuilder
- * -------------------------------
- * At DB level we store module/actions as strings; TS enforces that the
- * values align with AccessModuleKey/AccessActionKey.
- */
 export class PermissionEntrySubSchemaBuilder {
   private constructor () {}
 
   public static buildSchema(): Schema<PermissionEntry> {
+    // IMPORTANT:
+    // module + actions must be stored as strings (keys), not UI objects.
     return new Schema<PermissionEntry>(
       {
         module: { type: String, required: true, trim: true },
         actions: { type: [ String ], required: true, default: [] },
       },
-      { _id: false },
+      { _id: false }
     );
   }
 }
 
-/**
- * AccessSubSchemaBuilder
- * ----------------------
- * Wraps role + permissions as an embedded object.
- */
 export class AccessSubSchemaBuilder {
   private constructor () {}
 
-  public static buildSchema(): Schema<ROLE_ACCESS_MAP> {
-    return new Schema<ROLE_ACCESS_MAP>(
+  public static buildSchema(): Schema<RoleAccessMap> {
+    return new Schema<RoleAccessMap>(
       {
         role: { type: String, required: true, trim: true },
         permissions: {
@@ -371,81 +628,46 @@ export class AccessSubSchemaBuilder {
           default: [],
         },
       },
-      { _id: false },
+      { _id: false }
     );
   }
 }
 
-/**
- * LoginMetaSubSchemaBuilder
- * -------------------------
- * Stores security-related login metadata.
- */
 export class LoginMetaSubSchemaBuilder {
   private constructor () {}
 
   public static buildSchema(): Schema<UserLoginMetadata> {
     return new Schema<UserLoginMetadata>(
       {
-        failedLoginAttempts: {
-          type: Number,
-          required: true,
-          default: 0,
-          min: 0,
-        },
-        lastLoginAt: {
-          type: Date,
-          required: false,
-          default: null,
-        },
-        lastFailedLoginAt: {
-          type: Date,
-          required: false,
-          default: null,
-        },
-        lockedUntil: {
-          type: Date,
-          required: false,
-          default: null,
-        },
+        failedLoginAttempts: { type: Number, required: true, default: 0, min: 0 },
+        lastLoginAt: { type: Date, required: false, default: null },
+        lastFailedLoginAt: { type: Date, required: false, default: null },
+        lockedUntil: { type: Date, required: false, default: null },
+
+        lastUserAgent: { type: String, required: false, default: null, trim: true },
+        lastDeviceId: { type: String, required: false, default: null, trim: true },
+        lastLocationHint: { type: String, required: false, default: null, trim: true },
       },
-      { _id: false },
+      { _id: false }
     );
   }
 }
 
-/**
- * NotificationPreferencesSubSchemaBuilder
- * ---------------------------------------
- * Controls email / in-app notification toggles.
- */
 export class NotificationPreferencesSubSchemaBuilder {
   private constructor () {}
 
   public static buildSchema(): Schema<UserNotificationPreferences> {
     return new Schema<UserNotificationPreferences>(
       {
-        email: {
-          type: Boolean,
-          required: true,
-          default: true,
-        },
-        inApp: {
-          type: Boolean,
-          required: true,
-          default: true,
-        },
+        email: { type: Boolean, required: true, default: true },
+        inApp: { type: Boolean, required: true, default: true },
+        push: { type: Boolean, required: false, default: true },
       },
-      { _id: false },
+      { _id: false }
     );
   }
 }
 
-/**
- * PreferencesSubSchemaBuilder
- * ---------------------------
- * Stores UX preferences such as theme / language / timezone.
- */
 export class PreferencesSubSchemaBuilder {
   private constructor () {}
 
@@ -454,230 +676,300 @@ export class PreferencesSubSchemaBuilder {
       {
         theme: {
           type: String,
-          enum: [ 'light', 'dark', 'system' ],
+          enum: [ "light", "dark", "system" ],
           required: true,
-          default: 'system',
+          default: "system",
         },
-        language: {
-          type: String,
-          required: true,
-          default: 'en',
-          trim: true,
-        },
-        timeZone: {
-          type: String,
-          required: false,
-          default: null,
-          trim: true,
-        },
-        dateFormat: {
-          type: String,
-          required: false,
-          default: null,
-          trim: true,
-        },
+        language: { type: String, required: true, default: "en", trim: true },
+        timeZone: { type: String, required: false, default: null, trim: true },
+        dateFormat: { type: String, required: false, default: null, trim: true },
+
+        autoDownloadMedia: { type: Boolean, required: false, default: true },
+        enterToSend: { type: Boolean, required: false, default: true },
+
+        lastSeenVisibility: { type: String, required: false, default: "everyone" },
+        profilePhotoVisibility: { type: String, required: false, default: "everyone" },
+        aboutVisibility: { type: String, required: false, default: "everyone" },
+
+        readReceiptsEnabled: { type: Boolean, required: false, default: true },
       },
-      { _id: false },
+      { _id: false }
     );
   }
 }
 
-/* ============================================================================
- * USER MODEL BUILDER
- * ==========================================================================*/
+export class WalletBalanceSubSchemaBuilder {
+  private constructor () {}
 
-/**
- * UserModelBuilder
- * ----------------
- * Central point for building the User schema & model.
- * - Composes all sub-schemas via their static builder classes.
- * - Applies indexes and collection naming conventions.
- */
+  public static buildSchema(): Schema<WalletBalance> {
+    return new Schema<WalletBalance>(
+      {
+        currency: { type: String, required: true, trim: true, default: "LKR" },
+        available: { type: Number, required: true, default: 0, min: 0 },
+        pending: { type: Number, required: true, default: 0, min: 0 },
+        updatedAt: { type: Date, required: false, default: null },
+      },
+      { _id: false }
+    );
+  }
+}
+
+export class WalletSubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<UserWallet> {
+    return new Schema<UserWallet>(
+      {
+        enabled: { type: Boolean, required: true, default: false },
+        balances: { type: [ WalletBalanceSubSchemaBuilder.buildSchema() ], required: true, default: [] },
+      },
+      { _id: false }
+    );
+  }
+}
+
+export class PaymentProfileSubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<UserPaymentProfile> {
+    return new Schema<UserPaymentProfile>(
+      {
+        provider: { type: String, required: true, default: "custom", trim: true },
+        customerId: { type: String, required: true, default: "", trim: true },
+        defaultCurrency: { type: String, required: true, default: "LKR", trim: true },
+        billingEmail: { type: String, required: false, default: null, trim: true },
+
+        defaultPaymentMethodRef: { type: String, required: false, default: null, trim: true },
+        paymentMethodRefs: { type: [ String ], required: true, default: [] },
+      },
+      { _id: false }
+    );
+  }
+}
+
+export class UserDeviceSubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<UserDevice> {
+    return new Schema<UserDevice>(
+      {
+        deviceId: { type: String, required: true, trim: true },
+        name: { type: String, required: true, default: "", trim: true },
+        platform: { type: String, required: true, default: "other", trim: true },
+        appVersion: { type: String, required: false, default: null, trim: true },
+
+        lastSeenAt: { type: Date, required: false, default: null },
+        lastIp: { type: String, required: false, default: null, trim: true },
+        revokedAt: { type: Date, required: false, default: null },
+      },
+      { _id: false }
+    );
+  }
+}
+
+export class UserRoomMembershipSubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<UserRoomMembership> {
+    return new Schema<UserRoomMembership>(
+      {
+        roomId: { type: String, required: true, trim: true },
+        role: { type: String, required: true, default: "member", trim: true },
+
+        mutedUntil: { type: Date, required: false, default: null },
+        pinned: { type: Boolean, required: true, default: false },
+        archived: { type: Boolean, required: true, default: false },
+
+        nickname: { type: String, required: false, default: null, trim: true },
+        lastReadAt: { type: Date, required: false, default: null },
+      },
+      { _id: false }
+    );
+  }
+}
+
+export class UserPinnedMessageSubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<UserPinnedMessage> {
+    return new Schema<UserPinnedMessage>(
+      {
+        roomId: { type: String, required: true, trim: true },
+        messageId: { type: String, required: true, trim: true },
+        pinnedAt: { type: Date, required: false, default: null },
+      },
+      { _id: false }
+    );
+  }
+}
+
+export class UserSocialGraphSubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<UserSocialGraph> {
+    return new Schema<UserSocialGraph>(
+      {
+        contactUserIds: { type: [ String ], required: true, default: [] },
+        followingUserIds: { type: [ String ], required: true, default: [] },
+        followerUserIds: { type: [ String ], required: true, default: [] },
+        pinnedUserIds: { type: [ String ], required: true, default: [] },
+      },
+      { _id: false }
+    );
+  }
+}
+
+export class UserPrivacySubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<UserPrivacy> {
+    return new Schema<UserPrivacy>(
+      {
+        blockedUserIds: { type: [ String ], required: true, default: [] },
+        allowMessagesFrom: { type: String, required: true, default: "everyone", trim: true },
+        allowCallsFrom: { type: String, required: true, default: "everyone", trim: true },
+        allowGroupAddsFrom: { type: String, required: true, default: "everyone", trim: true },
+      },
+      { _id: false }
+    );
+  }
+}
+
+export class UserPresenceSubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<UserPresence> {
+    return new Schema<UserPresence>(
+      {
+        state: { type: String, required: true, default: "offline", trim: true },
+        lastActiveAt: { type: Date, required: false, default: null },
+      },
+      { _id: false }
+    );
+  }
+}
+
+export class UserSocialProfileSubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<UserSocialProfile> {
+    return new Schema<UserSocialProfile>(
+      {
+        handle: { type: String, required: true, default: "", trim: true },
+        displayName: { type: String, required: true, default: "", trim: true },
+        about: { type: String, required: false, default: null, trim: true },
+
+        avatarUrl: { type: String, required: false, default: null, trim: true },
+        coverUrl: { type: String, required: false, default: null, trim: true },
+
+        isCreator: { type: Boolean, required: true, default: false },
+        isPublicProfile: { type: Boolean, required: true, default: true },
+      },
+      { _id: false }
+    );
+  }
+}
+
+export class UserSavedContentSubSchemaBuilder {
+  private constructor () {}
+
+  public static buildSchema(): Schema<UserSavedContent> {
+    return new Schema<UserSavedContent>(
+      {
+        savedPostIds: { type: [ String ], required: true, default: [] },
+        pinnedPostIds: { type: [ String ], required: true, default: [] },
+      },
+      { _id: false }
+    );
+  }
+}
+
+/* ========================================================================== *
+ * USER MODEL BUILDER
+ * ========================================================================== */
+
 export class UserModelBuilder {
   private constructor () {}
 
-  /** Build the main User schema (composition of all sub-schemas). */
   public static buildSchema(): Schema<IUser> {
-    const addressSchema: Schema<Address> = AddressSubSchemaBuilder.buildSchema();
-    const accessSchema: Schema<ROLE_ACCESS_MAP> = AccessSubSchemaBuilder.buildSchema();
-    const phoneNumberSchema: Schema<PhoneNumber> = PhoneNumberSubSchemaBuilder.buildSchema();
-    const loginMetaSchema: Schema<UserLoginMetadata> = LoginMetaSubSchemaBuilder.buildSchema();
-    const preferencesSchema: Schema<UserPreferences> = PreferencesSubSchemaBuilder.buildSchema();
-    const notificationPrefsSchema: Schema<UserNotificationPreferences> =
-      NotificationPreferencesSubSchemaBuilder.buildSchema();
+    const addressSchema = AddressSubSchemaBuilder.buildSchema();
+    const accessSchema = AccessSubSchemaBuilder.buildSchema();
+    const phoneNumberSchema = PhoneNumberSubSchemaBuilder.buildSchema();
 
-    const userSchema: Schema<IUser> = new Schema<IUser>(
+    const loginMetaSchema = LoginMetaSubSchemaBuilder.buildSchema();
+    const preferencesSchema = PreferencesSubSchemaBuilder.buildSchema();
+    const notificationPrefsSchema = NotificationPreferencesSubSchemaBuilder.buildSchema();
+
+    const paymentProfileSchema = PaymentProfileSubSchemaBuilder.buildSchema();
+    const walletSchema = WalletSubSchemaBuilder.buildSchema();
+
+    const deviceSchema = UserDeviceSubSchemaBuilder.buildSchema();
+    const roomMembershipSchema = UserRoomMembershipSubSchemaBuilder.buildSchema();
+    const pinnedMessageSchema = UserPinnedMessageSubSchemaBuilder.buildSchema();
+
+    const socialGraphSchema = UserSocialGraphSubSchemaBuilder.buildSchema();
+    const privacySchema = UserPrivacySubSchemaBuilder.buildSchema();
+    const presenceSchema = UserPresenceSubSchemaBuilder.buildSchema();
+    const socialProfileSchema = UserSocialProfileSubSchemaBuilder.buildSchema();
+    const savedContentSchema = UserSavedContentSubSchemaBuilder.buildSchema();
+
+    const userSchema = new Schema<IUser>(
       {
-        // ── Basic Info
-        name: {
-          type: String,
-          required: true,
-          trim: true,
-        },
-        username: {
-          type: String,
-          required: true,
-          unique: true,
-          trim: true,
-          index: true,
-        },
-        email: {
-          type: String,
-          required: true,
-          unique: true,
-          trim: true,
-          index: true,
-        },
-        password: {
-          type: String,
-          required: true, // hashed in services
-        },
-        dateOfBirth: {
-          type: Date,
-          required: true,
-        },
-        age: {
-          type: Number,
-          required: true,
-          min: 0,
-        },
-        gender: {
-          type: String,
-          required: true,
-          trim: true,
-        },
-        image: {
-          type: String,
-          trim: true,
-        },
-        bio: {
-          type: String,
-          default: '',
-          trim: true,
-        },
-        nationality: {
-          type: String,
-          default: '',
-          trim: true,
-          required: true,
-        },
-        nicOrPassport: {
-          type: String,
-          default: '',
-          trim: true,
-          required: true,
-        },
-        phoneNumber: {
-          type: phoneNumberSchema,
-          required: false,
-        },
+        // ── Identity
+        name: { type: String, required: true, trim: true },
+        username: { type: String, required: true, unique: true, trim: true, index: true },
+        email: { type: String, required: true, unique: true, trim: true, index: true },
+        password: { type: String, required: true },
 
-        // ── Role & Access
-        role: {
-          type: String,
-          enum: [
-            'admin',
-            'agent',
-            'tenant',
-            'owner',
-            'operator',
-            'manager',
-            'developer',
-            'user',
-          ],
-          required: true,
-          index: true,
-        },
-        address: {
-          type: addressSchema,
-          required: true,
-        },
-        isActive: {
-          type: Boolean,
-          default: true,
-          index: true,
-        },
+        dateOfBirth: { type: Date, required: true },
+        age: { type: Number, required: true, min: 0 },
+        gender: { type: String, required: true, trim: true },
 
-        // Default: user with no explicit permissions yet.
+        image: { type: String, required: false, trim: true },
+        phoneNumber: { type: phoneNumberSchema, required: false },
+
+        bio: { type: String, required: true, default: "", trim: true },
+        nationality: { type: String, required: true, default: "", trim: true },
+        nicOrPassport: { type: String, required: true, default: "", trim: true },
+
+        // ── Org Role & Access
+        role: { type: String, enum: DEFAULT_ROLES, required: true, index: true },
         access: {
           type: accessSchema,
           required: true,
-          default: (): ROLE_ACCESS_MAP => ( {
-            role: 'user',
+          default: (): RoleAccessMap => ( {
+            role: "user",
             permissions: [],
           } ),
         },
 
-        // ── Verification & OTP
-        otpVerifycation: {
-          type: Boolean,
-          default: false,
-        },
-        otpToken: {
-          type: String,
-          default: '',
-        },
-        otpTokenExpires: {
-          type: Date,
-        },
-        emailVerified: {
-          type: Boolean,
-          default: false,
-          index: true,
-        },
-        emailVerificationToken: {
-          type: String,
-        },
-        emailVerificationTokenExpires: {
-          type: Date,
-        },
+        address: { type: addressSchema, required: true },
+        isActive: { type: Boolean, required: true, default: true, index: true },
 
-        // ── MFA
-        multiAuthEnabled: {
-          type: Boolean,
-          required: true,
-          default: false,
-        },
-        multiAuthActivatedAt: {
-          type: Date,
-          required: false,
-          default: null,
-        },
-        multiAuthSecret: {
-          type: String,
-          required: false,
-          default: null,
-        },
+        // ── OTP / email verification (legacy kept)
+        otpVerifycation: { type: Boolean, required: true, default: false },
+        otpToken: { type: String, required: true, default: "" },
+        otpTokenExpires: { type: Date, required: false, default: null },
 
-        // ── Reset tokens
-        resetToken: {
-          type: String,
-          required: false,
-          trim: true,
-          default: null,
-        },
-        resetTokenExpiresAt: {
-          type: Date,
-          required: false,
-          default: null,
-        },
+        emailVerified: { type: Boolean, required: true, default: false, index: true },
+        emailVerificationToken: { type: String, required: false, default: null },
+        emailVerificationTokenExpires: { type: Date, required: false, default: null },
 
-        // ── Admin Controls
-        autoDelete: {
-          type: Boolean,
-          default: true,
-        },
-        creator: {
-          type: String,
-          required: true,
-          trim: true,
-        },
-        updator: {
-          type: String,
-          trim: true,
-        },
+        // ── MFA (secret must never be exposed)
+        multiAuthEnabled: { type: Boolean, required: true, default: false },
+        multiAuthActivatedAt: { type: Date, required: false, default: null },
+        multiAuthSecret: { type: String, required: false, default: null },
 
-        // ── Login & preferences (future-ready)
+        // ── Reset
+        resetToken: { type: String, required: false, default: null, trim: true },
+        resetTokenExpiresAt: { type: Date, required: false, default: null },
+
+        // ── Admin meta
+        autoDelete: { type: Boolean, required: true, default: true },
+        creator: { type: String, required: true, trim: true },
+        updator: { type: String, required: false, trim: true },
+
+        // ── Security + preferences
         loginMeta: {
           type: loginMetaSchema,
           required: true,
@@ -686,16 +978,25 @@ export class UserModelBuilder {
             lastLoginAt: null,
             lastFailedLoginAt: null,
             lockedUntil: null,
+            lastUserAgent: null,
+            lastDeviceId: null,
+            lastLocationHint: null,
           } ),
         },
         preferences: {
           type: preferencesSchema,
           required: true,
           default: (): UserPreferences => ( {
-            theme: 'system',
-            language: 'en',
+            theme: "system",
+            language: "en",
             timeZone: null,
             dateFormat: null,
+            autoDownloadMedia: true,
+            enterToSend: true,
+            lastSeenVisibility: "everyone",
+            profilePhotoVisibility: "everyone",
+            aboutVisibility: "everyone",
+            readReceiptsEnabled: true,
           } ),
         },
         notificationPreferences: {
@@ -704,80 +1005,187 @@ export class UserModelBuilder {
           default: (): UserNotificationPreferences => ( {
             email: true,
             inApp: true,
+            push: true,
+          } ),
+        },
+
+        // ── Payments
+        paymentProfile: {
+          type: paymentProfileSchema,
+          required: true,
+          default: (): UserPaymentProfile => ( {
+            provider: "custom",
+            customerId: "",
+            defaultCurrency: "LKR",
+            billingEmail: null,
+            defaultPaymentMethodRef: null,
+            paymentMethodRefs: [],
+          } ),
+        },
+        wallet: {
+          type: walletSchema,
+          required: true,
+          default: (): UserWallet => ( {
+            enabled: false,
+            balances: [],
+          } ),
+        },
+
+        // ── WhatsApp / social pointers
+        devices: { type: [ deviceSchema ], required: true, default: [] },
+        rooms: { type: [ roomMembershipSchema ], required: true, default: [] },
+        pinnedMessages: { type: [ pinnedMessageSchema ], required: true, default: [] },
+
+        socialGraph: {
+          type: socialGraphSchema,
+          required: true,
+          default: (): UserSocialGraph => ( {
+            contactUserIds: [],
+            followingUserIds: [],
+            followerUserIds: [],
+            pinnedUserIds: [],
+          } ),
+        },
+        privacy: {
+          type: privacySchema,
+          required: true,
+          default: (): UserPrivacy => ( {
+            blockedUserIds: [],
+            allowMessagesFrom: "everyone",
+            allowCallsFrom: "everyone",
+            allowGroupAddsFrom: "everyone",
+          } ),
+        },
+        presence: {
+          type: presenceSchema,
+          required: true,
+          default: (): UserPresence => ( {
+            state: "offline",
+            lastActiveAt: null,
+          } ),
+        },
+
+        socialProfile: {
+          type: socialProfileSchema,
+          required: true,
+          default: (): UserSocialProfile => ( {
+            handle: "",
+            displayName: "",
+            about: null,
+            avatarUrl: null,
+            coverUrl: null,
+            isCreator: false,
+            isPublicProfile: true,
+          } ),
+        },
+        savedContent: {
+          type: savedContentSchema,
+          required: true,
+          default: (): UserSavedContent => ( {
+            savedPostIds: [],
+            pinnedPostIds: [],
           } ),
         },
       },
       {
-        timestamps: true, // adds createdAt, updatedAt
+        timestamps: true,
         versionKey: false,
         minimize: true,
-      },
+      }
     );
 
-    // Helpful compound/text indexes for search & filtering
+    /* ====================================================================== *
+     * INDEXES (scale-ready)
+     * ====================================================================== */
+
+    // Directory search (admin/user picker/chat invite)
     userSchema.index( {
-      name: 'text',
-      email: 'text',
-      username: 'text',
+      name: "text",
+      email: "text",
+      username: "text",
+      "socialProfile.handle": "text",
+      "socialProfile.displayName": "text",
     } );
 
-    // Extra index: active users by role (admin/manager dashboards)
-    userSchema.index( {
-      role: 1,
-      isActive: 1,
-    } );
+    // Common filtering
+    userSchema.index( { role: 1, isActive: 1 } );
 
-    // ──────────────────────────────────────────────────────────────────────
-    // toJSON transform – remove sensitive fields from generic JSON output.
-    // ──────────────────────────────────────────────────────────────────────
-    userSchema.set( 'toJSON', {
+    // Fast handle lookup (public profile)
+    userSchema.index( { "socialProfile.handle": 1 } );
+
+    // Device lookup (multi-device security)
+    userSchema.index( { "devices.deviceId": 1 } );
+
+    // Room membership quick checks
+    userSchema.index( { "rooms.roomId": 1 } );
+
+    // Social graph lookups
+    userSchema.index( { "socialGraph.contactUserIds": 1 } );
+    userSchema.index( { "socialGraph.followingUserIds": 1 } );
+
+    /* ====================================================================== *
+     * OUTPUT SANITIZATION
+     * ====================================================================== */
+
+    userSchema.set( "toJSON", {
       transform: ( _doc, ret: any ) => {
         const out = ret as Record<string, unknown>;
 
         delete out.password;
+
         delete out.resetToken;
         delete out.resetTokenExpiresAt;
+
+        delete out.otpToken;
+        delete out.otpTokenExpires;
+
+        delete out.emailVerificationToken;
+        delete out.emailVerificationTokenExpires;
+
+        delete out.multiAuthSecret;
+
         delete out.__v;
 
         return out;
       },
     } );
 
-
-    // ──────────────────────────────────────────────────────────────────────
-    // toSafeDTO – explicit DTO builder for API responses.
-    // IMPORTANT: this does NOT modify the DB; only the in-memory object.
-    // ──────────────────────────────────────────────────────────────────────
     userSchema.method( "toSafeDTO", function toSafeDTO( this: IUser ): User {
-      // Cast to a mutable record so TS allows deletion
-      const raw = this.toObject( {
-        getters: false,
-        virtuals: false,
-      } ) as Record<string, unknown>;
+      const raw = this.toObject( { getters: false, virtuals: false } ) as Record<string, unknown>;
 
-      // Delete sensitive fields safely
       delete raw.password;
+
       delete raw.resetToken;
       delete raw.resetTokenExpiresAt;
+
+      delete raw.otpToken;
+      delete raw.otpTokenExpires;
+
+      delete raw.emailVerificationToken;
+      delete raw.emailVerificationTokenExpires;
+
+      delete raw.multiAuthSecret;
+
       delete raw.__v;
 
       return raw as User;
     } );
 
-
     return userSchema;
   }
 
-  /** Create and return the Mongoose model instance. */
   public static getModel(): Model<IUser> {
-    const schema: Schema<IUser> = this.buildSchema();
-    // Explicit collection name for consistency: 'users'
-    return model<IUser>( 'User', schema, 'users' );
+    if ( models.User ) {
+      return models.User as Model<IUser>;
+    }
+
+    const schema = this.buildSchema();
+    return model<IUser>( "User", schema, "users" );
   }
 }
 
-/* ============================================================================
+/* ========================================================================== *
  * MODEL EXPORT
- * ==========================================================================*/
+ * ========================================================================== */
 
 export const UserModel: Model<IUser> = UserModelBuilder.getModel();

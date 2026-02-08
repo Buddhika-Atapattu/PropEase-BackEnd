@@ -43,7 +43,11 @@ import Payments from '../api/payment';
 import UploadsRoutes from '../api/uploads';
 import TeamManagement from '../api/teamManagement/teamManagement';
 import TeamTaskManagement from '../api/teamManagement/teamTask';
-import { KpiRoutes } from '../KPIs/api/kpi.routes';
+import TeamKpiRouter from '../api/teamManagement/teamKpi';
+import WorkItemApi from '../api/teamManagement/workItem';
+import WorkEventApi from '../api/teamManagement/workEvents';
+import { CommentsEngineRouter } from "../api/shared/comments/comments-engine.router";
+
 
 // Notifications, reports, auth, MFA
 import NotificationController from '../controller/notification.controller';
@@ -118,7 +122,10 @@ export class AppServer {
   private readonly uploadsRoutes: UploadsRoutes;
   private readonly teamManagement: TeamManagement;
   private readonly teamTaskRouter: TeamTaskManagement;
-  private readonly kpis: KpiRoutes;
+  private readonly teamKpiRouter: TeamKpiRouter;
+  private readonly workItemRouter: WorkItemApi;
+  private readonly workEventRouter: WorkEventApi;
+  private readonly commentsEngineRouter: CommentsEngineRouter;
 
 
   // Notifications / reports / auth / mfa
@@ -200,6 +207,8 @@ export class AppServer {
       optionsSuccessStatus: 204
     };
 
+    this.app.set("trust proxy", true);
+
     // Global rate limiter
     this.rateLimiter = rateLimit({
       windowMs: isProd ? 60_000 : 30_000,
@@ -240,7 +249,11 @@ export class AppServer {
     this.uploadsRoutes = new UploadsRoutes();
     this.teamManagement = new TeamManagement();
     this.teamTaskRouter = new TeamTaskManagement();
-    this.kpis = new KpiRoutes();
+    this.teamKpiRouter = new TeamKpiRouter();
+    this.workItemRouter = new WorkItemApi();
+    this.workEventRouter = new WorkEventApi();
+    this.commentsEngineRouter = new CommentsEngineRouter();
+
 
     // Notification / report / auth / MFA
     this.notificationService = new NotificationService();
@@ -350,8 +363,10 @@ export class AppServer {
       payments: this.payments,
       teamManagement: this.teamManagement,
       teamTaskRouter: this.teamTaskRouter,
-      kpis: this.kpis,
-
+      teamKpiRouter: this.teamKpiRouter,
+      workEventRouter: this.workEventRouter,
+      workItemRouter: this.workItemRouter,
+      commentsEngineRouter: this.commentsEngineRouter,
     });
 
     routesBootstrap.registerAll();

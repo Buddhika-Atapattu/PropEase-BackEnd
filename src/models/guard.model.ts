@@ -5,7 +5,7 @@ import {
     model,
     type Document,
     type Model,
-    Types
+    Types,
 } from 'mongoose';
 
 import type { User } from './user.model';
@@ -13,28 +13,23 @@ import type { User } from './user.model';
 /**
  * GuardTokenDocument
  * ------------------
- * Binds:
- *   - userId   : primary ref to User._id (ObjectId)
- *   - username : convenience / debug, kept in sync with User.username
- *   - sessionToken      : 30-day token (main, stable-ish)
- *   - guardToken        : current short-lived token
- *   - previousGuardToken: last guard token (for overlap window)
- *   - deviceID          : stable per-device identifier from FE
- *   - expiresAt         : absolute expiry for sessionToken (TTL index)
- *
- * NEW BEHAVIOUR:
- *   - One active guard row per (userId + deviceID)
- *   - Same user may have multiple devices
- *   - Same device may be used by multiple users
+ * One active guard row per (userId + deviceID).
+ * TTL on expiresAt removes whole row when session expires.
  */
 export interface GuardTokenDocument extends Document {
     userId: Types.ObjectId;
     username: User[ 'username' ];
+
     sessionToken: string;
     guardToken: string;
+
     deviceID: string;
+
     previousGuardToken?: string;
-    expiresAt: Date;
+    previousGuardTokenExpiresAt?: Date; // ✅ Date
+
+    expiresAt: Date; // ✅ TTL index lives here
+
     createdAt: Date;
     updatedAt: Date;
 }
@@ -46,88 +41,102 @@ class GuardTokenModelBuilder {
                 userId: {
                     type: Schema.Types.ObjectId,
                     ref: 'User',
-                    required: true
-                },
-                username: {
-                    type: String,
-                    required: true,
-                    trim: true
-                },
-                sessionToken: {
-                    type: String,
-                    required: true,
-                    trim: true
-                },
-                guardToken: {
-                    type: String,
-                    required: true,
-                    trim: true
-                },
+                required: true,
+            },
+            username: {
+                type: String,
+                required: true,
+                trim: true,
+            },
+
+            sessionToken: {
+                type: String,
+                required: true,
+                trim: true,
+            },
+            guardToken: {
+                type: String,
+                required: true,
+                trim: true,
+            },
+
             deviceID: {
                 type: String,
                 required: true,
-                trim: true
+                trim: true,
             },
+
             previousGuardToken: {
                 type: String,
                 required: false,
-                trim: true
+                trim: true,
+                default: undefined, // ✅ ensure not stored when missing
             },
+
+            // ✅ MUST be Date (not String)
+            previousGuardTokenExpiresAt: {
+                type: Date,
+                required: false,
+                default: undefined, // ✅ ensure not stored when missing
+            },
+
             expiresAt: {
                 type: Date,
-                required: true
-            }
+                required: true,
+            },
         },
         {
             timestamps: true,
             versionKey: false,
-            collection: 'guard-tokens'
-        }
+            collection: 'guard-tokens',
+        },
     );
 
       // ──────────────────────────────────────────────────────────────
       // Indexes
       // ──────────────────────────────────────────────────────────────
 
-      /**
-       * One active guard-token row per (userId + deviceID)
-       *
-       * This allows:
-       *  - Same user on multiple devices → separate rows
-       *  - Same device for multiple users → separate rows
-       */
+      // One active session row per (userId + deviceID)
       schema.index(
           { userId: 1, deviceID: 1 },
-          { unique: true, name: 'uniq_user_device' }
-      );
+        { unique: true, name: 'uniq_user_device' },
+    );
 
-      // Username indexed for convenience (non-unique)
       schema.index( { username: 1 }, { name: 'idx_username' } );
 
-      // Tokens must stay globally unique
-      schema.index( { sessionToken: 1 }, { unique: true, name: 'uniq_sessionToken' } );
+      // Tokens globally unique
+      schema.index(
+          { sessionToken: 1 },
+          { unique: true, name: 'uniq_sessionToken' },
+      );
       schema.index( { guardToken: 1 }, { unique: true, name: 'uniq_guardToken' } );
 
-      // previousGuardToken is unique only when present
+      // previousGuardToken unique only when present
       schema.index(
           { previousGuardToken: 1 },
-          { unique: true, sparse: true, name: 'uniq_prevGuardToken' }
+        { unique: true, sparse: true, name: 'uniq_prevGuardToken' },
+    );
+
+      // TTL: remove row when session expires
+      schema.index(
+          { expiresAt: 1 },
+          { expireAfterSeconds: 0, name: 'ttl_expiresAt' },
       );
 
-      // TTL: when expiresAt < now, Mongo removes the document automatically
-      schema.index( { expiresAt: 1 }, { expireAfterSeconds: 0, name: 'ttl_expiresAt' } );
+      // Optional (not required): helpful for diagnostics / potential cleanup queries
+      schema.index(
+          { previousGuardTokenExpiresAt: 1 },
+          { name: 'idx_prevGuardTokenExpiresAt' },
+      );
 
       return schema;
   }
 
     public build(): Model<GuardTokenDocument> {
         const schema = this.buildSchema();
-        const GuardTokenModel: Model<GuardTokenDocument> =
-          model<GuardTokenDocument>( 'GuardToken', schema, 'guard-tokens' );
-      return GuardTokenModel;
+      return model<GuardTokenDocument>( 'GuardToken', schema, 'guard-tokens' );
   }
 }
 
 const builder = new GuardTokenModelBuilder();
-
 export const GuardTokenModel: Model<GuardTokenDocument> = builder.build();

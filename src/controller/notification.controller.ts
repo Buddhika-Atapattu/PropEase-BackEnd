@@ -1,16 +1,18 @@
 // src/controller/notification.controller.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// Notification Controller (Express + TypeScript)
-// - Lists + creates notifications
-// - Marks read (one, many, all)
-// - Restores and permanently deletes domain records by category+refId
-// - Emits domain events over sockets
-// - Creates dynamic notifications (title/body computed in the service) for
-//   restore and permanent delete actions.
-// - Aligns to exactOptionalPropertyTypes by conditionally spreading optionals.
+// NotificationController (Improved)
+// - Uses ApiResponseBuilder consistently (no raw res.status().json())
+// - Adds strict validation helpers (exactOptionalPropertyTypes-safe)
+// - Unifies parsing of "notification" envelope for JSON + FormData
+// - Centralizes permission checks (admin/operator/manager)
+// - Centralizes socket emissions + domain-action notifications
+//
+// IMPORTANT:
+// - Always follow your project rule: `res.status(...).json(...); return;`
+// - Never pass undefined for optional props: use conditional spreads.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { Router, type RequestHandler } from "express";
+import { Router, type RequestHandler, type Request, type Response } from "express";
 import path from "path";
 import fs from "fs";
 import fsp from "fs/promises";
@@ -20,14 +22,15 @@ import NotificationService, {
   type NotificationAudienceDTO,
 } from "../services/notification.service";
 
-// 👇 use the connection handler, not SocketServer
 import { SocketConnectionHandler } from "../socket/socket-connection.handler";
 
 import { Role, type AudienceMode } from "../types/roles";
 import type { TitleCategory } from "../models/notifications/notification.model";
+import { ApiResponseBuilder } from "../utils/api-combiner.builder";
 
 type AuthedReq = Express.Request & { user: { username: string; role: Role } };
 
+// Payload shapes coming from UI (notification envelope)
 type RestoreNotificationPayload = {
   _id?: string;
   category?: string;
@@ -60,8 +63,9 @@ export default class NotificationController {
 
   public constructor(
     private readonly service: NotificationService,
-    private readonly sockets: SocketConnectionHandler, 
+    private readonly sockets: SocketConnectionHandler,
   ) {
+    // IMPORTANT: keep routes stable
     this.router.get("/", this.listMine);
     this.router.post("/create", this.create);
     this.router.post("/:id/read", this.markRead);
@@ -72,7 +76,41 @@ export default class NotificationController {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Helpers
+  // Small validation helpers
+  // ───────────────────────────────────────────────────────────────────────────
+
+  private getAuthedUser( req: Request ): { username: string; role: Role; } {
+    const user = ( req as unknown as AuthedReq ).user;
+    if ( !user?.username || !user?.role ) {
+      throw new Error( "Authenticated user context missing (req.user)." );
+    }
+    return user;
+  }
+
+  private requireRole(
+    res: Response,
+    role: Role,
+    allowed: ReadonlyArray<Role>,
+    context: string,
+  ): boolean {
+    if ( !allowed.includes( role ) ) {
+      ApiResponseBuilder.error( res, 403, `[${ context }] Permission denied.` );
+      return false;
+    }
+    return true;
+  }
+
+  private safeString( v: unknown ): string {
+    return typeof v === "string" ? v.trim() : "";
+  }
+
+  private safeNumber( v: unknown, fallback: number ): number {
+    const n = typeof v === "string" ? Number( v ) : typeof v === "number" ? v : NaN;
+    return Number.isFinite( n ) ? n : fallback;
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Safe path helpers (used for reading snapshots)
   // ───────────────────────────────────────────────────────────────────────────
 
   private safeJoin(baseDir: string, ...parts: string[]): string {
@@ -84,59 +122,74 @@ export default class NotificationController {
     return target;
   }
 
-  private async tryReadJsonSnapshot(
-    relPath?: string,
-  ): Promise<Record<string, any> | undefined> {
+  private async tryReadJsonSnapshot( relPath?: string ): Promise<Record<string, any> | undefined> {
     try {
-      if (!relPath || typeof relPath !== "string" || !relPath.trim()) {
-        return undefined;
-      }
-      const absolute = this.safeJoin(BACKUP_ROOT, relPath.trim());
+      const rel = this.safeString( relPath );
+      if ( !rel ) return undefined;
+
+      const absolute = this.safeJoin( BACKUP_ROOT, rel );
       if (!fs.existsSync(absolute)) return undefined;
+
       const data = await fsp.readFile(absolute, "utf8");
       const parsed = JSON.parse(data);
-      return typeof parsed === "object" && parsed
-        ? (parsed as Record<string, any>)
-        : undefined;
+      return typeof parsed === "object" && parsed ? ( parsed as Record<string, any> ) : undefined;
     } catch {
       return undefined;
     }
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  // GET /api-notification
+  // Notification envelope parser (JSON + FormData compatibility)
   // ───────────────────────────────────────────────────────────────────────────
 
-  private listMine: RequestHandler = async (req, res) => {
-    try {
-      const { username, role } = (req as unknown as AuthedReq).user;
-      const { skip = "0", limit = "50", unread, category } = req.query as any;
+  /**
+   * UI sometimes sends:
+   * - JSON: { category, refId, ... }
+   * - FormData: field "notification" = JSON string
+   *
+   * This method normalizes both into an object.
+   */
+  private parseNotificationEnvelope<T extends object>( req: Request ): T {
+    const bodyAny = req.body as any;
 
-      const normalizedCategory =
-        typeof category === "string"
-          ? this.normalizeCategory(category)
+    // If body.notification exists:
+    // - if it's a string => parse JSON
+    // - else => use it directly (object) but clone via JSON.stringify/parse to normalize
+    const raw =
+      typeof bodyAny?.notification === "string"
+        ? bodyAny.notification
+        : bodyAny?.notification
+          ? JSON.stringify( bodyAny.notification )
           : undefined;
 
-      const filters = {
-        skip: Number(skip),
-        limit: Number(limit),
-        onlyUnread: unread === "true",
-        ...(normalizedCategory ? { category: normalizedCategory } : {}),
-      } as const;
+    // If not, and content-type is JSON, allow direct body as payload
+    const fallback =
+      raw == null && req.is( "application/json" ) ? JSON.stringify( bodyAny ) : undefined;
 
-      const data = await this.service.listForUser(username, role, filters);
-      res.status(200).json({ success: true, data });
-    } catch (err: any) {
-      console.error("[notifications:listMine] error:", err);
-      res
-        .status(500)
-        .json({ success: false, message: err?.message || "List error" });
+    const toParse = raw ?? fallback;
+    if ( !toParse ) {
+      throw new Error(
+        'Missing notification payload. Send JSON body or FormData field "notification".',
+      );
     }
-  };
+
+    try {
+      const parsed = JSON.parse( toParse ) as T;
+      if ( !parsed || typeof parsed !== "object" ) throw new Error( "payload is not an object" );
+      return parsed;
+    } catch {
+      throw new Error( 'Invalid JSON in "notification" payload.' );
+    }
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Category normalization
+  // ───────────────────────────────────────────────────────────────────────────
 
   private normalizeCategory(input?: string): TitleCategory | undefined {
-    if (!input) return undefined;
-    const s = input.trim().toLowerCase();
+    const s = this.safeString( input ).toLowerCase();
+    if ( !s ) return undefined;
+
     const map: Record<string, TitleCategory> = {
       user: "User",
       tenant: "Tenant",
@@ -150,28 +203,48 @@ export default class NotificationController {
       registration: "Registration",
       payment: "Payment",
       system: "System",
+      comment: "Comment",
     };
+
     return map[s];
   }
 
-  private defaultRecycleSnapshotPath(
-    category: TitleCategory,
-    refId: string,
-  ): string {
-    const root = "recyclebin";
-    switch (category) {
-      case "Property":
-        return `${root}/properties/${encodeURIComponent(refId)}/data.json`;
-      case "Tenant":
-        return `${root}/tenants/${encodeURIComponent(refId)}/data.json`;
-      case "User":
-        return `${root}/users/${encodeURIComponent(refId)}/data.json`;
-      default:
-        return `${root}/${category.toLowerCase()}/${encodeURIComponent(
-          refId,
-        )}/data.json`;
+  // ───────────────────────────────────────────────────────────────────────────
+  // GET /api-notification
+  // ───────────────────────────────────────────────────────────────────────────
+
+  private listMine: RequestHandler = async ( req, res ) => {
+    try {
+      const { username, role } = this.getAuthedUser( req );
+
+      const q = req.query as any;
+      const skip = this.safeNumber( q?.skip, 0 );
+      const limit = this.safeNumber( q?.limit, 50 );
+
+      const onlyUnread = String( q?.unread ?? "" ).toLowerCase() === "true";
+      const normalizedCategory =
+        typeof q?.category === "string" ? this.normalizeCategory( q.category ) : undefined;
+
+      const filters = {
+        skip,
+        limit,
+        onlyUnread,
+        ...( normalizedCategory ? { category: normalizedCategory } : {} ),
+      } as const;
+
+      const data = await this.service.listForUser( username, role, filters );
+
+      ApiResponseBuilder.ok( res, "other", { data }, "[notifications:listMine] Success!" );
+      return;
+    } catch ( err: unknown ) {
+      console.error( "[Error:] [NotificationController] listMine failed.\n", err, "\n" );
+      ApiResponseBuilder.internalError(
+        res,
+        String( ( err as Error )?.message ?? "Failed to list notifications." ),
+      );
+      return;
     }
-  }
+  };
 
   // ───────────────────────────────────────────────────────────────────────────
   // POST /api-notification/create
@@ -179,26 +252,26 @@ export default class NotificationController {
 
   private create: RequestHandler = async (req, res) => {
     try {
-      const allowed: ReadonlyArray<Role> = ["admin", "operator", "manager"];
-      const { role } = (req as unknown as AuthedReq).user;
-      if (!allowed.includes(role)) {
-        res.status(403).json({ message: "Permission denied" });
-        return;
-      }
+      const { role } = this.getAuthedUser( req );
 
+      const allowed: ReadonlyArray<Role> = ["admin", "operator", "manager"];
+      if ( !this.requireRole( res, role, allowed, "notifications:create" ) ) return;
+
+      // Service validates audience + creates the notification.
       const created = await this.service.createNotification(
         req.body,
-        (rooms, payload) =>
-          // 👇 now uses connection handler, and event name is `notification:new`
-          this.sockets.emitToRooms(rooms, "notification:new", payload),
+        ( rooms, payload ) => this.sockets.emitToRooms( rooms, "notification:new", payload ),
       );
 
-      res.status(201).json({ success: true, data: created });
-    } catch (err: any) {
-      console.error("[notifications:create] error:", err);
-      res
-        .status(500)
-        .json({ success: false, message: err?.message || "Create error" });
+      ApiResponseBuilder.ok( res, "other", { created }, "[notifications:create] Created." );
+      return;
+    } catch ( err: unknown ) {
+      console.error( "[Error:] [NotificationController] create failed.\n", err, "\n" );
+      ApiResponseBuilder.internalError(
+        res,
+        String( ( err as Error )?.message ?? "Failed to create notification." ),
+      );
+      return;
     }
   };
 
@@ -208,21 +281,25 @@ export default class NotificationController {
 
   private markRead: RequestHandler = async (req, res) => {
     try {
-      const { username } = (req as unknown as AuthedReq).user;
-      const { id } = req.params;
-      if (typeof id !== "string" || !id.trim()) {
-        res
-          .status(400)
-          .json({ success: false, message: "Invalid notification ID" });
+      const { username } = this.getAuthedUser( req );
+
+      const id = this.safeString( req.params?.id );
+      if ( !id ) {
+        ApiResponseBuilder.validationError( res, "Invalid notification ID." );
         return;
       }
+
       await this.service.markRead(username, id);
-      res.status(200).json({ success: true });
-    } catch (err: any) {
-      console.error("[notifications:markRead] error:", err);
-      res
-        .status(500)
-        .json({ success: false, message: err?.message || "Mark read error" });
+
+      ApiResponseBuilder.ok( res, "other", { id }, "[notifications:markRead] Marked read." );
+      return;
+    } catch ( err: unknown ) {
+      console.error( "[Error:] [NotificationController] markRead failed.\n", err, "\n" );
+      ApiResponseBuilder.internalError(
+        res,
+        String( ( err as Error )?.message ?? "Failed to mark as read." ),
+      );
+      return;
     }
   };
 
@@ -232,22 +309,33 @@ export default class NotificationController {
 
   private markManyRead: RequestHandler = async (req, res) => {
     try {
-      const { username } = (req as unknown as AuthedReq).user;
-      const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids : [];
+      const { username } = this.getAuthedUser( req );
+
+      const ids: string[] = Array.isArray( ( req.body as any )?.ids )
+        ? ( req.body as any ).ids.map( ( x: unknown ) => this.safeString( x ) ).filter( Boolean )
+        : [];
+
       if (!ids.length) {
-        res
-          .status(400)
-          .json({ success: false, message: "Missing 'ids' array" });
+        ApiResponseBuilder.validationError( res, "Missing 'ids' array." );
         return;
       }
+
       await this.service.markManyRead(username, ids);
-      res.status(200).json({ success: true });
-    } catch (err: any) {
-      console.error("[notifications:markManyRead] error:", err);
-      res.status(500).json({
-        success: false,
-        message: err?.message || "Bulk mark read error",
-      });
+
+      ApiResponseBuilder.ok(
+        res,
+        "other",
+        { count: ids.length },
+        "[notifications:markManyRead] Updated.",
+      );
+      return;
+    } catch ( err: unknown ) {
+      console.error( "[Error:] [NotificationController] markManyRead failed.\n", err, "\n" );
+      ApiResponseBuilder.internalError(
+        res,
+        String( ( err as Error )?.message ?? "Failed to mark many as read." ),
+      );
+      return;
     }
   };
 
@@ -255,104 +343,65 @@ export default class NotificationController {
   // POST /api-notification/read-all
   // ───────────────────────────────────────────────────────────────────────────
 
-  private markAllRead: RequestHandler = async (_req, res) => {
+  private markAllRead: RequestHandler = async ( req, res ) => {
     try {
-      const { username } = (_req as unknown as AuthedReq).user;
+      const { username } = this.getAuthedUser( req );
+
       await this.service.markAllRead(username);
-      res.status(200).json({ success: true });
-    } catch (err: any) {
-      console.error("[notifications:markAllRead] error:", err);
-      res.status(500).json({
-        success: false,
-        message: err?.message || "Mark all read error",
-      });
+
+      ApiResponseBuilder.ok( res, "other", { username }, "[notifications:markAllRead] Updated." );
+      return;
+    } catch ( err: unknown ) {
+      console.error( "[Error:] [NotificationController] markAllRead failed.\n", err, "\n" );
+      ApiResponseBuilder.internalError(
+        res,
+        String( ( err as Error )?.message ?? "Failed to mark all as read." ),
+      );
+      return;
     }
   };
 
   // ───────────────────────────────────────────────────────────────────────────
   // POST /api-notification/restore
-  // (unchanged logic – only uses sockets.emitToRooms same as above)
   // ───────────────────────────────────────────────────────────────────────────
+
   private restoreDelete: RequestHandler = async (req, res) => {
     try {
-      const envelope =
-        typeof (req.body as any)?.notification === "string"
-          ? (req.body as any).notification
-          : (req.body as any)?.notification
-            ? JSON.stringify((req.body as any).notification)
-            : undefined;
+      const { role, username } = this.getAuthedUser( req );
 
-      const fallback =
-        envelope == null && req.is("application/json")
-          ? JSON.stringify(req.body)
-          : undefined;
+      const allowed: ReadonlyArray<Role> = [ "admin", "operator", "manager" ];
+      if ( !this.requireRole( res, role, allowed, "notifications:restore" ) ) return;
 
-      const toParse = envelope ?? fallback;
-      if (!toParse) {
-        res.status(400).json({
-          success: false,
-          message:
-            'Missing notification payload. Send JSON { notification: {...} } or FormData field "notification".',
-        });
-        return;
-      }
-
-      let parsed!: RestoreNotificationPayload;
-      try {
-        parsed = JSON.parse(toParse) as RestoreNotificationPayload;
-      } catch {
-        res
-          .status(400)
-          .json({ success: false, message: 'Invalid JSON in "notification"' });
-        return;
-      }
+      const parsed = this.parseNotificationEnvelope<RestoreNotificationPayload>( req );
 
       const category = this.normalizeCategory(parsed?.category);
       if (!category) {
-        res
-          .status(400)
-          .json({ success: false, message: 'Missing/invalid "category"' });
+        ApiResponseBuilder.validationError( res, 'Missing/invalid "category".' );
         return;
       }
 
-      const refId =
-        typeof parsed?.refId === "string" && parsed.refId.trim()
-          ? parsed.refId.trim()
-          : typeof parsed?.metadata?.refId === "string" &&
-              parsed.metadata.refId.trim()
-            ? parsed.metadata.refId.trim()
-            : undefined;
+      const refIdFromTop = this.safeString( parsed?.refId );
+      const refIdFromMeta = this.safeString( parsed?.metadata?.refId );
+      const refId = refIdFromTop || refIdFromMeta || "";
 
       let snapshot =
-        parsed?.snapshot && typeof parsed.snapshot === "object"
-          ? parsed.snapshot
-          : undefined;
+        parsed?.snapshot && typeof parsed.snapshot === "object" ? parsed.snapshot : undefined;
 
+      // Optional: read snapshot from backups if UI provided a filePath
       const explicitFilePath =
-        typeof parsed?.metadata?.data?.filePath === "string" &&
-            parsed.metadata.data.filePath.trim()
-          ? parsed.metadata.data.filePath.trim()
-          : typeof parsed?.metadata?.filePath === "string" &&
-              parsed.metadata.filePath.trim()
-            ? parsed.metadata.filePath.trim()
-            : "";
+        this.safeString( parsed?.metadata?.data?.filePath ) ||
+        this.safeString( parsed?.metadata?.filePath );
 
       if (!snapshot && explicitFilePath) {
         snapshot = await this.tryReadJsonSnapshot(explicitFilePath);
       }
 
+      // You allow restore with either refId or snapshot
       if (!refId && !snapshot) {
-        res.status(400).json({
-          success: false,
-          message:
-            'Provide "refId" (top-level or metadata.refId) or a valid "snapshot" (or metadata.data.filePath).',
-        });
-        return;
-      }
-
-      const { role, username } = (req as unknown as AuthedReq).user;
-      if (!(role === "admin" || role === "operator" || role === "manager")) {
-        res.status(403).json({ success: false, message: "Permission denied" });
+        ApiResponseBuilder.validationError(
+          res,
+          'Provide "refId" (top-level or metadata.refId) or "snapshot" (or metadata.data.filePath).',
+        );
         return;
       }
 
@@ -367,113 +416,77 @@ export default class NotificationController {
       const result = await this.service.restoreByCategory(restoreInput);
 
       if (result?.ok) {
+        // Emit a domain event to refresh UIs
         this.sockets.emitToRooms(result.rooms || [], "notification.restore", {
           category,
-          refId,
+          refId: refId || "(generated)",
           by: username,
         });
 
+        // ALSO create a dynamic "domain action" notification (optional but consistent)
         const audienceMode: AudienceMode = "role";
-        const roles: NotificationAudienceDTO["roles"] = [
-          "admin",
-          "operator",
-          "manager",
-        ];
+        const roles: NotificationAudienceDTO[ "roles" ] = [ "admin", "operator", "manager" ];
 
-        const notifyArgs = {
-          action: "restore" as const,
+        await this.service.notifyDomainAction( {
+          action: "restore",
           category,
-          refId: refId!,
+          refId: refId || String( result?.restored?._id ?? "" ),
           requestedBy: username,
           ...(snapshot ? { snapshot } : {}),
           audience: { mode: audienceMode, roles },
           source: "notification.controller:restore",
-        };
-
-        await this.service.notifyDomainAction(notifyArgs);
+        } );
       }
 
-      res.status(200).json({
-        success: !!result?.ok,
-        message:
-          result?.message || (result?.ok ? "Restored" : "Restore failed"),
-        category,
-        refId,
-        restored: result?.restored ?? undefined,
-      });
-    } catch (err: any) {
-      console.error("[notifications:restore] error:", err);
-      res
-        .status(500)
-        .json({ success: false, message: err?.message || "Restore error" });
+      ApiResponseBuilder.ok(
+        res,
+        "other",
+        {
+          ok: !!result?.ok,
+          message: result?.message || ( result?.ok ? "Restored" : "Restore failed" ),
+          category,
+          refId: refId || undefined,
+          restored: result?.restored,
+        },
+        "[notifications:restore] Done.",
+      );
+      return;
+    } catch ( err: unknown ) {
+      console.error( "[Error:] [NotificationController] restoreDelete failed.\n", err, "\n" );
+      ApiResponseBuilder.internalError(
+        res,
+        String( ( err as Error )?.message ?? "Failed to restore." ),
+      );
+      return;
     }
   };
 
   // ───────────────────────────────────────────────────────────────────────────
   // POST /api-notification/permanent-delete
-  // (same pattern; still uses sockets.emitToRooms)
   // ───────────────────────────────────────────────────────────────────────────
+
   private permanentDelete: RequestHandler = async (req, res) => {
     try {
-      const envelope =
-        typeof (req.body as any)?.notification === "string"
-          ? (req.body as any).notification
-          : (req.body as any)?.notification
-            ? JSON.stringify((req.body as any).notification)
-            : undefined;
+      const { role, username } = this.getAuthedUser( req );
 
-      const fallback =
-        envelope == null && req.is("application/json")
-          ? JSON.stringify(req.body)
-          : undefined;
+      // In your original logic: permanent delete admin-only
+      const allowed: ReadonlyArray<Role> = [ "admin" ];
+      if ( !this.requireRole( res, role, allowed, "notifications:permanentDelete" ) ) return;
 
-      const toParse = envelope ?? fallback;
-      if (!toParse) {
-        res.status(400).json({
-          success: false,
-          message:
-            'Missing notification payload. Send JSON { notification: {...} } or FormData field "notification".',
-        });
-        return;
-      }
-
-      let parsed!: PermanentDeletePayload;
-      try {
-        parsed = JSON.parse(toParse) as PermanentDeletePayload;
-      } catch {
-        res
-          .status(400)
-          .json({ success: false, message: 'Invalid JSON in "notification"' });
-        return;
-      }
+      const parsed = this.parseNotificationEnvelope<PermanentDeletePayload>( req );
 
       const category = this.normalizeCategory(parsed?.category);
       if (!category) {
-        res
-          .status(400)
-          .json({ success: false, message: 'Missing/invalid "category"' });
+        ApiResponseBuilder.validationError( res, 'Missing/invalid "category".' );
         return;
       }
 
-      const refId =
-        typeof parsed?.refId === "string" && parsed.refId.trim()
-          ? parsed.refId.trim()
-          : typeof parsed?.metadata?.refId === "string" &&
-              parsed.metadata.refId.trim()
-            ? parsed.metadata.refId.trim()
-            : "";
+      const refIdFromTop = this.safeString( parsed?.refId );
+      const refIdFromMeta = this.safeString( parsed?.metadata?.refId );
+      const refId = refIdFromTop || refIdFromMeta;
 
       if (!refId) {
-        res.status(400).json({
-          success: false,
-          message: 'Missing "refId" (top-level or metadata.refId).',
-        });
-        return;
-      }
-
-      const { role, username } = (req as unknown as AuthedReq).user;
-      if (!(role === "admin")) {
-        res.status(403).json({ success: false, message: "Permission denied" });
+        ApiResponseBuilder.validationError( res, 'Missing "refId" (top-level or metadata.refId).' );
         return;
       }
 
@@ -485,49 +498,45 @@ export default class NotificationController {
       });
 
       if (result?.ok) {
-        this.sockets.emitToRooms(
-          result.rooms || [],
-          "notification.permanent_delete",
-          {
-            category,
-            refId,
-            by: username,
-          },
-        );
+        this.sockets.emitToRooms( result.rooms || [], "notification.permanent_delete", {
+          category,
+          refId,
+          by: username,
+        } );
 
         const audienceMode: AudienceMode = "role";
-        const roles: NotificationAudienceDTO["roles"] = [
-          "admin",
-          "operator",
-          "manager",
-        ];
+        const roles: NotificationAudienceDTO[ "roles" ] = [ "admin", "operator", "manager" ];
 
-        const notifyArgs = {
-          action: "permanent_delete" as const,
+        await this.service.notifyDomainAction( {
+          action: "permanent_delete",
           category,
           refId,
           requestedBy: username,
           audience: { mode: audienceMode, roles },
           source: "notification.controller:permanent_delete",
-        };
-
-        await this.service.notifyDomainAction(notifyArgs);
+        } );
       }
 
-      res.status(200).json({
-        success: !!result?.ok,
-        message:
-          result?.message ||
-          (result?.ok ? "Permanently deleted" : "Permanent delete failed"),
-        category,
-        refId,
-      });
-    } catch (err: any) {
-      console.error("[notifications:permanentDelete] error:", err);
-      res.status(500).json({
-        success: false,
-        message: err?.message || "Permanent delete error",
-      });
+      ApiResponseBuilder.ok(
+        res,
+        "other",
+        {
+          ok: !!result?.ok,
+          message:
+            result?.message || ( result?.ok ? "Permanently deleted" : "Permanent delete failed" ),
+          category,
+          refId,
+        },
+        "[notifications:permanentDelete] Done.",
+      );
+      return;
+    } catch ( err: unknown ) {
+      console.error( "[Error:] [NotificationController] permanentDelete failed.\n", err, "\n" );
+      ApiResponseBuilder.internalError(
+        res,
+        String( ( err as Error )?.message ?? "Failed to permanently delete." ),
+      );
+      return;
     }
   };
 }

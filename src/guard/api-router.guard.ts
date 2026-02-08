@@ -5,24 +5,23 @@
 // Responsibilities:
 //  - Extract sessionToken + guardToken (cookies / headers).
 //  - Use GuardTokenService.resolveUserFromTokens(...) to resolve the User.
-//  - Attach req.user = { username, role, permissions } for downstream handlers.
+//  - Attach req.user = { userId, username, role, permissions } for downstream.
 //  - Enforce module/action permissions based on GUARD_ROUTES + ACCESS_OPTIONS.
 //  - Apply per-user rate limiting for protected endpoints.
 //  - Enforce MFA for users with multiAuthEnabled (except MFA allowlist).
 //  - Allow selected "public" endpoints to bypass checks + rate limiter.
+//  - Attach session expiry warning headers when close to expiry.
 // ============================================================================
 
-import { ENV } from '../configs/env.config';
-import type {
-    NextFunction,
-    Request,
-    RequestHandler,
-    Response,
-} from 'express';
+import type { NextFunction, Request, RequestHandler, Response } from 'express';
 
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 
+import { ENV } from '../configs/env.config';
+
 import { GuardTokenService } from '../services/guard-token.service';
+import { SessionExpiryService } from '../services/session-expiry.service';
+
 import { ApiResponseBuilder } from '../utils/api-combiner.builder';
 
 import {
@@ -32,20 +31,22 @@ import {
 } from '../source/access-map.source';
 
 import type { User, PermissionEntry } from '../models/user.model';
+
 import {
     GUARD_ROUTES,
-    GuardedRequest,
-    GuardRouteDefinition,
-    HttpMethod,
+    type GuardedRequest,
+    type GuardRouteDefinition,
+    type HttpMethod,
     PUBLIC_ENDPOINTS,
 } from '../source/guard-routes-map.source';
+
 import type { Role } from '../types/roles';
-import { SessionExpiryService } from "../services/session-expiry.service";
 
+// =============================================================================
+// Local helpers (keep this file self-contained + type-safe)
+// =============================================================================
 
-// ─────────────────────────────────────────────────────────────────────────────
-// MFA types
-// ─────────────────────────────────────────────────────────────────────────────
+type CookieBag = Record<string, unknown>;
 
 type MfaVerificationStatus =
     | 'validated'
@@ -59,125 +60,110 @@ interface MfaBypassEndpoint {
     pattern: RegExp;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Core guard implementation
-// ─────────────────────────────────────────────────────────────────────────────
+interface ExtractedTokens {
+    sessionToken?: string | undefined;
+    guardToken?: string | undefined;
+}
 
 class ApiGuard {
     private readonly tokenService = new GuardTokenService();
     private readonly sessionExpiryService = new SessionExpiryService();
 
-    /**
-     * Per-user rate limiter (STRICT):
-     *  - 10 requests per 15 minutes
-     *  - Keyed by x-session-token when present, otherwise by IP
-     *
-     * Use for SENSITIVE endpoints: user mgmt, tracking, etc.
-     */
     private readonly limiter10per15: RequestHandler;
-
-    /**
-     * Relaxed limiter for high-frequency endpoints like notifications:
-     *  - 300 requests per 15 minutes (i.e. 1 req / 3s on average)
-     *  - Same keying logic (IP + optional x-session-token).
-     */
     private readonly notificationLimiter: RequestHandler;
 
+  /**
+   * MFA bypass allowlist:
+   * - Keep this VERY small.
+   * - Only for endpoints that must work before MFA completion (e.g., logout).
+   */
     private readonly MFA_BYPASS_ENDPOINTS: ReadonlyArray<MfaBypassEndpoint> = [
-        // example for future, when some routes are guarded but should skip MFA:
-        { method: 'POST', pattern: /^\/api\/auth\/logout$/ },
-    ];
-
+      { method: 'POST', pattern: /^\/api\/auth\/logout$/ },
+  ];
 
     public constructor () {
         const isDev: boolean = ENV.app.NODE_ENV !== 'production';
-        const baseLimiterConfig = {
-            windowMs: 15 * 60 * 1000, // 15 minutes
-            standardHeaders: true,
-            legacyHeaders: false,
-            message: {
-                status: 'error',
-                message: 'Too many requests. Please try again later.',
-            },
-            keyGenerator: ( req: Request ): string => {
-                // 1) Always derive an IPv6-safe base key from IP
-                const rawIp = req.ip || '';
-                const ipKey = ipKeyGenerator( rawIp, 64 ); // 64-char stable hash
 
-                // 2) Optionally mix in session token if present
-                const sessionHeader =
-                    ( req.headers[ 'x-session-token' ] as string | undefined )?.trim();
+      /**
+       * Rate limiting strategy:
+       * - IPv6-safe IP key
+       * - If sessionToken exists, include it in key to become "per-user-ish"
+       * - Still falls back to IP-only if token missing
+       */
+      const baseLimiterConfig = {
+        windowMs: 15 * 60 * 1000,
+        standardHeaders: true,
+        legacyHeaders: false,
+        message: {
+            status: 'error',
+            message: 'Too many requests. Please try again later.',
+        },
+        keyGenerator: ( req: Request ): string => {
+            const rawIp: string = String( req.ip ?? '' ).trim();
+            const ipKey: string = ipKeyGenerator( rawIp, 64 );
 
-                return sessionHeader && sessionHeader.length > 0
-                    ? `${ ipKey }:${ sessionHeader }`
-                    : ipKey;
-            },
-        } as const;
+          const { sessionToken } = this.extractTokens( req );
 
-        if ( isDev ) {
-            // DEVELOPMENT MODE → disable rate limiting entirely
-            const noopLimiter: RequestHandler = ( _req, _res, next ) => {
-                next();
-            };
+            return sessionToken ? `${ ipKey }:${ sessionToken }` : ipKey;
+        },
+    } as const;
 
-            this.limiter10per15 = noopLimiter;
-            this.notificationLimiter = noopLimiter;
-        } else {
-            // PRODUCTION MODE
-            this.limiter10per15 = rateLimit( {
-                ...baseLimiterConfig,
-                max: 10,
-            } );
+      // Dev: disable limiters to reduce local friction
+      if ( isDev ) {
+          const noopLimiter: RequestHandler = ( _req, _res, next ) => next();
+          this.limiter10per15 = noopLimiter;
+          this.notificationLimiter = noopLimiter;
+          return;
+      }
 
-            this.notificationLimiter = rateLimit( {
-                ...baseLimiterConfig,
-                max: 300, // 1 req / 3s on average
-            } );
-        }
-    }
+      // Prod: strict default limiter + larger bucket for notification bursty traffic
+      this.limiter10per15 = rateLimit( {
+          ...baseLimiterConfig,
+          max: 10,
+    } );
 
-    /**
-     * Main middleware: plug into app.ts as:
-     *   app.use("/api-user", apiGuard, userRoute.route);
-     *   app.use("/api-notification", apiGuard, notificationController.router);
-     *   app.use("/api-tracking", apiGuard, tracking.route);
-     */
+      this.notificationLimiter = rateLimit( {
+          ...baseLimiterConfig,
+        max: 300,
+    } );
+  }
+
+    // =============================================================================
+    // Exported middleware
+    // =============================================================================
+
     public readonly middleware: RequestHandler = (
         req: Request,
         res: Response,
         next: NextFunction,
     ): void => {
-        const method = req.method.toUpperCase() as HttpMethod;
-        const fullPath = this.getFullPath( req );
+      const method: HttpMethod = req.method.toUpperCase() as HttpMethod;
+      const fullPath: string = this.getFullPath( req );
 
-        // 1) Public endpoints bypass both rate limiting and auth/RBAC
-        if ( this.isPublicEndpoint( method, fullPath ) ) {
-            next();
-            return;
-        }
+      // 1) Public endpoints bypass EVERYTHING (no tokens, no limiter, no MFA)
+      if ( this.isPublicEndpoint( method, fullPath ) ) {
+          next();
+          return;
+      }
 
-        // 2) Choose limiter based on path:
-        const useNotificationLimiter: boolean =
-            fullPath.startsWith( '/api-notification' );
+      // 2) Choose limiter bucket (example: notifications can be noisier)
+      const useNotificationLimiter: boolean = fullPath.startsWith( '/api-notification' );
+      const limiter: RequestHandler = useNotificationLimiter
+          ? this.notificationLimiter
+          : this.limiter10per15;
 
-        const limiter = useNotificationLimiter
-            ? this.notificationLimiter
-            : this.limiter10per15;
+      limiter( req, res, ( limitErr?: unknown ) => {
+          // express-rate-limit already wrote response when it blocks.
+          if ( limitErr ) return;
 
-        limiter( req, res, ( limitErr?: unknown ) => {
-            if ( limitErr ) {
-                // Limiter already sent 429 response
-                return;
-            }
+        void this.handleGuardAfterRateLimit( req, res, next, method, fullPath );
+    } );
+  };
 
-            // 3) Run the actual auth + permission logic
-            void this.handleGuardAfterRateLimit( req, res, next, method, fullPath );
-        } );
-    };
+    // =============================================================================
+    // Main guard flow (runs AFTER limiter)
+    // =============================================================================
 
-    /**
-     * Core guard logic executed AFTER rate limiting has passed.
-     */
     private async handleGuardAfterRateLimit(
         req: Request,
         res: Response,
@@ -186,128 +172,144 @@ class ApiGuard {
         fullPath: string,
     ): Promise<void> {
         try {
-            // 1) Extract tokens from cookies + headers
-            const { sessionToken, guardToken } = this.extractTokens( req );
+        // 1) Tokens
+        const { sessionToken, guardToken } = this.extractTokens( req );
 
-            if ( !sessionToken || !guardToken ) {
-                ApiResponseBuilder.error(
-                    res,
-                    401,
-                    'Authentication required: missing session or guard token.',
-                );
-                return;
-            }
-
-            // 2) Resolve user from tokens
-            const user: User | null =
-                await this.tokenService.resolveUserFromTokens( sessionToken, guardToken );
-
-            if ( !user ) {
-                ApiResponseBuilder.error(
-                    res,
-                    401,
-                    'Authentication failed: invalid or expired tokens.',
-                );
-                return;
-            }
-
-            // 3) MFA ENFORCEMENT (before RBAC):
-            //    If user has multiAuthEnabled, require X-MFA-Verification=validated
-            //    unless the endpoint is in the MFA bypass allowlist.
-            const mfaRequired: boolean = !!user.multiAuthEnabled;
-
-            if (
-                mfaRequired &&
-                !this.isMfaBypassEndpoint( method, fullPath ) // e.g., NOT /api-mfa/* or /api-user/logout
-            ) {
-                const mfaStatus: MfaVerificationStatus = this.extractMfaStatus( req );
-
-                if ( mfaStatus !== 'validated' ) {
-                    // Backend cannot redirect, but FE will see this 401 + message
-                    // and route to /mfa/verification.
-                    ApiResponseBuilder.error(
-                        res,
-                        401,
-                        'Multi-factor authentication required. Please complete verification.',
-                    );
-                    return;
-                }
-            }
-
-            // 4) Attach to req.user for controllers
-            const permissions: PermissionEntry[] = Array.isArray(
-                user.access?.permissions,
-            )
-                ? ( user.access!.permissions as PermissionEntry[] )
-                : [];
-
-            ( req as unknown as GuardedRequest ).user = {
-                username: user.username,
-                role: user.role as Role,
-                permissions,
-            };
-
-            // 5) Route-level permission check
-            const routeDef = this.matchGuardRoute( method, fullPath );
-            if ( !routeDef ) {
-                // No specific rule defined → "authenticated-only", no RBAC check.
-                next();
-                return;
-            }
-
-            const allowed = this.hasPermissionForRoute(
-                user,
-                routeDef.module,
-                routeDef.action,
+        if ( !sessionToken || !guardToken ) {
+            ApiResponseBuilder.error(
+                res,
+                401,
+                'Authentication required: missing session or guard token.',
             );
+            return;
+        }
 
-            if ( !allowed ) {
+        // 2) Resolve user from tokens
+        const user: User | null = await this.tokenService.resolveUserFromTokens(
+            sessionToken,
+            guardToken,
+        );
+
+        if ( !user ) {
+            ApiResponseBuilder.error(
+                res,
+                401,
+                'Authentication failed: invalid or expired tokens.',
+            );
+            return;
+        }
+
+        // 3) MFA enforcement (only when user requires it, except bypass allowlist)
+        const mfaRequired: boolean = !!( user as any )?.multiAuthEnabled;
+
+        if ( mfaRequired && !this.isMfaBypassEndpoint( method, fullPath ) ) {
+            const mfaStatus: MfaVerificationStatus = this.extractMfaStatus( req );
+
+          if ( mfaStatus !== 'validated' ) {
+              ApiResponseBuilder.error(
+                  res,
+                  401,
+                  'Multi-factor authentication required. Please complete verification.',
+              );
+              return;
+          }
+      }
+
+        // 4) Attach req.user for downstream handlers (safe + minimal)
+        const permissions: PermissionEntry[] = Array.isArray( ( user as any )?.access?.permissions )
+            ? ( ( user as any ).access.permissions as PermissionEntry[] )
+            : [];
+
+        // Important: userId may be missing if resolveUserFromTokens returns a stripped DTO.
+        const userId: string = String( ( user as any )?._id ?? '' ).trim();
+
+        ( req as unknown as GuardedRequest ).user = {
+            userId,
+            username: user.username,
+          name: ( user as any )?.name ?? '',
+          image: ( user as any )?.image ?? null,
+          role: user.role as Role,
+          permissions,
+      };
+
+        // 5) RBAC check (ONLY for routes that exist in GUARD_ROUTES)
+        //    - If route isn't listed, we still consider it "authenticated",
+        //      but not permission-guarded (useful during incremental rollout).
+        const routeDef: GuardRouteDefinition | undefined = this.matchGuardRoute( method, fullPath );
+
+        if ( routeDef ) {
+            const allowed: boolean = this.hasPermissionForRoute( user, routeDef.module, routeDef.action );
+
+          if ( !allowed ) {
+              ApiResponseBuilder.error(
+                  res,
+                  403,
+                  'Permission denied: insufficient access for this operation.',
+              );
+              return;
+          }
+
+          // 6) Extra hardening for access/role modifications (defense-in-depth)
+          if ( routeDef.id === 'user:create' || routeDef.id === 'user:update' ) {
+              const touchesAccess: boolean = this.requestTouchesUserAccess( req );
+
+            if ( touchesAccess && !this.hasAccessControlAuthority( user ) ) {
                 ApiResponseBuilder.error(
                     res,
                     403,
-                    'Permission denied: insufficient access for this operation.',
+                    'Permission denied: you are not allowed to grant or revoke access.',
                 );
                 return;
             }
-
-            // 6) EXTRA: Only privileged users may change access/permissions
-            if ( routeDef.id === 'user:create' || routeDef.id === 'user:update' ) {
-                const touchesAccess = this.requestTouchesUserAccess( req );
-
-                if ( touchesAccess && !this.hasAccessControlAuthority( user ) ) {
-                    ApiResponseBuilder.error(
-                        res,
-                        403,
-                        'Permission denied: you are not allowed to grant or revoke access.',
-                    );
-                    return;
-                }
-            }
-
-            // 7)  Attach session warning headers if session is close to expiry
-            await this.sessionExpiryService.attachWarningHeadersIfNeeded(
-                res,
-                sessionToken
-            );
-
-            // 8) All checks passed
-            next();
-            return;
-        } catch ( error ) {
-            console.error( '[ApiGuard] error:', error );
-            ApiResponseBuilder.error( res, 500, 'Internal guard error.' );
-            return;
         }
+      }
+
+        // 7) Session expiry warning headers (even if route not in GUARD_ROUTES)
+        await this.sessionExpiryService.attachWarningHeadersIfNeeded( res, sessionToken );
+
+        next();
+        return;
+      } catch ( error ) {
+          console.error( '[Error:] [ApiGuard] middleware error:\n', error, '\n' );
+          ApiResponseBuilder.error( res, 500, 'Internal guard error.' );
+          return;
+      }
+  }
+
+    // =============================================================================
+    // Public helpers (used by other parts of the system)
+    // =============================================================================
+
+    public getTokens( req: Request ): ExtractedTokens {
+        return this.extractTokens( req );
     }
 
-    // ───────────────────────────────────────────────────────────────────────────
-    // Helpers: path, public endpoints, MFA helpers, token extraction, route match
-    // ───────────────────────────────────────────────────────────────────────────
+    public async getLoggedUser( req: Request ): Promise<User | null> {
+        try {
+            const { sessionToken, guardToken } = this.extractTokens( req );
+
+          if ( !sessionToken ) throw new Error( 'Invalid session token' );
+          if ( !guardToken ) throw new Error( 'Invalid guard token' );
+
+          const user = await this.tokenService.resolveUserFromTokens( sessionToken, guardToken );
+
+          if ( !user ) throw new Error( 'Invalid user data!' );
+          return user;
+      } catch ( error ) {
+          console.error( '[Error:] [ApiGuard] getLoggedUser:\n', error, '\n' );
+          return null;
+      }
+  }
+
+    // =============================================================================
+    // Request parsing helpers
+    // =============================================================================
 
     private getFullPath( req: Request ): string {
-        const base = req.baseUrl || '';
-        const path = ( req.path || req.url || '' ).split( '?' )[ 0 ];
-        return base + path;
+        const base: string = String( req.baseUrl ?? '' );
+        const raw: string = String( req.path || req.url || '' );
+        const clean: string = raw.split( '?' )[ 0 ] ?? '';
+        return base + clean;
     }
 
     private isPublicEndpoint( method: HttpMethod, fullPath: string ): boolean {
@@ -317,159 +319,187 @@ class ApiGuard {
         } );
     }
 
-    private isMfaBypassEndpoint(
-        method: HttpMethod,
-        fullPath: string,
-    ): boolean {
+    private isMfaBypassEndpoint( method: HttpMethod, fullPath: string ): boolean {
         return this.MFA_BYPASS_ENDPOINTS.some( ( ep ) => {
-            if ( ep.method !== 'ANY' && ep.method !== method ) {
-                return false;
-            }
+            if ( ep.method !== 'ANY' && ep.method !== method ) return false;
             return ep.pattern.test( fullPath );
         } );
     }
 
-    /**
-     * Extract MFA verification status from header:
-     *  - Header from FE: X-MFA-Verification: validated | not_validated | pending | no_mfa | ...
-     *  - All keys are lowercased in Node's req.headers.
-     */
     private extractMfaStatus( req: Request ): MfaVerificationStatus {
-        const raw =
-            ( req.headers[ 'x-mfa-verification' ] as string | undefined )?.trim().toLowerCase() ??
-            '';
+        const raw: string =
+            String( req.headers[ 'x-mfa-verification' ] ?? '' )
+                .trim()
+                .toLowerCase();
 
-        switch ( raw ) {
-            case 'validated':
-                return 'validated';
-            case 'not_validated':
-                return 'not_validated';
-            case 'pending':
-                return 'pending';
-            case 'no_mfa':
-                return 'no_mfa';
-            case '':
-                // if not provided but user has MFA enabled, treat as pending
-                return 'pending';
-            default:
-                return 'unknown';
-        }
+      switch ( raw ) {
+          case 'validated':
+              return 'validated';
+
+        case 'not_validated':
+            return 'not_validated';
+
+        case 'pending':
+            return 'pending';
+
+        case 'no_mfa':
+            return 'no_mfa';
+
+        // If FE doesn't send header yet, treat as pending (secure-by-default)
+        case '':
+            return 'pending';
+
+          default:
+              return 'unknown';
+      }
+  }
+
+    private extractTokens( req: Request ): ExtractedTokens {
+        const anyReq = req as Request & { cookies?: CookieBag; };
+
+      // Cookies (require cookie-parser)
+      const cookieSession: string = String( anyReq.cookies?.sessionToken ?? '' ).trim();
+      const cookieGuard: string = String( anyReq.cookies?.guardToken ?? '' ).trim();
+
+      // Headers (optional for API clients)
+      const headerSession: string = String( req.headers[ 'x-session-token' ] ?? '' ).trim();
+      const headerGuard: string = String( req.headers[ 'x-guard-token' ] ?? '' ).trim();
+
+      const sessionToken: string = ( cookieSession || headerSession || '' ).trim();
+      const guardToken: string = ( cookieGuard || headerGuard || '' ).trim();
+
+      return {
+          sessionToken: sessionToken || undefined,
+          guardToken: guardToken || undefined,
+      };
+  }
+
+    private matchGuardRoute( method: HttpMethod, fullPath: string ): GuardRouteDefinition | undefined {
+        return GUARD_ROUTES.find( ( r ) => {
+            const methodOk: boolean = r.method === method || r.method === 'ANY';
+            return methodOk && r.pattern.test( fullPath );
+        } );
     }
 
-    private extractTokens(
-        req: Request,
-    ): { sessionToken?: string | undefined; guardToken?: string | undefined; } {
-        const anyReq = req as Request & {
-            cookies?: Record<string, unknown>;
-        };
-
-        const rawSession =
-            ( anyReq.cookies?.sessionToken as string | undefined ) ?? undefined;
-        const rawGuard =
-            ( anyReq.cookies?.guardToken as string | undefined ) ?? undefined;
-
-        const headerSession =
-            ( req.headers[ 'x-session-token' ] as string | undefined ) ?? undefined;
-        const headerGuard =
-            ( req.headers[ 'x-guard-token' ] as string | undefined ) ?? undefined;
-
-        const sessionToken = ( rawSession || headerSession || '' ).trim() || undefined;
-        const guardToken = ( rawGuard || headerGuard || '' ).trim() || undefined;
-
-        return { sessionToken, guardToken };
-    }
-
-    private matchGuardRoute(
-        method: HttpMethod,
-        fullPath: string,
-    ): GuardRouteDefinition | undefined {
-        return GUARD_ROUTES.find(
-            ( r ) => r.method === method && r.pattern.test( fullPath ),
-        );
-    }
-
-    // ───────────────────────────────────────────────────────────────────────────
-    // Permission model
-    // ───────────────────────────────────────────────────────────────────────────
+    // =============================================================================
+    // Permission model (RBAC)
+    // =============================================================================
 
     private hasPermissionForRoute(
         user: User,
         module: AccessModuleKey,
         action: AccessActionKey,
     ): boolean {
-        const role = user.role as Role;
-        const permissions: PermissionEntry[] = Array.isArray(
-            user.access?.permissions,
-        )
-            ? ( user.access!.permissions as PermissionEntry[] )
-            : [];
+      const role: Role = user.role as Role;
 
-        // 1) Super-role shortcut
-        if ( role === 'admin' ) return true;
+      const permissions: PermissionEntry[] = Array.isArray( ( user as any )?.access?.permissions )
+          ? ( ( user as any ).access.permissions as PermissionEntry[] )
+          : [];
 
-        // 2) Validate that the module/action exists in ACCESS_OPTIONS
-        const moduleOption = ACCESS_OPTIONS.find( ( opt ) => opt.module === module );
-        if ( !moduleOption ) {
-            console.warn( '[ApiGuard] Unknown module in GUARD_ROUTES:', module );
-            return false;
-        }
+      // Superuser shortcut
+      if ( role === 'admin' ) return true;
 
-        const actionExists = moduleOption.actions?.some( ( a ) => a.id === action );
-        if ( !actionExists ) {
-            console.warn(
-                '[ApiGuard] Unknown action in GUARD_ROUTES:',
-                module,
-                action,
-            );
-            return false;
-        }
+      // Validate module + action exist in canonical ACCESS_OPTIONS (defensive)
+      const moduleOption = ACCESS_OPTIONS.find( ( opt ) => opt.module === module );
 
-        // 3) Does the user have this module + action in their PermissionEntry[]?
-        const entry = permissions.find( ( p ) => p.module === module );
-        if ( !entry || !Array.isArray( entry.actions ) ) {
-            return false;
-        }
+      if ( !moduleOption ) {
+          console.warn(
+              '[Warning:] [ApiGuard] Unknown module in GUARD_ROUTES:',
+              module,
+              '\n',
+          );
+          return false;
+      }
 
-        return entry.actions.includes( action );
-    }
+      const actionExists: boolean = !!moduleOption.actions?.some( ( a ) => a.id === action );
 
-    private requestTouchesUserAccess( req: Request ): boolean {
-        const body = req.body as Record<string, unknown> | undefined;
-        if ( !body || typeof body !== 'object' ) return false;
-
-        if ( 'access' in body ) return true;
-        if ( 'accessControl' in body ) return true;
-        if ( 'permissions' in body ) return true;
-
+      if ( !actionExists ) {
+          console.warn(
+          '[Warning:] [ApiGuard] Unknown action in GUARD_ROUTES:',
+          module,
+          action,
+          '\n',
+        );
         return false;
     }
 
+      // Check user permission entry
+      const entry = permissions.find( ( p ) => p.module === module );
+
+      if ( !entry || !Array.isArray( entry.actions ) ) return false;
+
+      return entry.actions.includes( action );
+  }
+
+    /**
+     * Defense-in-depth:
+     * Even if route permission allows user:create/user:update,
+     * only some users should be allowed to grant/revoke permissions.
+     */
+    private requestTouchesUserAccess( req: Request ): boolean {
+        const body = req.body as Record<string, unknown> | undefined;
+
+      if ( !body || typeof body !== 'object' ) return false;
+
+      if ( 'access' in body ) return true;
+      if ( 'accessControl' in body ) return true;
+      if ( 'permissions' in body ) return true;
+
+      return false;
+  }
+
+    /**
+     * "Access Control Authority" policy:
+     * - Admin always allowed.
+     * - Otherwise must have:
+     *   - UserManagement.assignRole
+     *   - AccessControl.grantAccess OR AccessControl.revokeAccess
+     */
     private hasAccessControlAuthority( user: User ): boolean {
-        const role = user.role as Role;
-        const permissions: PermissionEntry[] = Array.isArray(
-            user.access?.permissions,
-        )
-            ? ( user.access!.permissions as PermissionEntry[] )
+        const role: Role = user.role as Role;
+
+        const permissions: PermissionEntry[] = Array.isArray( ( user as any )?.access?.permissions )
+            ? ( ( user as any ).access.permissions as PermissionEntry[] )
             : [];
 
-        if ( role === 'admin' ) return true;
+      if ( role === 'admin' ) return true;
 
-        const entry = permissions.find( ( p ) => p.module === 'AccessControl' );
-        if ( !entry || !Array.isArray( entry.actions ) ) {
-            return false;
-        }
+      const userManagementEntry = permissions.find( ( p ) => p.module === 'UserManagement' );
 
-        const allowedActions = new Set( entry.actions );
-        return (
-            allowedActions.has( 'grantAccess' ) || allowedActions.has( 'revokeAccess' )
-        );
-    }
+      if ( !userManagementEntry || !Array.isArray( userManagementEntry.actions ) ) return false;
+
+      const userManagementAllowed: boolean = new Set( userManagementEntry.actions ).has( 'assignRole' );
+
+      const accessEntry = permissions.find( ( p ) => p.module === 'AccessControl' );
+
+      if ( !accessEntry || !Array.isArray( accessEntry.actions ) ) return false;
+
+      const accessAllowedActions = new Set( accessEntry.actions );
+
+      const accessManagementAllowed: boolean =
+          accessAllowedActions.has( 'grantAccess' ) || accessAllowedActions.has( 'revokeAccess' );
+
+      return userManagementAllowed && accessManagementAllowed;
+  }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
 // Singleton instance + exported handler
-// ─────────────────────────────────────────────────────────────────────────────
+// =============================================================================
 
 const apiGuardInstance = new ApiGuard();
 
 export const apiGuard: RequestHandler = apiGuardInstance.middleware;
+
+export class ApiGuardExport {
+    // ✅ IMPORTANT: reuse singleton (do NOT new ApiGuard())
+    private static ApiGuardMain: ApiGuard = apiGuardInstance;
+
+    public static GetTokens( req: Request ): ExtractedTokens {
+        return ApiGuardExport.ApiGuardMain.getTokens( req );
+    }
+
+    public static async GetLoggedUser( req: Request ): Promise<User | null> {
+        return await ApiGuardExport.ApiGuardMain.getLoggedUser( req );
+    }
+}

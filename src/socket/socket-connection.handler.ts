@@ -12,23 +12,23 @@
 //  - The HTTP controller rotateWsToken(...) remains the LAST LINE OF DEFENCE
 //    if the socket-driven rotation ever breaks (e.g. network issues, FE bug).
 
+import { GuardTokenService } from '../services/guard-token.service';
+import { wsSecurityEventLogger } from '../services/ws-service/ws-security-event-logger.service';
+import type { WsTokenRegistryRedis } from '../services/ws-service/ws-token-registry.redis.service';
+import type { Role } from '../types/roles';
+import { SocketAuthHelper } from './socket-auth.helper';
 import type {
   AuthUser,
-  ChatMessagePayload,
   CallAnswerPayload,
   CallCandidatePayload,
   CallEndPayload,
   CallOfferPayload,
+  ChatMessagePayload,
   GuardTokenPayload,
   NotificationPayload,
   TypedNamespace,
   TypedSocket
 } from './socket-types.type';
-import { SocketAuthHelper } from './socket-auth.helper';
-import type { Role } from '../types/roles';
-import { GuardTokenService } from '../services/guard-token.service';
-import type { WsTokenRegistryRedis } from '../services/ws-service/ws-token-registry.redis.service';
-import { wsSecurityEventLogger } from '../services/ws-service/ws-security-event-logger.service';
 
 // wsToken payload pushed from BE → FE, which FE must store for
 // future WebSocket handshakes (reconnect / new tab / refresh).
@@ -39,7 +39,6 @@ type WsTokenPushPayload = {
 };
 
 export class SocketConnectionHandler {
-
   private readonly nsp: TypedNamespace;
   private readonly authHelper: SocketAuthHelper;
   private readonly guardTokenService: GuardTokenService;
@@ -75,40 +74,57 @@ export class SocketConnectionHandler {
         return;
       }
 
+      // ✅ exactOptionalPropertyTypes-safe KPI room join
+      const userId = typeof authUser.sub === 'string' ? authUser.sub.trim() : '';
+      const branchId =
+        typeof ( socket.data as any ).kpiBranchId === 'string'
+          ? String( ( socket.data as any ).kpiBranchId ).trim()
+          : '';
+
+      const teamCodes: string[] = Array.isArray( ( socket.data as any ).kpiTeams )
+        ? ( ( socket.data as any ).kpiTeams as unknown[] )
+          .map( ( x ) => String( x ?? '' ).trim() )
+          .filter( Boolean )
+        : [];
+
+      // KPI room join (multi-team safe)
+      // - userId comes from authUser.sub
+      // - teams come from authUser.teamCodes (array)
+      const kpiCtx: { userId?: string; teamCodes?: string[]; branchId?: string; } = {};
+
+      if ( typeof authUser.sub === "string" && authUser.sub.trim() ) {
+        kpiCtx.userId = authUser.sub.trim();
+      }
+
+      if ( Array.isArray( authUser.teamCodes ) && authUser.teamCodes.length > 0 ) {
+        const cleanedTeams = authUser.teamCodes
+          .map( ( x ) => ( typeof x === "string" ? x.trim() : "" ) )
+          .filter( ( x ) => x.length > 0 );
+
+        if ( cleanedTeams.length > 0 ) {
+          kpiCtx.teamCodes = cleanedTeams;
+        }
+      }
+
+      if ( typeof authUser.branchId === "string" && authUser.branchId.trim() ) {
+        kpiCtx.branchId = authUser.branchId.trim();
+      }
+
+      this.joinKpiRooms( socket, kpiCtx );
+
+
+
       // ──────────────────────────────────────────────────────────────
       // Step 1: Validate initial wsToken from handshake (Redis-backed)
       // ──────────────────────────────────────────────────────────────
-      //
-      // FE sends this during connection:
-      //   io(url, { auth: { sessionToken, wsToken } })
-      //
-      // - wsToken is generated in AuthController / MfaController using
-      //   WsTokenRegistryRedis.issueTokenForUser(...).
-      // - Here we CONSUME it ONCE via consumeToken(token). This removes
-      //   the token from Redis and from the session index.
-      //
-      // SECURITY RULE (your design):
-      //   • If wsToken is INVALID:
-      //        - Re-check sessionToken via GuardTokenService.
-      //        - If session/guard VALID  → treat as internal issue,
-      //          fallback to sessionToken as wsSessionId and continue.
-      //        - If session/guard INVALID → potential hijack / logout:
-      //          emit session:terminated and close ALL WS connections
-      //          for this user.
-      //
-      //   • If wsToken is MISSING:
-      //        - DEV-RELAXED: warn + continue using sessionToken only.
-      // ──────────────────────────────────────────────────────────────
 
       const rawAuth: unknown = socket.handshake.auth;
-      const authMeta = ( rawAuth && typeof rawAuth === 'object'
-        ? rawAuth
-        : {} ) as { wsToken?: unknown; };
+      const authMeta = ( rawAuth && typeof rawAuth === 'object' ? rawAuth : {} ) as {
+        wsToken?: unknown;
+      };
 
       const wsToken: string =
-        typeof authMeta.wsToken === 'string'
-          ? authMeta.wsToken.trim()
-          : '';
+        typeof authMeta.wsToken === 'string' ? authMeta.wsToken.trim() : '';
 
       console.log(
         '[Info:] [SocketConnectionHandler] Handshake wsToken:',
@@ -139,9 +155,7 @@ export class SocketConnectionHandler {
           const record = await this.wsTokenRegistry.consumeToken( wsToken );
 
           if ( !record ) {
-            // ──────────────────────────────────────────────────────
             // wsToken INVALID / EXPIRED → apply your rule
-            // ──────────────────────────────────────────────────────
             console.warn(
               '[Warning:] [SocketConnectionHandler] Invalid or expired wsToken – re-checking session/guard state. socket=',
               socket.id,
@@ -154,14 +168,12 @@ export class SocketConnectionHandler {
 
             if ( sessionTokenFallback && sessionTokenFallback.trim().length > 0 ) {
               try {
-                const resolvedUser = await this.guardTokenService.resolveUserBySessionToken(
-                  sessionTokenFallback.trim()
-                );
+                const resolvedUser =
+                  await this.guardTokenService.resolveUserBySessionToken(
+                    sessionTokenFallback.trim()
+                  );
 
-                if (
-                  resolvedUser &&
-                  resolvedUser.username === authUser.username
-                ) {
+                if ( resolvedUser && resolvedUser.username === authUser.username ) {
                   sessionStillValid = true;
                 }
               } catch ( innerError: unknown ) {
@@ -174,10 +186,7 @@ export class SocketConnectionHandler {
             }
 
             if ( sessionStillValid ) {
-              // ✅ Interpretation:
-              //   - wsToken broken/expired, but session+guard are healthy.
-              //   - Treat as internal ws-token rotation issue.
-              //   - System should self-heal using sessionToken as wsSessionId.
+              // ✅ wsToken broken/expired, but session+guard are healthy.
               console.warn(
                 '[Warning:] [SocketConnectionHandler] wsToken invalid BUT session/guard still valid – falling back to sessionToken as wsSessionId. socket=',
                 socket.id,
@@ -190,17 +199,7 @@ export class SocketConnectionHandler {
                 ( socket.data as any ).wsSessionId = sessionTokenFallback.trim();
               }
             } else {
-              // ❌ Interpretation:
-              //   - wsToken invalid AND session/guard invalid.
-              //   - Possible reasons:
-              //       • Original user logged out
-              //       • Session was revoked
-              //       • Potential hijack / replay attempt
-              //   - To protect the system:
-              //       • Emit a termination event (auditing)
-              //       • Kill ALL sockets for this user
-
-              
+              // ❌ wsToken invalid AND session/guard invalid → terminate
               console.error(
                 '[Error:] [SocketConnectionHandler] wsToken invalid AND session/guard invalid – terminating all sockets for user. socket=',
                 socket.id,
@@ -209,9 +208,6 @@ export class SocketConnectionHandler {
                 '\n'
               );
 
-              
-
-              // Notify this socket explicitly
               socket.emit( 'session:terminated', {
                 mode: 'security',
                 reason: 'ws_token_and_session_invalid',
@@ -220,7 +216,6 @@ export class SocketConnectionHandler {
                 ts: Date.now()
               } );
 
-              // Kill all sockets for this user (including any others already connected)
               const userRoom: string = `user:${ authUser.username }`;
               this.nsp.to( userRoom ).emit( 'session:terminated', {
                 mode: 'security',
@@ -230,23 +225,19 @@ export class SocketConnectionHandler {
               } );
               this.nsp.to( userRoom ).disconnectSockets( true );
 
-              // Admin log in termination
               await wsSecurityEventLogger.log( {
                 eventType: 'weTokenInvalidAndSessionAndGuardTokensInvalid',
                 socketId: socket.id,
                 ip: socket.handshake.address,
-                userAgent: userRoom,
+                userAgent: String( socket.handshake.headers[ 'user-agent' ] ?? '' ),
                 reason: 'missing session token and guard token at handshake'
               } );
 
-              // Also disconnect this socket in case it is not yet in the room
               socket.disconnect( true );
-              return; // ⛔ Do NOT continue lifecycle for this connection
+              return;
             }
           } else {
-            // ──────────────────────────────────────────────────────
             // wsToken VALID → normal path
-            // ──────────────────────────────────────────────────────
             ( socket.data as any ).wsTokenRecord = {
               token: record.token,
               sessionId: record.sessionId,
@@ -258,20 +249,8 @@ export class SocketConnectionHandler {
               userAgent: record.userAgent
             };
 
-            // This is the anchor for WS rotation:
-            // WsTokenRegistryRedis.rotateToken(sessionId) uses this.
+            // Anchor for WS rotation
             ( socket.data as any ).wsSessionId = record.sessionId;
-
-            // console.info(
-            //   '[Success:] [SocketConnectionHandler] wsToken accepted (Redis) for socket:',
-            //   {
-            //     socketId: socket.id,
-            //     user: authUser.username,
-            //     sessionId: record.sessionId,
-            //     usedAt: record.usedAt
-            //   },
-            //   '\n'
-            // );
           }
         } catch ( error: unknown ) {
           console.error(
@@ -280,13 +259,10 @@ export class SocketConnectionHandler {
             '\n'
           );
           // DEV-RELAXED: still allow connection, but no wsToken protection.
-          // SessionToken was already validated at handshake level.
         }
       }
 
-      // 🔁 Final fallback:
-      // If wsSessionId is STILL missing at this point (e.g. no wsToken at all),
-      // we fall back to the validated sessionToken to keep ws rotation working.
+      // Final fallback: use validated sessionToken as wsSessionId
       if ( !( socket.data as any ).wsSessionId ) {
         if ( sessionTokenFallback && sessionTokenFallback.trim().length > 0 ) {
           ( socket.data as any ).wsSessionId = sessionTokenFallback.trim();
@@ -316,116 +292,70 @@ export class SocketConnectionHandler {
     } );
   }
 
-
   // ──────────────────────────────────────────────────────────────────────────
   // Lifecycle / heartbeat / guard token + ws token rotation flow
   // ──────────────────────────────────────────────────────────────────────────
 
-  private handleConnectionLifecycle(
-    socket: TypedSocket,
-    auth: AuthUser
-  ): void {
+  private handleConnectionLifecycle( socket: TypedSocket, auth: AuthUser ): void {
     let lastClientPongAt = Date.now();
-    let lastServerHelloAt = 0;
 
-    // 1) Server → Client greeting (basic handshake info)
     socket.emit( 'server:hello', {
       sid: socket.id,
       username: auth.username,
       role: auth.role,
       ts: Date.now(),
-      server: {
-        name: 'prop-ease-api',
-        version: '1.0.0'
-      }
+      server: { name: 'prop-ease-api', version: '1.0.0' }
     } );
 
-    // 2) Client → Server greeting
     socket.on(
       'client:hello',
-      (
-        _payload: unknown,
-        ack?: ( resp: { ok: boolean; serverTime: number; } ) => void
-      ) => {
-        lastServerHelloAt = Date.now();
-        if ( ack ) {
-          ack( { ok: true, serverTime: lastServerHelloAt } );
-        }
+      ( _payload: unknown, ack?: ( resp: { ok: boolean; serverTime: number; } ) => void ) => {
+        const serverTime = Date.now();
+        if ( ack ) ack( { ok: true, serverTime } );
 
         socket.emit( 'server:welcome', {
           ok: true,
           user: socket.data.authUser as AuthUser,
-          serverTime: lastServerHelloAt
+          serverTime
         } );
       }
     );
 
-    // 3) Client → Server ping (simple echo)
     socket.on(
       'client:ping',
       (
         payload: { t0?: number; } | undefined,
-        ack?: ( resp: {
-          pong: true;
-          ts: number;
-          serverTs: number;
-        } ) => void
+        ack?: ( resp: { pong: true; ts: number; serverTs: number; } ) => void
       ) => {
-        const t0 =
-          typeof payload?.t0 === 'number'
-            ? payload.t0
-            : Date.now();
-
-        if ( ack ) {
-          ack( {
-            pong: true,
-            ts: t0,
-            serverTs: Date.now()
-          } );
-        }
+        const t0 = typeof payload?.t0 === 'number' ? payload.t0 : Date.now();
+        if ( ack ) ack( { pong: true, ts: t0, serverTs: Date.now() } );
       }
     );
 
-    // 4) Server → Client heartbeat (soft liveness check; detects dead sockets)
     const heartbeatTimer = setInterval( () => {
       const startedAt = Date.now();
 
-      socket
-        .timeout( 4_000 )
-        .emit(
-          'server:ping',
-          { t: startedAt },
-          ( err?: Error, clientNow?: number ) => {
-            if ( !err && typeof clientNow === 'number' ) {
-              lastClientPongAt = Date.now();
-            }
+      socket.timeout( 4_000 ).emit( 'server:ping', { t: startedAt }, ( err?: Error ) => {
+        if ( !err ) lastClientPongAt = Date.now();
 
-            if ( Date.now() - lastClientPongAt > 60_000 ) {
-              console.warn(
-                '[Warning:] [SocketConnectionHandler] Heartbeat timeout – disconnecting socket:',
-                socket.id,
-                'user=',
-                auth.username,
-                '\n'
-              );
-              socket.disconnect( true );
-            }
-          }
-        );
+        if ( Date.now() - lastClientPongAt > 60_000 ) {
+          console.warn(
+            '[Warning:] [SocketConnectionHandler] Heartbeat timeout – disconnecting socket:',
+            socket.id,
+            'user=',
+            auth.username,
+            '\n'
+          );
+          socket.disconnect( true );
+        }
+      } );
     }, 15_000 );
 
-    // Extra optional client pong hook
     socket.on( 'client:pong', () => {
       lastClientPongAt = Date.now();
     } );
 
-    // 5) Guard token rotation flow (continuous, short-lived HTTP guard token)
-    //
-    // This is the ROTATION FLOW FOR HTTP GUARD TOKEN:
-    //   - Uses GuardTokenService.rotateGuardToken(sessionToken)
-    //   - Emits "guard:update" periodically to keep FE guard token fresh
-    //   - FE must use this guard token for protected HTTP calls.
-    //
+    // Guard token rotation
     const pushGuardToken = async (): Promise<void> => {
       try {
         const currentUser: AuthUser | undefined = socket.data.authUser as AuthUser | undefined;
@@ -444,7 +374,6 @@ export class SocketConnectionHandler {
           await this.guardTokenService.rotateGuardToken( sessionToken );
 
         if ( !newGuardToken ) {
-          // Not necessarily an error → often means existing token still valid.
           console.warn(
             '[Warning:] [guard:update] GuardTokenService.rotateGuardToken returned null – no new guard token issued. socket=',
             socket.id,
@@ -456,84 +385,39 @@ export class SocketConnectionHandler {
         }
 
         const issuedAt: number = Date.now();
-        const expiresAt: number = issuedAt + 10_000; // 10s overlap window
+        const expiresAt: number = issuedAt + 10_000;
 
-        const payload: GuardTokenPayload = {
-          token: newGuardToken,
-          issuedAt,
-          expiresAt
-        };
-
+        const payload: GuardTokenPayload = { token: newGuardToken, issuedAt, expiresAt };
         socket.emit( 'guard:update', payload );
-
-        // console.info(
-        //   '[Success:] [guard:update] Guard token rotated and pushed to client.',
-        //   {
-        //     socketId: socket.id,
-        //     user: currentUser.username,
-        //     issuedAt,
-        //     expiresAt
-        //   },
-        //   '\n'
-        // );
       } catch ( error: unknown ) {
-        console.error(
-          '[Error:] [guard:update] Guard token rotation failed:',
-          error,
-          '\n'
-        );
+        console.error( '[Error:] [guard:update] Guard token rotation failed:', error, '\n' );
       }
     };
 
-    // Initial guard token push + periodic refresh
     void pushGuardToken();
-    const guardTimer = setInterval( () => {
-      void pushGuardToken();
-    }, 5_000 );
+    const guardTimer = setInterval( () => void pushGuardToken(), 5_000 );
 
-    // 6) WS token rotation flow (continuous, Redis-backed wsToken)
-    //
-    // This is the PRIMARY WS TOKEN ROTATION ENGINE:
-    //   - Uses WsTokenRegistryRedis.rotateToken(sessionId) with wsSessionId
-    //     set during handshake (from consumed wsToken).
-    //   - Emits "ws:token:update" to FE with a fresh wsToken regularly.
-    //   - FE must:
-    //       • Listen to 'ws:token:update' and store the token.
-    //       • Use that token in the NEXT WebSocket handshake (reconnect / new tab).
-    //   - If this rotation fails repeatedly, FE can use the HTTP
-    //     rotateWsToken(...) endpoint as a last-resort recovery path.
-    //
-    const wsTokenTimer: NodeJS.Timeout | null =
-      this.registerWsTokenRotation( socket, auth );
+    // WS token rotation
+    const wsTokenTimer: NodeJS.Timeout | null = this.registerWsTokenRotation( socket, auth );
 
-    // 7) Dynamic room membership
     socket.on( 'client:subscribe', ( rooms?: unknown ) => {
-      for ( const room of SocketAuthHelper.safeRooms( rooms ) ) {
-        socket.join( room );
-      }
+      for ( const room of SocketAuthHelper.safeRooms( rooms ) ) socket.join( room );
     } );
 
     socket.on( 'client:unsubscribe', ( rooms?: unknown ) => {
-      for ( const room of SocketAuthHelper.safeRooms( rooms ) ) {
-        socket.leave( room );
-      }
+      for ( const room of SocketAuthHelper.safeRooms( rooms ) ) socket.leave( room );
     } );
 
-    // 8) Runtime auth/token update
     this.registerRuntimeAuthUpdate( socket );
-
-    // 9) Notifications / chat / calls
     this.registerNotificationAck( socket );
     this.registerChatEvents( socket );
     this.registerCallEvents( socket );
 
-    // 10) Cleanup – stop all timers on disconnect
     socket.on( 'disconnecting', ( reason: string ) => {
       clearInterval( heartbeatTimer );
       clearInterval( guardTimer );
-      if ( wsTokenTimer ) {
-        clearInterval( wsTokenTimer );
-      }
+      if ( wsTokenTimer ) clearInterval( wsTokenTimer );
+
       console.log(
         '[Info:] ↘️  Socket disconnecting:',
         auth.username,
@@ -544,9 +428,8 @@ export class SocketConnectionHandler {
     socket.on( 'disconnect', ( reason: string ) => {
       clearInterval( heartbeatTimer );
       clearInterval( guardTimer );
-      if ( wsTokenTimer ) {
-        clearInterval( wsTokenTimer );
-      }
+      if ( wsTokenTimer ) clearInterval( wsTokenTimer );
+
       console.log(
         '[Info:] ↘️  Socket disconnected:',
         auth.username,
@@ -559,24 +442,6 @@ export class SocketConnectionHandler {
   // WS token rotation + echo (primary cycle, Redis-backed)
   // ──────────────────────────────────────────────────────────────────────────
 
-  /**
-   * Primary WS token rotation cycle.
-   *
-   * Responsibilities:
-   *  - Periodically rotate wsToken in Redis for this socket's sessionId.
-   *  - Push fresh wsToken to FE via `ws:token:update`.
-   *  - Provide `ws:token:echo` for FE/dev tools to inspect the last payload.
-   *
-   * FE responsibilities:
-   *  - Listen to 'ws:token:update' and store the latest token somewhere safe.
-   *  - On the NEXT WebSocket connection, send that token in the handshake:
-   *        io(url, { auth: { sessionToken, wsToken } })
-   *
-   * Notes:
-   *  - This uses WsTokenRegistryRedis.rotateToken(sessionId) as the main path.
-   *  - If this rotation fails (no session / no valid Redis token), the HTTP
-   *    controller rotateWsToken(...) acts as last-resort recovery line.
-   */
   private registerWsTokenRotation( socket: TypedSocket, auth: AuthUser ): NodeJS.Timeout | null {
     let lastWsTokenPayload: WsTokenPushPayload | null = null;
 
@@ -586,8 +451,7 @@ export class SocketConnectionHandler {
 
         if ( !wsSessionId ) {
           console.warn(
-            '[Warning:]',
-            '[ws:token:update] Missing wsSessionId on socket – skipping ws token rotation. socket=',
+            '[Warning:] [ws:token:update] Missing wsSessionId on socket – skipping ws token rotation. socket=',
             socket.id,
             'user=',
             auth.username,
@@ -600,8 +464,7 @@ export class SocketConnectionHandler {
 
         if ( !newRecord ) {
           console.warn(
-            '[Warning:]',
-            '[ws:token:update] WsTokenRegistryRedis.rotateToken returned null – no new wsToken issued. socket=',
+            '[Warning:] [ws:token:update] WsTokenRegistryRedis.rotateToken returned null – no new wsToken issued. socket=',
             socket.id,
             'user=',
             auth.username,
@@ -611,7 +474,6 @@ export class SocketConnectionHandler {
         }
 
         const issuedAt: number = Date.now();
-
         const validUntil: number =
           newRecord.expiresAt instanceof Date
             ? newRecord.expiresAt.getTime()
@@ -623,90 +485,35 @@ export class SocketConnectionHandler {
           validUntil
         };
 
-        // Remember the last payload so FE can 'echo' and debug.
         lastWsTokenPayload = payload;
-
-        // Primary push: BE → FE. FE must store this for the next WS handshake.
         socket.emit( 'ws:token:update', payload );
-
-        // console.info(
-        //   '[Success:]',
-        //   '[ws:token:update] New wsToken rotated and pushed to client.',
-        //   {
-        //     socketId: socket.id,
-        //     user: auth.username,
-        //     issuedAt,
-        //     validUntil
-        //   },
-        //   '\n'
-        // );
       } catch ( error: unknown ) {
-        console.error(
-          '[Error:]',
-          '[ws:token:update] WS token rotation failed:',
-          error,
-          '\n'
-        );
+        console.error( '[Error:] [ws:token:update] WS token rotation failed:', error, '\n' );
       }
     };
 
-    // Expose echo for FE/dev tools: tells FE what last payload was.
     socket.on(
       'ws:token:echo',
-      ( ack?: ( res: {
-        ok: boolean;
-        payload?: WsTokenPushPayload | null;
-        reason?: string;
-      } ) => void ) => {
+      ( ack?: ( res: { ok: boolean; payload?: WsTokenPushPayload | null; reason?: string; } ) => void ) => {
         try {
-          if ( !ack ) {
-            return;
-          }
+          if ( !ack ) return;
 
           if ( !lastWsTokenPayload ) {
-            ack( {
-              ok: false,
-              payload: null,
-              reason: 'no_ws_token_pushed_yet'
-            } );
+            ack( { ok: false, payload: null, reason: 'no_ws_token_pushed_yet' } );
             return;
           }
 
-          ack( {
-            ok: true,
-            payload: lastWsTokenPayload
-          } );
+          ack( { ok: true, payload: lastWsTokenPayload } );
         } catch ( error: unknown ) {
-          console.error(
-            '[Error:]',
-            '[ws:token:echo] Failed to echo ws token payload:',
-            error,
-            '\n'
-          );
-          if ( ack ) {
-            ack( {
-              ok: false,
-              payload: null,
-              reason: 'internal_error'
-            } );
-          }
+          console.error( '[Error:] [ws:token:echo] Failed to echo ws token payload:', error, '\n' );
+          if ( ack ) ack( { ok: false, payload: null, reason: 'internal_error' } );
         }
       }
     );
 
-    // Initial push: give FE at least one wsToken soon after connection.
     void pushWsToken();
 
-    // Periodic rotation.
-    //
-    // IMPORTANT:
-    //   - This interval is your primary wsToken rotation engine.
-    //   - If it fails (warnings/errors), FE can fall back to calling
-    //     the HTTP rotateWsToken controller as last line of defence.
-    const wsTokenTimer: NodeJS.Timeout = setInterval( () => {
-      void pushWsToken();
-    }, 60_000 ); // e.g., rotate every 60s (tune as needed)
-
+    const wsTokenTimer: NodeJS.Timeout = setInterval( () => void pushWsToken(), 60_000 );
     return wsTokenTimer;
   }
 
@@ -717,52 +524,24 @@ export class SocketConnectionHandler {
   private registerRuntimeAuthUpdate( socket: TypedSocket ): void {
     socket.on(
       'auth:update',
-      (
-        token: string,
-        ack?: ( res: { ok: boolean; reason?: string; } ) => void
-      ) => {
+      ( token: string, ack?: ( res: { ok: boolean; reason?: string; } ) => void ) => {
         try {
           const nextUser = this.authHelper.decodeAuthUser( token );
 
           const previousUser = socket.data.authUser;
-          if ( previousUser ) {
-            this.leaveBaseRooms( socket, previousUser );
-          }
+          if ( previousUser ) this.leaveBaseRooms( socket, previousUser );
 
           socket.data.authUser = nextUser;
           this.joinBaseRooms( socket, nextUser );
 
-          if ( ack ) {
-            ack( { ok: true } );
-          }
+          if ( ack ) ack( { ok: true } );
 
-          socket.emit( 'auth:updated', {
-            ok: true,
-            user: nextUser
-          } );
-
-          // console.info(
-          //   '[Success:] [auth:update] Runtime auth user updated for socket:',
-          //   socket.id,
-          //   'user=',
-          //   nextUser.username,
-          //   '\n'
-          // );
+          socket.emit( 'auth:updated', { ok: true, user: nextUser } );
         } catch ( error: unknown ) {
-          console.error(
-            '[Error:] [auth:update] Failed to update runtime auth:',
-            error,
-            '\n'
-          );
+          console.error( '[Error:] [auth:update] Failed to update runtime auth:', error, '\n' );
 
-          if ( ack ) {
-            ack( { ok: false, reason: 'invalid token' } );
-          }
-
-          socket.emit( 'auth:updated', {
-            ok: false,
-            reason: 'invalid token'
-          } );
+          if ( ack ) ack( { ok: false, reason: 'invalid token' } );
+          socket.emit( 'auth:updated', { ok: false, reason: 'invalid token' } );
         }
       }
     );
@@ -775,14 +554,8 @@ export class SocketConnectionHandler {
   private registerNotificationAck( socket: TypedSocket ): void {
     socket.on(
       'notification:ack',
-      (
-        _payload: { notificationId?: string; },
-        ack?: ( res: { ok: boolean; } ) => void
-      ) => {
-        // TODO: link this with a DB "delivered" flag if needed.
-        if ( ack ) {
-          ack( { ok: true } );
-        }
+      ( _payload: { notificationId?: string; }, ack?: ( res: { ok: boolean; } ) => void ) => {
+        if ( ack ) ack( { ok: true } );
       }
     );
   }
@@ -798,9 +571,7 @@ export class SocketConnectionHandler {
         try {
           const sender = socket.data.authUser;
 
-          if ( !sender?.username ) {
-            throw new Error( 'unauthenticated' );
-          }
+          if ( !sender?.username ) throw new Error( 'unauthenticated' );
 
           const normalized: ChatMessagePayload = {
             ...msg,
@@ -809,38 +580,18 @@ export class SocketConnectionHandler {
           };
 
           if ( normalized.to ) {
-            this.emitToUser(
-              normalized.to,
-              'chat:new',
-              normalized
-            );
+            this.emitToUser( normalized.to, 'chat:new', normalized );
           }
 
-          if (
-            normalized.roomId &&
-            SocketAuthHelper.isValidRoomName( normalized.roomId )
-          ) {
-            this.emitToRooms(
-              [ normalized.roomId ],
-              'chat:new',
-              normalized
-            );
+          if ( normalized.roomId && SocketAuthHelper.isValidRoomName( normalized.roomId ) ) {
+            this.emitToRooms( [ normalized.roomId ], 'chat:new', normalized );
           }
 
           socket.emit( 'chat:sent', normalized );
-
-          if ( ack ) {
-            ack( { ok: true } );
-          }
+          if ( ack ) ack( { ok: true } );
         } catch ( error: unknown ) {
-          console.error(
-            '[Error:] [chat:send] failed:',
-            error,
-            '\n'
-          );
-          if ( ack ) {
-            ack( { ok: false } );
-          }
+          console.error( '[Error:] [chat:send] failed:', error, '\n' );
+          if ( ack ) ack( { ok: false } );
         }
       }
     );
@@ -851,45 +602,27 @@ export class SocketConnectionHandler {
   // ──────────────────────────────────────────────────────────────────────────
 
   private registerCallEvents( socket: TypedSocket ): void {
-    socket.on(
-      'call:offer',
-      (
-        payload: CallOfferPayload,
-        ack?: ( res: { ok: boolean; } ) => void
-      ) => {
-        this.relayCallEvent( socket, 'call:offer', payload, ack );
-      }
-    );
+    socket.on( 'call:offer', ( payload: CallOfferPayload, ack?: ( res: { ok: boolean; } ) => void ) => {
+      this.relayCallEvent( socket, 'call:offer', payload, ack );
+    } );
 
     socket.on(
       'call:answer',
-      (
-        payload: CallAnswerPayload,
-        ack?: ( res: { ok: boolean; } ) => void
-      ) => {
+      ( payload: CallAnswerPayload, ack?: ( res: { ok: boolean; } ) => void ) => {
         this.relayCallEvent( socket, 'call:answer', payload, ack );
       }
     );
 
     socket.on(
       'call:candidate',
-      (
-        payload: CallCandidatePayload,
-        ack?: ( res: { ok: boolean; } ) => void
-      ) => {
+      ( payload: CallCandidatePayload, ack?: ( res: { ok: boolean; } ) => void ) => {
         this.relayCallEvent( socket, 'call:candidate', payload, ack );
       }
     );
 
-    socket.on(
-      'call:end',
-      (
-        payload: CallEndPayload,
-        ack?: ( res: { ok: boolean; } ) => void
-      ) => {
-        this.relayCallEvent( socket, 'call:end', payload, ack );
-      }
-    );
+    socket.on( 'call:end', ( payload: CallEndPayload, ack?: ( res: { ok: boolean; } ) => void ) => {
+      this.relayCallEvent( socket, 'call:end', payload, ack );
+    } );
   }
 
   private relayCallEvent<TPayload extends { to: string; }>(
@@ -900,34 +633,15 @@ export class SocketConnectionHandler {
   ): void {
     try {
       const sender = socket.data.authUser;
-      if ( !sender?.username ) {
-        throw new Error( 'unauthenticated' );
-      }
+      if ( !sender?.username ) throw new Error( 'unauthenticated' );
 
-      const normalized = {
-        ...payload,
-        from: sender.username
-      };
+      const normalized = { ...payload, from: sender.username };
+      this.emitToUser( normalized.to, eventName, normalized );
 
-      this.emitToUser(
-        normalized.to,
-        eventName,
-        normalized
-      );
-
-      if ( ack ) {
-        ack( { ok: true } );
-      }
+      if ( ack ) ack( { ok: true } );
     } catch ( error: unknown ) {
-      console.error(
-        '[Error:]',
-        `[${ eventName }] failed:`,
-        error,
-        '\n'
-      );
-      if ( ack ) {
-        ack( { ok: false } );
-      }
+      console.error( '[Error:]', `[${ eventName }] failed:`, error, '\n' );
+      if ( ack ) ack( { ok: false } );
     }
   }
 
@@ -935,19 +649,11 @@ export class SocketConnectionHandler {
   // Room utilities
   // ──────────────────────────────────────────────────────────────────────────
 
-  /**
-   * Join base rooms:
-   *  - user:<username>    → per-user targeting
-   *  - role:<role>        → RBAC / broadcast by role
-   *  - broadcast          → global broadcast channel
-   *  - session:<token>    → optional, for force-disconnect by session
-   */
   private joinBaseRooms( socket: TypedSocket, user: AuthUser ): void {
     socket.join( `user:${ user.username }` );
     socket.join( `role:${ user.role }` );
     socket.join( 'broadcast' );
 
-    // Session-scoped room (requires your auth middleware to set socket.data.sessionToken)
     const sessionToken: string | undefined = socket.data.sessionToken as string | undefined;
     if ( sessionToken && sessionToken.trim().length > 0 ) {
       socket.join( `session:${ sessionToken.trim() }` );
@@ -965,44 +671,26 @@ export class SocketConnectionHandler {
     }
   }
 
-
   // ──────────────────────────────────────────────────────────────────────────
   // Emission helpers (scoped to this namespace)
   // ──────────────────────────────────────────────────────────────────────────
 
-  public emitToUser(
-    username: string,
-    event: string,
-    payload: unknown
-  ): void {
+  public emitToUser( username: string, event: string, payload: unknown ): void {
     this.nsp.to( `user:${ username }` ).emit( event, payload );
   }
 
-  public emitToRole(
-    role: Role,
-    event: string,
-    payload: unknown
-  ): void {
+  public emitToRole( role: Role, event: string, payload: unknown ): void {
     this.nsp.to( `role:${ role }` ).emit( event, payload );
   }
 
-  public emitToRooms(
-    rooms: string[],
-    event: string,
-    payload: unknown
-  ): void {
-    if ( !rooms || rooms.length === 0 ) {
-      return;
-    }
+  public emitToRooms( rooms: string[], event: string, payload: unknown ): void {
+    if ( !rooms || rooms.length === 0 ) return;
     this.nsp.to( rooms ).emit( event, payload );
   }
 
-  // Public helper for notifications – can be used by SocketServer as well.
   public emitNotification( notif: NotificationPayload ): void {
     const { audience } = notif;
-    if ( !audience ) {
-      return;
-    }
+    if ( !audience ) return;
 
     const event = 'notification:new';
 
@@ -1012,15 +700,11 @@ export class SocketConnectionHandler {
     }
 
     if ( audience.mode === 'user' && audience.usernames?.length ) {
-      for ( const username of audience.usernames ) {
-        this.emitToUser( username, event, notif );
-      }
+      for ( const username of audience.usernames ) this.emitToUser( username, event, notif );
     }
 
     if ( audience.mode === 'role' && audience.roles?.length ) {
-      for ( const role of audience.roles ) {
-        this.emitToRole( role, event, notif );
-      }
+      for ( const role of audience.roles ) this.emitToRole( role, event, notif );
     }
   }
 
@@ -1028,29 +712,15 @@ export class SocketConnectionHandler {
   // Forced disconnect helpers (backend → FE)
   // ──────────────────────────────────────────────────────────────────────────
 
-  /**
-   * Forcefully disconnect ALL sockets for a given username.
-   *
-   * Flow:
-   *  1) Emit "session:terminated" to user room with a semantic reason.
-   *  2) Disconnect all sockets in that room (server-side).
-   *
-   * Typical usage:
-   *  - Hard logout from all devices.
-   *  - Account disabled / locked.
-   */
   public forceDisconnectUser( username: string, reason?: string ): void {
     const safeUser: string = String( username ?? '' ).trim();
     if ( !safeUser ) {
-      console.warn(
-        '[Warning:] [SocketConnectionHandler] forceDisconnectUser called with empty username\n'
-      );
+      console.warn( '[Warning:] [SocketConnectionHandler] forceDisconnectUser called with empty username\n' );
       return;
     }
 
     const room: string = `user:${ safeUser }`;
 
-    // 1) Notify FE that session was terminated by backend
     this.nsp.to( room ).emit( 'session:terminated', {
       mode: 'user',
       username: safeUser,
@@ -1058,7 +728,6 @@ export class SocketConnectionHandler {
       ts: Date.now()
     } );
 
-    // 2) Physically disconnect sockets on server-side
     this.nsp.to( room ).disconnectSockets( true );
 
     console.log(
@@ -1068,18 +737,6 @@ export class SocketConnectionHandler {
     );
   }
 
-  /**
-   * Forcefully disconnect ALL sockets bound to a given sessionToken.
-   *
-   * Requirements:
-   *  - joinBaseRooms() (or your auth middleware) must join `session:<sessionToken>`
-   *    so sockets are grouped by logical session.
-   *
-   * Typical usage:
-   *  - When you invalidate a sessionToken in GuardTokenService.
-   *  - When you detect suspicious activity on a single session and want to
-   *    kill that session only (not all sessions of that user).
-   */
   public forceDisconnectSession( sessionToken: string, reason?: string ): void {
     const safeSession: string = String( sessionToken ?? '' ).trim();
     if ( !safeSession ) {
@@ -1107,9 +764,6 @@ export class SocketConnectionHandler {
     );
   }
 
-  /**
-   * Optional helper: disconnect by role (e.g., when freezing all "agent" users).
-   */
   public forceDisconnectRole( role: Role, reason?: string ): void {
     const room: string = `role:${ role }`;
 
@@ -1127,6 +781,43 @@ export class SocketConnectionHandler {
       role,
       '\n'
     );
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // KPI rooms (aud.*.*) — MUST match KPI transport keys
+  // ──────────────────────────────────────────────────────────────────────────
+
+  private joinKpiRooms(
+    socket: TypedSocket,
+    ctx: { userId?: string; teamCodes?: string[]; branchId?: string; }
+  ): void {
+    // Always join org room
+    socket.join( "aud.org.org" );
+
+    // Join all team rooms (multi-team)
+    if ( Array.isArray( ctx.teamCodes ) ) {
+      for ( const teamCode of ctx.teamCodes ) {
+        if ( typeof teamCode === "string" && teamCode.trim() ) {
+          socket.join( `aud.team.${ teamCode.trim() }` );
+        }
+      }
+    }
+
+    // Join member room
+    if ( typeof ctx.userId === "string" && ctx.userId.trim() ) {
+      socket.join( `aud.member.${ ctx.userId.trim() }` );
+    }
+
+    // Join branch room
+    if ( typeof ctx.branchId === "string" && ctx.branchId.trim() ) {
+      socket.join( `aud.branch.${ ctx.branchId.trim() }` );
+    }
+
+    console.log( "[Info:] [SocketConnectionHandler] KPI rooms joined.\n", {
+      userId: ctx.userId ?? null,
+      teamCodes: ctx.teamCodes ?? [],
+      branchId: ctx.branchId ?? null,
+    } );
   }
 
 }

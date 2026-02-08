@@ -74,3 +74,39 @@ export interface RealtimeDeliveryHints {
    */
   priority: 'low' | 'normal' | 'high';
 }
+
+// -----------------------------------------------------------------------------
+// Realtime payload envelope + handler contracts
+// -----------------------------------------------------------------------------
+
+/**
+ * Unified envelope for realtime KPI publishing.
+ * Transport MUST NOT mutate this payload.
+ */
+export interface RealtimeEnvelope<TPayload = unknown> {
+  topic: RealtimeTopic;
+
+  /** KPI scope, used for routing + UI grouping */
+  scope: KpiScope;
+
+  /** Who should receive it (fan-out target) */
+  audience: RealtimeAudience;
+
+  /** Who produced it (optional, filled by your security layer/runtime) */
+  principal?: RealtimePrincipal;
+
+  /** When it was produced (ISO string) */
+  publishedAt: IsoDateString;
+
+  /** Data payload (KPI snapshot / delta / summary etc.) */
+  payload: TPayload;
+
+  /** Delivery hints for transports (optional) */
+  hints?: RealtimeDeliveryHints;
+}
+
+/** Callback for subscribers (in-memory / internal observers). */
+export type RealtimeHandler = ( envelope: RealtimeEnvelope ) => void;
+
+/** Unsubscribe callback. */
+export type RealtimeUnsubscribe = () => void;

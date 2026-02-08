@@ -36,9 +36,7 @@ import path from 'path';
 import {
   COMPLAINT_CATEGORIES,
   ComplaintModel,
-  DEFINED_AUDIENCES,
-  IComplaint,
-  type ComplaintAudience,
+  IComplaint
 } from '../models/complaint.model';
 import { LeaseModel, type LeasePayload } from '../models/lease.model';
 import { ITenant, TenantModel } from '../models/tenant.model';
@@ -46,6 +44,8 @@ import { USER_MODEL_PROJECTION, UserModel, type User } from '../models/user.mode
 import NotificationService from '../services/notification.service';
 import type { PaginationMeta } from '../types/api-message';
 import { ApiResponseBuilder } from '../utils/api-combiner.builder';
+
+
 
 
 
@@ -68,8 +68,6 @@ export default class Tenant {
   private readonly UPLOADS_ROOT = path.join( this.PUBLIC_ROOT, 'uploads' );
   private readonly RECYCLEBIN_ROOT = path.join( this.PUBLIC_ROOT, 'recyclebin' );
 
-  // Common buckets
-  private readonly TENANT_UPLOAD_ROOT = path.join( this.UPLOADS_ROOT, 'tenants' );
   private readonly TENANT_RECYCLE_ROOT = path.join( this.RECYCLEBIN_ROOT, 'tenants' );
 
   // Recycled leases live under: /public/recyclebin/tenants/leases/<username>/<stamp>-<leaseID>/
@@ -113,10 +111,10 @@ export default class Tenant {
     this.getAllComplaintsByTenantUsername();                                          // GET    /complaints/tenant/:username?start=&limit=&search=
     this.getAllComplaintsCountByTenantUsername();                                     // GET    /complaints-count/tenant/:username
     this.getAllComplaints();                                                          // GET    /complaints/all
+    this.getAllComplaintsByStatus();                                                  // GET    /complaints/all/status/:status
+    this.getAllComplaintsCountByStatus();                                             // GET    /complaints/all/count/status/:status
     this.getAllComplaintsCount();                                                     // GET    /complaints-count/all
-    this.getAllComplaintsBySection();                                            // GET    /complaints-by-section/all/:section
-    this.postComment();                                                               // POST   /complaints/post-comments
-    this.getCommentsBasedOnComplaintCode();                                           // GET    /complaints/:complaint.code/cgetAllComplaintsCountByTenantUsernameomments?params
+    this.getAllComplaintsBySection();                                                 // GET    /complaints-by-section/all/:section
   }
 
 
@@ -124,6 +122,7 @@ export default class Tenant {
   public get route(): Router {
     return this.router;
   }
+
 
   // ===========================================================================
   // Helpers (paths, fs, validation, naming)
@@ -229,32 +228,7 @@ export default class Tenant {
     return map[ mime ] || '';
   }
 
-  // Build absolute URL for served files (frontend web) and a relPath (for Electron)
-  private buildFileRefs( req: Request, tenantId: string, code: string, storedName: string ) {
-    const baseURL = `${ req.protocol }://${ req.get( 'host' ) }`;
-    const url = `${ baseURL }/uploads/tenants/${ encodeURIComponent( tenantId ) }/complaints/${ encodeURIComponent( code ) }/comments/${ encodeURIComponent( storedName ) }`;
-    // relPath is project-relative, no leading "/" (Electron packaging rule)
-    const relPath = path
-      .join( 'public', 'uploads', 'tenants', tenantId, 'complaints', code, 'comments', storedName )
-      .replace( /\\/g, '/' );
 
-    return { url, relPath };
-  }
-
-  // Parse JSON defensively and type-safely
-  private parseJson<T>( raw: unknown, label: string, res: Response ): T | null {
-    try {
-      const s = ( raw ?? '' ).toString().trim();
-      if ( !s ) {
-        ApiResponseBuilder.notFound( res, `${ label } is missing or empty` );
-        return null;
-      }
-      return JSON.parse( s ) as T;
-    } catch ( e ) {
-      ApiResponseBuilder.validationError( res, `${ label } is not valid JSON` );
-      return null;
-    }
-  }
 
   // ===========================================================================
   // Multer builder: shared for /create-complaint and /complaints/post-comments
@@ -687,13 +661,6 @@ export default class Tenant {
             UserModel.countDocuments( filter ),
           ] );
 
-          const data = {
-            page,
-            users,           // ⬅ non-tenant users for this page
-            limit,
-            total,           // total non-tenant users matching filter
-            totalPages: Math.ceil( total / limit ),
-          };
 
 
           // 1) Total pages (0 if no records)
@@ -1001,9 +968,6 @@ export default class Tenant {
         const dueAtISO = ( payload.dueAt ?? '' ).toString().trim();
         const leaseId = ( payload.leaseId ?? '' ).toString().trim();
 
-        const tenantName = ( payload.tenantName ?? '' ).toString().trim() || undefined;
-        const propertyName = ( payload.propertyName ?? '' ).toString().trim() || undefined;
-        const assigneeName = ( payload.assigneeName ?? '' ).toString().trim() || undefined;
         if ( !tenantId ) {
           ApiResponseBuilder.validationError( res, 'tenantId is required' );
           return;
@@ -1055,15 +1019,6 @@ export default class Tenant {
           status,
           assigneeId: assigneeId || null,
           dueAt: dueAtISO ? new Date( dueAtISO ) : null,
-          attachments: [],
-          comments: [],
-          timeline: [ {
-            at: new Date(),
-            fromStatus: 'new',
-            toStatus: 'new',
-            byUserId: assigneeId || tenantId,
-            note: 'Complaint created',
-          } ],
         } );
 
         // 4) Handle attachments
@@ -1108,9 +1063,6 @@ export default class Tenant {
         }
 
         // 5) Prepare response with optional display names
-        const response = ( doc as any ).toClient
-          ? ( doc as any ).toClient( { tenantName, propertyName, assigneeName } )
-          : doc;
 
         // 6) Broadcast notification (non-fatal if missing socket)
         try {
@@ -1357,6 +1309,110 @@ export default class Tenant {
   }
 
   // ===========================================================================
+  // GET /complaints/all/status/:status
+  // ===========================================================================
+  private getAllComplaintsByStatus(): void {
+    this.router.get( '/complaints/all/status/:status', async ( req: Request<{ status: string; }>, res: Response ): Promise<void> => {
+      try {
+        const status = ( req.params.status || '' ).toString().trim().toLowerCase();
+        if ( !status ) {
+          ApiResponseBuilder.validationError( res, 'Status is required' );
+          return;
+        }
+        const start = req.query.start ? parseInt( req.query.start as string, 10 ) : 0;
+
+        const limit = req.query.limit ? parseInt( req.query.limit as string, 10 ) : 100;
+
+        const search = req.query.search ? ( req.query.search as string ).toString().trim().toLowerCase() : '';
+
+        const filter: FilterQuery<IComplaint> = { status };
+
+        if ( search ) {
+          const rx = new RegExp( search, 'i' );
+          filter.$or = [
+            { code: { $regex: rx } },
+            { title: { $regex: rx } },
+            { description: { $regex: rx } },
+            { category: { $regex: rx } },
+            { status: { $regex: rx } },
+          ];
+        }
+
+        // Fetch sorted (newest first)
+        const [ items, total ] = await Promise.all( [
+          ComplaintModel
+            .find( { ...filter } )
+            .sort( { createdAt: -1 } )
+            .skip( start )
+            .limit( limit )
+            .lean<IComplaint>()
+            .exec() as unknown as IComplaint[],
+          ComplaintModel.countDocuments( { ...filter } )
+        ] );
+
+        // 1) Total pages (0 if no records)
+        const totalPages: number = total > 0 ? Math.ceil( total / limit ) : 0;
+        // 2) Zero-based page index (0,1,2…)
+        const index: number = total > 0 ? Math.floor( start / limit ) : 0;
+        // 3) Do we have any results at all?
+        const hasResults: boolean = total > 0;
+        // 4) End index (0-based, inclusive)
+        const end: number = hasResults
+          ? Math.min( start + items.length - 1, total - 1 )
+          : 0;
+        // 5) Has next/previous
+        const hasNext: boolean = index + 1 < totalPages;
+        const hasPrevious: boolean = index > 0 && totalPages > 0;
+        // 6) Build meta
+        const pagination: PaginationMeta = {
+          index,
+          limit,
+          total,
+          start,
+          end,
+          hasNext,
+          hasPrevious
+        };
+        if ( search && search.trim() !== '' ) {
+          pagination.search = search.trim();
+        }
+        ApiResponseBuilder.ok( res, 'complaints', items, 'Complaints fetched successful', { pagination } );
+        return;
+      }
+      catch ( error ) {
+        console.error( '[Complaint Error:] get-all-complaints-by-status:', error );
+        ApiResponseBuilder.internalError( res, error );
+        return;
+      }
+    } );
+  }
+
+  // ===========================================================================
+  // GET /complaints/all/count/status/:status
+  // ===========================================================================
+  private getAllComplaintsCountByStatus(): void {
+    this.router.get( '/complaints/all/count/status/:status', async ( req: Request<{ status: string; }>, res: Response ): Promise<void> => {
+      try {
+        const status = req.params.status?.trim().toLowerCase();
+
+        if ( !status ) {
+          ApiResponseBuilder.validationError( res, 'Status is invalid!' );
+          return;
+        }
+
+        const total = await ComplaintModel.countDocuments( { status } );
+
+        ApiResponseBuilder.ok( res, 'other', {}, 'Complaints count fetched successfully', { pagination: { total } } );
+        return;
+      } catch ( error ) {
+        console.error( '[Complaint Error:] get-all-complaints-count-by-status:', error );
+        ApiResponseBuilder.internalError( res, error );
+        return;
+      }
+    } );
+  }
+
+  // ===========================================================================
   // GET /complaints-count/all
   // ===========================================================================
   private getAllComplaintsCount(): void {
@@ -1429,382 +1485,12 @@ export default class Tenant {
   }
 
 
-  // ===========================================================================
-  // POST /complaints/post-comments
-  // Body (multipart/form-data):
-  //   - complaint         : JSON string with { tenantID, code, byUserId, byName, audience? }
-  //   - comment           : string (message)
-  //   - attachmentCount   : stringified number (must match uploaded files)
-  //   - attachments[]     : optional files (<=10MB each, max 10; allowed images/docs)
-  // Behavior:
-  //   • Validates inputs
-  //   • Writes files to: /public/uploads/tenants/<tenantID>/complaints/<code>/comments
-  //   • Pushes a new comment object into complaint.comments[]
-  //   • Rolls back written files if DB update fails
-  // ===========================================================================
-  private postComment(): void {
-    const attachmentsUploader = this.buildComplaintUploader();
-
-    this.router.post( '/complaints/post-comments', attachmentsUploader, async ( req: Request, res: Response ) => {
-      try {
-        // 1) Parse complaint reference JSON
-        type IncomingComplaintRef = {
-          tenantID?: string;
-          code?: string;
-          byUserId?: string;
-          byName?: string;
-          image?: string;
-          audience?: ComplaintAudience;
-        };
-
-        const complaintRef = this.parseJson<IncomingComplaintRef>( req.body?.complaint, 'Complaint', res );
-        if ( !complaintRef ) return;
-
-        const tenantID = ( complaintRef.tenantID ?? '' ).toString().trim();
-        const code = ( complaintRef.code ?? '' ).toString().trim();
-        const byUserId = ( complaintRef.byUserId ?? '' ).toString().trim();
-        const byName = ( complaintRef.byName ?? '' ).toString().trim();
-        const image = ( complaintRef.image ?? '' ).toString().trim();
-        const audience = ( ( complaintRef.audience ?? 'all' ) as ComplaintAudience );
-
-        if ( !tenantID ) {
-          ApiResponseBuilder.validationError( res, 'Tenant ID is missing' );
-          return;
-        }
-        if ( !code ) {
-          ApiResponseBuilder.validationError( res, 'Complaint ID is missing' );
-          return;
-        }
-        if ( !byUserId || !byName ) {
-          ApiResponseBuilder.validationError( res, 'byUserId and byName are required' );
-          return;
-        }
-        if ( !DEFINED_AUDIENCES.includes( audience ) ) {
-          ApiResponseBuilder.validationError( res, 'audience must be internal | tenant | all' );
-          return;
-        }
-
-        // 2) Validate text content
-        const rawComment = ( req.body?.comment ?? '' ).toString().trim();
-        if ( !rawComment ) {
-          ApiResponseBuilder.validationError( res, 'Comment cannot be empty' );
-          return;
-        }
-        if ( rawComment.length > 5000 ) {
-          ApiResponseBuilder.validationError( res, 'Comment is too long (max 5000 chars)' );
-          return;
-        }
-
-        // 3) Validate attachment count vs actual uploads
-        const attachmentCountStr = ( req.body?.attachmentCount ?? '' ).toString().trim();
-        if ( !attachmentCountStr || isNaN( Number( attachmentCountStr ) ) ) {
-          ApiResponseBuilder.validationError( res, 'AttachmentCount must be a valid number' );
-          return;
-        }
-        const expectedCount = Number( attachmentCountStr );
-
-        const filesMap = ( req.files as Record<string, Express.Multer.File[]> ) || {};
-        const files = filesMap[ 'attachments' ] || [];
-
-        if ( files.length !== expectedCount ) {
-          ApiResponseBuilder.validationError( res, `AttachmentCount mismatch: expected ${ expectedCount }, received ${ files.length }` );
-          return;
-        }
-
-        // 4) Confirm complaint existence early (cheap query)
-        const exists = await ComplaintModel.exists( { code } );
-        if ( !exists ) {
-          ApiResponseBuilder.validationError( res, `Complaint not found for code: ${ code }` );
-          return;
-        }
-
-        // 5) Write files (if any) to comments folder
-        const baseDir = this.safeJoin( this.UPLOADS_ROOT, 'tenants', tenantID, 'complaints', code, 'comments' );
-        await fse.ensureDir( baseDir );
-
-        const written: string[] = []; // track written absolute paths for rollback
-        const attachments: Array<{
-          name: string;
-          mimetype: string;
-          size: number;
-          url: string;
-          relPath: string;
-        }> = [];
-
-        for ( const f of files ) {
-          // Defense-in-depth (fileFilter already validated)
-          if ( !this.isAllowedAttachmentType( f.mimetype ) ) {
-            ApiResponseBuilder.validationError( res, `Unsupported file type: ${ f.mimetype }` );
-            return;
-          }
-
-          const rawName = ( f.originalname || 'file' ).toString();
-          const cleanBase = ( rawName.replace( /[^\w.\- ]+/g, '_' ).trim() || 'file' ).replace( /\.[^.]+$/, '' );
-          const extFromName = path.extname( rawName ).toLowerCase();
-          const extFromMime = this.mimeToExt( f.mimetype );
-          const ext = extFromName || extFromMime || '';
-          const storedName = ext ? `${ randomUUID() }-${ cleanBase }${ ext }` : `${ randomUUID() }-${ cleanBase }`;
-
-          const fullPath = path.join( baseDir, storedName );
-          await fse.writeFile( fullPath, f.buffer );
-          written.push( fullPath );
-
-          const refs = this.buildFileRefs( req, tenantID, code, storedName );
-          attachments.push( {
-            name: cleanBase + ( ext || '' ),
-            mimetype: f.mimetype,
-            size: f.size,
-            url: refs.url,
-            relPath: refs.relPath,
-          } );
-        }
-
-        // 6) Construct the comment object
-        const newComment = {
-          byUserId,
-          byName,
-          audience,
-          image,
-          message: rawComment,
-          createdAt: new Date().toISOString(),
-          attachments: attachments.length ? attachments : undefined,
-        };
-
-        // 7) Push the comment atomically and bump updatedAt
-        const updated = await ComplaintModel.findOneAndUpdate(
-          { code },
-          {
-            $push: { comments: newComment },
-            $set: { updatedAt: new Date().toISOString() },
-          },
-          { new: true, projection: { comments: { $slice: -1 } } } // only last comment back
-        ).lean();
-
-        if ( !updated ) {
-          // Rollback files if DB write failed (race/removed complaint)
-          for ( const p of written ) { await fse.remove( p ).catch( () => void 0 ); }
-          res.status( 404 ).json( { success: false, message: `Complaint not found for code: ${ code }` } );
-          ApiResponseBuilder.validationError( res, `Complaint not found for code: ${ code }` );
-          return;
-        }
-
-        const created = ( updated as any )?.comments?.[ 0 ] ?? newComment;
-
-        const notificationService = new NotificationService();
-        const io = req.app.get( 'io' ) as import( 'socket.io' ).Server;
-        await notificationService.createNotification(
-          {
-            title: 'New Comment',
-            body: `New comment ${ code } has been created by ${ newComment.byName }.`,
-            type: 'create',
-            severity: 'info',
-            audience: { mode: 'role', roles: [ 'admin', 'agent', 'manager', 'operator', 'developer' ], usernames: [ tenantID ] },
-            channels: [ 'inapp', 'email' ],
-            metadata: { refId: code, data: { snapshot: created } },
-          },
-          ( rooms, payload ) => rooms.forEach( room => io?.to( room ).emit( 'notification.new', payload ) ),
-        );
-
-        ApiResponseBuilder.ok( res, 'other', {
-          code,
-          comment: created,
-        }, 'Comment posted successfully' );
-        return;
-      } catch ( error ) {
-        console.error( 'post-comments:', error );
-        ApiResponseBuilder.internalError( res, error );
-        return;
-      }
-    } );
-  }
-
-  // Clamp & parse "limit" safely (defaults to 10, max 50)
-  private parseLimit( raw: unknown, def = 10, min = 1, max = 50 ): number {
-    const n = Number( raw );
-    if ( Number.isFinite( n ) ) return Math.min( Math.max( Math.trunc( n ), min ), max );
-    return def;
-  }
-
-  // Encode the paging cursor (opaque base64)
-  private encodeCursor( createdAt: Date, id: import( 'mongoose' ).Types.ObjectId ): string {
-    const payload = { t: createdAt.toISOString(), id: id.toString() };
-    return Buffer.from( JSON.stringify( payload ), 'utf8' ).toString( 'base64' );
-  }
-
-  // Decode the paging cursor; returns null if invalid
-  // Keep the same return type: { t: Date; id?: import('mongoose').Types.ObjectId } | null
-  private decodeCursor(
-    raw?: string | null
-  ): { t: Date; id?: import( 'mongoose' ).Types.ObjectId; } | null {
-    if ( !raw ) return null;
-
-    try {
-      const txt = Buffer.from( String( raw ), 'base64' ).toString( 'utf8' );
-      const obj = JSON.parse( txt ) as { t?: string; id?: string; };
-      if ( !obj?.t ) return null;
-
-      const t = new Date( obj.t );
-      if ( Number.isNaN( t.getTime() ) ) return null;
-
-      const mongoose = require( 'mongoose' ) as typeof import( 'mongoose' );
-
-      // Build the payload without 'id' first
-      const base: { t: Date; id?: import( 'mongoose' ).Types.ObjectId; } = { t };
-
-      if ( obj.id && mongoose.isValidObjectId( obj.id ) ) {
-        // Only add 'id' property when we actually have one (do not set undefined)
-        base.id = new mongoose.Types.ObjectId( obj.id );
-      }
-
-      return base;
-    } catch {
-      // Legacy fallback: accept ISO date or ObjectId in plain form
-      const mongoose = require( 'mongoose' ) as typeof import( 'mongoose' );
-
-      if ( mongoose.isValidObjectId( raw ) ) {
-        return {
-          t: new Date( '9999-12-31T23:59:59.999Z' ),
-          id: new mongoose.Types.ObjectId( raw ), // included only when present
-        };
-      }
-
-      const t = new Date( raw as string );
-      if ( !Number.isNaN( t.getTime() ) ) {
-        return { t }; // no 'id' property at all
-      }
-      return null;
-    }
-  }
 
 
 
-  // ===========================================================================
-  // GET /complaints/:code/comments
-  // Query: ?limit=10&cursor=<opaque-base64>
-  // Returns newest -> older.
-  // Pagination rule: if cursor present, return comments with
-  //   (createdAt < cursor.t) OR (createdAt == cursor.t AND _id < cursor.id)
-  // ===========================================================================
-  private getCommentsBasedOnComplaintCode(): void {
-    this.router.get( '/complaints/:code/comments', async (
-      req: Request<{ code: string; }>,
-      res: Response
-    ) => {
-      try {
-        const code = ( req.params.code || '' ).toString().trim();
-        if ( !code ) {
-          ApiResponseBuilder.validationError( res, 'Invalid complaint code' );
-          return;
-        }
-
-        const limit = this.parseLimit( req.query.limit, 10, 1, 50 );
-        const cursor = this.decodeCursor( ( req.query.cursor as string ) || null );
-
-        // Build a pipeline that pages over embedded comments
-        const matchBase: any = { code };
-        const cursorMatch: any = {};
-
-        if ( cursor?.t ) {
-          // createdAt must be Date in DB; if it's stored as string, $toDate in $addFields then match
-          cursorMatch.$or = [
-            { 'comments.createdAt': { $lt: cursor.t } },
-            ...( cursor.id
-              ? [ {
-                $and: [
-                  { 'comments.createdAt': cursor.t },
-                  { 'comments._id': { $lt: cursor.id } }
-                ]
-              } ]
-              : [] )
-          ];
-        }
-
-        const pipeline: any[] = [
-          { $match: matchBase },
-          { $unwind: '$comments' },
-
-          // If your schema stores createdAt as String, convert it once for sorting/matching:
-          // { $addFields: { 'comments._createdAt': { $toDate: '$comments.createdAt' } } },
-
-          // Apply cursor window if present
-          ...( cursorMatch.$or ? [ { $match: cursorMatch } ] : [] ),
-
-          // Sort newest → older (tie-break on _id for stable order)
-          { $sort: { 'comments.createdAt': -1, 'comments._id': -1 } },
-
-          // Page size
-          { $limit: limit },
-
-          // Only send the comment subdocument
-          { $replaceWith: '$comments' },
-        ];
-
-        // Run aggregation
-        const items = await ComplaintModel.aggregate<IComplaint>( pipeline ).exec();
-
-        // Compute nextCursor + hasMore
-        let nextCursor: string | undefined;
-        let hasMore = false;
-
-        if ( items.length > 0 ) {
-          const last = items[ items.length - 1 ];
-
-          if ( !last ) return;
-
-          const createdAt: Date = new Date( last.createdAt );
-          const id = ( last as any )._id;
-          nextCursor = this.encodeCursor( createdAt, id );
-
-          // Lightweight “has more” check:
-          // Ask for 1 more document beyond the last boundary
-          const tailMatch: any = {
-            code,
-          };
-          const tailWindow: any = {
-            $or: [
-              { 'comments.createdAt': { $lt: createdAt } },
-              {
-                $and: [
-                  { 'comments.createdAt': createdAt },
-                  { 'comments._id': { $lt: id } }
-                ]
-              }
-            ]
-          };
-
-          const morePipeline = [
-            { $match: tailMatch },
-            { $unwind: '$comments' },
-            { $match: tailWindow },
-            { $limit: 1 },
-            { $project: { _id: 1 } }
-          ];
-
-          const more = await ComplaintModel.aggregate<IComplaint>( morePipeline ).exec();
-          hasMore = more.length > 0;
-        }
 
 
-        ApiResponseBuilder.ok(
-          res,
-          'other',
-          { comments: items },
-          'Data fetched successfull',
-          {
-            pagination: {
-              hasMore,
-              nextCursor: nextCursor ?? '',
-            }
-          }
-        );
-        return;
-      } catch ( error ) {
-        console.error( 'get-comments:', error );
-        ApiResponseBuilder.internalError( res, error );
-        return;
-      }
-    } );
-  }
+
 
   //___________________________________________________________________________________
   // HELPER METHOS
@@ -1819,44 +1505,10 @@ export default class Tenant {
     return this.isStr( v ) ? v.trim() : "";
   }
 
-  private toLower( v: unknown ): string {
-    return this.s( v ).toLowerCase();
-  }
 
-  private toNum( v: unknown, def = 0 ): number {
-    const n = Number( this.s( v ) );
-    return Number.isFinite( n ) ? n : def;
-  }
 
-  private toNonNeg( v: unknown, def = 0 ): number {
-    return Math.max( 0, this.toNum( v, def ) );
-  }
 
-  private parseJSON<T>( v: unknown, fallback: T ): T {
-    try {
-      if ( v == null ) return fallback;
-      if ( typeof v === "string" ) {
-        const t = v.trim();
-        if ( !t ) return fallback;
-        return JSON.parse( t ) as T;
-      }
-      return v as T;
-    } catch {
-      return fallback;
-    }
-  }
 
-  private toDateOrNull( v: unknown ): Date | null {
-    const str = this.s( v );
-    if ( !str ) return null;
-    const d = new Date( str );
-    return Number.isNaN( d.getTime() ) ? null : d;
-  }
 
-  private toDateOrThrow( v: unknown, field: string ): Date {
-    const d = this.toDateOrNull( v );
-    if ( !d ) throw new Error( `Invalid date for "${ field }"` );
-    return d;
-  }
 
 }

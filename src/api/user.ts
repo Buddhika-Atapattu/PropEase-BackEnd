@@ -12,13 +12,12 @@ import * as Argon2 from "argon2";
 import crypto from "crypto";
 import express, { Request, Response, Router } from "express";
 import fse from "fs-extra";
-import jwt from "jsonwebtoken";
 import nodemailer from "nodemailer";
 import path from "path";
 import twilio, { Twilio } from "twilio";
 
-import { ENV } from "../configs/env.config";
 import { Config } from "../configs/config";
+import { ENV } from "../configs/env.config";
 
 import {
   UserDocumentModel,
@@ -71,12 +70,14 @@ export default class UserRoute {
     this.updateUser();
     this.deleteUserByUsername();
     this.getUserDataByUsername();
+    this.getUserDataById();
     this.getUserSectionByKey();
 
     // Listing / search
     this.getAllUsers();
     this.getAllUserCount();
     this.getAllUsersWithPagination();
+    this.findUserById();
     this.findUserByUsername();
     this.findUserByEmail();
     this.findUserByPhone();
@@ -384,16 +385,17 @@ export default class UserRoute {
 
           // Use FileUploader to persist the image (webp) to /public/uploads/users/<username>/image.webp
           const baseUrl = `${ req.protocol }://${ req.get( "host" ) }`;
-          const imageResult = await FileUploader.saveSingleImageFromMemory( {
-            baseUploadPath: this.DEFAULT_PATH, // .../public/uploads/users/
-            basePublicUrl: `${ baseUrl }/${ this.DEFAULT_URL }`, // http://.../uploads/users
-            entityFolder: username,
-            filename: "image.webp",
+          const subPath = path.join( this.DEFAULT_PATH, `${ username }`, );
+          const imageResult = await FileUploader.saveSingleWebPFromMemory( {
+            req,
+            subPath,
+            fieldName: "image.webp",
+            originalName: image.originalname,
             buffer: image.buffer,
             webpQuality: 80,
           } );
 
-          const publicImageUrl = imageResult.publicUrl;
+          const publicImageUrl = imageResult.basePublicUrl;
 
           // Access information
           const access = this.parseJSON<IUser[ "access" ] | undefined>(
@@ -586,15 +588,18 @@ export default class UserRoute {
 
           // If there is a new image -> convert to webp and replace
           if ( image ) {
-            const imageResult = await FileUploader.saveSingleImageFromMemory( {
-              baseUploadPath: this.DEFAULT_PATH,
-              basePublicUrl: `${ baseUrl }/${ this.DEFAULT_URL }`,
-              entityFolder: username,
-              filename: "image.webp",
+            const subPath = path.join( this.DEFAULT_PATH, `${ username }`, );
+            const imageResult = await FileUploader.saveSingleWebPFromMemory( {
+              req,
+              subPath,
+              fieldName: "image.webp",
+              originalName: image.originalname,
               buffer: image.buffer,
               webpQuality: 80,
             } );
-            imageUrl = imageResult.publicUrl;
+
+            imageUrl = imageResult.basePublicUrl;
+
           }
 
           const body = req.body as Record<string, any>;
@@ -952,6 +957,47 @@ export default class UserRoute {
           return;
         } catch ( error ) {
           console.error( "[user-username] error:", error );
+          ApiResponseBuilder.internalError( res, error );
+          return;
+        }
+      }
+    );
+  }
+
+  private findUserById(): void {
+    this.router.get(
+      "/user-id/:id",
+      async (
+        req: Request<{ id: string; }>,
+        res: Response
+      ): Promise<void> => {
+        try {
+          const id = String( req.params.id || "" ).trim();
+          if ( !id ) {
+            ApiResponseBuilder.validationError( res, "ID is required" );
+            return;
+          }
+
+          const exists = await UserModel.exists( { _id: id } );
+          const user: User | null = await UserModel.findOne( { _id: id } )
+            .lean<User>()
+            .exec();
+
+          if ( !user ) {
+            ApiResponseBuilder.notFound( res, "User not found" );
+            return;
+          }
+
+          ApiResponseBuilder.ok(
+            res,
+            "user",
+            user,
+            "User found",
+            { other: { exists: exists ? "true" : "false" } }
+          );
+          return;
+        } catch ( error ) {
+          console.error( "[user-id] error:", error );
           ApiResponseBuilder.internalError( res, error );
           return;
         }
@@ -1532,6 +1578,46 @@ export default class UserRoute {
   // ==========================================================
   // Single user read
   // ==========================================================
+
+
+
+  private getUserDataById(): void {
+    this.router.get(
+      "/user-data/:id",
+      async (
+        req: Request<{ id: string; }>,
+        res: Response
+      ): Promise<void> => {
+        try {
+          const id = String( req.params.id || "" ).trim();
+          if ( !id ) {
+            ApiResponseBuilder.validationError( res, "ID is required" );
+            return;
+          }
+
+          const user = await UserModel.findOne( { _id: id }, USER_MODEL_PROJECTION )
+            .lean<User>()
+            .exec();
+
+          if ( !user ) {
+            ApiResponseBuilder.notFound(
+              res,
+              "User not found under the given username"
+            );
+            return;
+          }
+
+          ApiResponseBuilder.ok( res, "user", user, "User found under username" );
+          return;
+        } catch ( error ) {
+          console.error( "[user-data] error:", error );
+          ApiResponseBuilder.internalError( res, error );
+          return;
+        }
+      }
+    );
+
+  }
 
   private getUserDataByUsername(): void {
     this.router.get(

@@ -1,40 +1,44 @@
 // Path: src/bootstrap/routes.bootstrap.ts
 
-import { NODE_ENV } from '../configs/env.config';
-import path from 'path';
 import type {
+  ErrorRequestHandler,
   Express,
-  Request,
-  Response,
   NextFunction,
+  Request,
   RequestHandler,
-  ErrorRequestHandler
+  Response
 } from 'express';
 import express from 'express';
+import path from 'path';
+import { NODE_ENV } from '../configs/env.config';
 
+import type Database from '../configs/database';
 import { apiGuard } from '../guard/api-router.guard';
 import Guards from '../guard/fullAccess.guard';
-import type Database from '../configs/database';
 import type { TypedNamespace } from '../socket/socket-types.type';
 
-import type NotificationController from '../controller/notification.controller';
-import type ReportController from '../controller/report.controller';
 import type { AuthController } from '../controller/auth.controller';
 import type { MfaController } from '../controller/mfa.controller';
+import type NotificationController from '../controller/notification.controller';
+import type ReportController from '../controller/report.controller';
 
-import UserRoute from '../api/user';
-import Tracking from '../api/tracking';
-import Property from '../api/property';
-import { PlacesController } from '../api/PlacesController';
-import Tenant from '../api/tenant';
 import FileTransfer from '../api/fileTransfer';
 import Lease from '../api/lease';
-import Validator from '../api/validator';
 import Payments from '../api/payment';
-import UploadsRoutes from '../api/uploads';
+import { PlacesController } from '../api/PlacesController';
+import Property from '../api/property';
+import TeamKpiRouter from '../api/teamManagement/teamKpi';
 import TeamManagement from '../api/teamManagement/teamManagement';
 import TeamTaskManagement from '../api/teamManagement/teamTask';
-import { KpiRoutes } from '../KPIs/api/kpi.routes';
+import WorkEventApi from '../api/teamManagement/workEvents';
+import WorkItemApi from '../api/teamManagement/workItem';
+import Tenant from '../api/tenant';
+import Tracking from '../api/tracking';
+import UploadsRoutes from '../api/uploads';
+import UserRoute from '../api/user';
+import Validator from '../api/validator';
+import { CommentsEngineRouter } from '../api/shared/comments/comments-engine.router';
+
 
 
 const isProd: boolean = NODE_ENV === 'production';
@@ -61,7 +65,10 @@ interface RoutesBootstrapDeps {
   payments: Payments;
   teamManagement: TeamManagement;
   teamTaskRouter: TeamTaskManagement;
-  kpis: KpiRoutes;
+  teamKpiRouter: TeamKpiRouter;
+  workItemRouter: WorkItemApi;
+  workEventRouter: WorkEventApi;
+  commentsEngineRouter: CommentsEngineRouter;
 }
 
 export class RoutesBootstrap {
@@ -86,9 +93,13 @@ export class RoutesBootstrap {
   private readonly payments: Payments;
   private readonly teamManagement: TeamManagement;
   private readonly teamTaskRouter: TeamTaskManagement;
-  private readonly kpis: KpiRoutes;
+  private readonly teamKpiRouter: TeamKpiRouter;
+  private readonly workItemRouter: WorkItemApi;
+  private readonly workEventRouter: WorkEventApi;
+  private readonly commentsEngineRouter: CommentsEngineRouter;
 
-  public constructor(deps: RoutesBootstrapDeps) {
+
+  public constructor ( deps: RoutesBootstrapDeps ) {
     this.app = deps.app;
     this.db = deps.db;
     this.io = deps.io;
@@ -110,7 +121,10 @@ export class RoutesBootstrap {
     this.payments = deps.payments;
     this.teamManagement = deps.teamManagement;
     this.teamTaskRouter = deps.teamTaskRouter;
-    this.kpis = deps.kpis;
+    this.teamKpiRouter = deps.teamKpiRouter;
+    this.workItemRouter = deps.workItemRouter;
+    this.workEventRouter = deps.workEventRouter;
+    this.commentsEngineRouter = deps.commentsEngineRouter;
   }
 
   public registerAll(): void {
@@ -128,13 +142,13 @@ export class RoutesBootstrap {
    * Register 404 handler + centralized error handler.
    * errorHandler MUST be an ErrorRequestHandler (4 args).
    */
-  public registerNotFoundAndErrorHandlers(errorHandler: ErrorRequestHandler): void {
-    this.app.use((_req: Request, res: Response) => {
-      res.status(404).json({ status: 'error', message: 'Not Found' });
+  public registerNotFoundAndErrorHandlers( errorHandler: ErrorRequestHandler ): void {
+    this.app.use( ( _req: Request, res: Response ) => {
+      res.status( 404 ).json( { status: 'error', message: 'Not Found' } );
       return;
-    });
+    } );
 
-    this.app.use(errorHandler);
+    this.app.use( errorHandler );
   }
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -142,51 +156,51 @@ export class RoutesBootstrap {
   // ───────────────────────────────────────────────────────────────────────────
 
   private registerDiagnostics(): void {
-    this.app.get('/api/diag', (req: Request, res: Response) => {
-      const id: string = (req as any).reqId || '-';
+    this.app.get( '/api/diag', ( req: Request, res: Response ) => {
+      const id: string = ( req as any ).reqId || '-';
       const info = {
         reqId: id,
         method: req.method,
         url: req.originalUrl,
         origin: req.headers.origin || '-',
         hasAuthHeader: !!req.headers.authorization,
-        cookieKeys: Object.keys((req as any).cookies || {}),
+        cookieKeys: Object.keys( ( req as any ).cookies || {} ),
         headers: {
           'access-control-request-method':
-            req.headers['access-control-request-method'],
+            req.headers[ 'access-control-request-method' ],
           'access-control-request-headers':
-            req.headers['access-control-request-headers']
+            req.headers[ 'access-control-request-headers' ]
         },
         time: new Date().toISOString()
       };
-      if (!isProd) {
+      if ( !isProd ) {
         // eslint-disable-next-line no-console
-        console.log(`[${APP_TAG}] [${id}] /api/diag`, info);
+        console.log( `[${ APP_TAG }] [${ id }] /api/diag`, info );
       }
-      res.json(info);
+      res.json( info );
       return;
-    });
+    } );
   }
 
   private registerNotificationRoutes(): void {
-    this.app.use('/api-notification', apiGuard, this.notification.router);
+    this.app.use( '/api-notification', apiGuard, this.notification.router );
   }
 
   private registerHealthRoute(): void {
     this.app.get(
       '/api/health',
       Guards.requireFullAccess(),
-      async (_req: Request, res: Response) => {
+      async ( _req: Request, res: Response ) => {
         const dbOk: boolean =
           this.db.isConnected() &&
-          (await this.db.ping().catch(() => false));
+          ( await this.db.ping().catch( () => false ) );
 
-        res.json({
+        res.json( {
           status: dbOk ? 'ok' : 'degraded',
           db: { connected: this.db.isConnected(), ping: dbOk },
           socket: { namespace: this.io.name || '/', connected: true },
           timestamp: Date.now()
-        });
+        } );
         return;
       }
     );
@@ -202,16 +216,16 @@ export class RoutesBootstrap {
     this.app.use(
       '/adminsOnly',
       Guards.requireFullAccess(),
-      (_req: Request, res: Response, next: NextFunction) => {
+      ( _req: Request, res: Response, next: NextFunction ) => {
         res.setHeader(
           'Cache-Control',
           'private, no-store, no-cache, must-revalidate'
         );
-        res.setHeader('Pragma', 'no-cache');
-        res.setHeader('Expires', '0');
+        res.setHeader( 'Pragma', 'no-cache' );
+        res.setHeader( 'Expires', '0' );
         next();
       },
-      express.static(adminsOnlyDir, { fallthrough: false })
+      express.static( adminsOnlyDir, { fallthrough: false } )
     );
   }
 
@@ -222,41 +236,45 @@ export class RoutesBootstrap {
       apiGuard,
       this.authController.getRouter()
     );
-    this.app.use('/api/mfa', apiGuard, this.mfaController.getRouter());
+    this.app.use( '/api/mfa', apiGuard, this.mfaController.getRouter() );
   }
 
   private registerReportRoutes(): void {
-    this.app.use('/api-report', apiGuard, this.reportController.router);
+    this.app.use( '/api-report', apiGuard, this.reportController.router );
   }
 
   private registerApiRoutes(): void {
-    this.app.use('/api-rich-text', apiGuard, this.uploadsRoutes.router);
-    this.app.use('/api-user', apiGuard, this.user.route);
-    this.app.use('/api-tracking', apiGuard, this.tracking.route);
-    this.app.use('/api-property', apiGuard, this.property.route);
-    this.app.use('/api-places', apiGuard, this.placesController.router);
-    this.app.use('/api-tenant', apiGuard, this.tenant.route);
-    this.app.use('/api-file-transfer', apiGuard, this.fileTransfer.route);
-    this.app.use('/api-lease', apiGuard, this.lease.route);
-    this.app.use('/api-validator', apiGuard, this.validator.route);
-    this.app.use('/api-payments', apiGuard, this.payments.route);
-    this.app.use('/api-team-management', apiGuard, this.teamManagement.route);
+    this.app.use( '/api-rich-text', apiGuard, this.uploadsRoutes.router );
+    this.app.use( '/api-user', apiGuard, this.user.route );
+    this.app.use( '/api-tracking', apiGuard, this.tracking.route );
+    this.app.use( '/api-property', apiGuard, this.property.route );
+    this.app.use( '/api-places', apiGuard, this.placesController.router );
+    this.app.use( '/api-tenant', apiGuard, this.tenant.route );
+    this.app.use( '/api-file-transfer', apiGuard, this.fileTransfer.route );
+    this.app.use( '/api-lease', apiGuard, this.lease.route );
+    this.app.use( '/api-validator', apiGuard, this.validator.route );
+    this.app.use( '/api-payments', apiGuard, this.payments.route );
+    this.app.use( '/api-team-management', apiGuard, this.teamManagement.route );
     this.app.use( '/api-team-management/task', apiGuard, this.teamTaskRouter.route );
-    this.app.use('/api-kpis', apiGuard, this.kpis.getRouter());
+    this.app.use( '/api-team-management/kpi', apiGuard, this.teamKpiRouter.route );
+    this.app.use( '/api-work-item', apiGuard, this.workItemRouter.route );
+    this.app.use( '/api-work-event', apiGuard, this.workEventRouter.route );
+    this.app.use( '/api-comments', apiGuard, this.commentsEngineRouter.route );
+
   }
 
   private registerIndexPage(): void {
-    this.app.get('/', (_req: Request, res: Response) => {
+    this.app.get( '/', ( _req: Request, res: Response ) => {
       res.sendFile(
-        path.join(process.cwd(), 'public', 'index.html'),
-        (err: Error | null) => {
-          if (err) {
+        path.join( process.cwd(), 'public', 'index.html' ),
+        ( err: Error | null ) => {
+          if ( err ) {
             // eslint-disable-next-line no-console
-            console.error(err);
-            res.status(500).send('Internal Server Error');
+            console.error( err );
+            res.status( 500 ).send( 'Internal Server Error' );
           }
         }
       );
-    });
+    } );
   }
 }

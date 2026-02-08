@@ -30,9 +30,9 @@ import {
   PropertyModel,
 } from "../models/property.model";
 import NotificationService from "../services/notification.service";
-import type { PaginationMeta } from "../types/api-message";
+import type { FileMetaPacket, PaginationMeta } from "../types/api-message";
 import { ApiResponseBuilder } from "../utils/api-combiner.builder";
-import FileUploader from "../utils/file-uploader.helper";
+import FileUploader, { type UploadResultPacket } from "../utils/file-uploader.helper";
 import type { CountryCodes, PhoneNumber } from "../models/user.model";
 
 /* ========================================================================== *
@@ -237,7 +237,7 @@ export default class Property {
           }
 
           // 2) Parse multipart body + persist files via FileUploader
-          const filesByField: Record<string, Express.Multer.File[]> =
+          const filesByField: UploadResultPacket =
             await FileUploader.handleMultiFieldUpload(
               `properties/${ propertyID }`,
               [
@@ -255,8 +255,8 @@ export default class Property {
               }
             );
 
-          const imagesIn: Express.Multer.File[] = filesByField.images ?? [];
-          const docsIn: Express.Multer.File[] = filesByField.documents ?? [];
+          const imagesIn: FileMetaPacket[] = filesByField.byField.images ?? [];
+          const docsIn: FileMetaPacket[] = filesByField.byField.documents ?? [];
 
           // 3) Build media arrays (final URLs, no tempImages)
           const images: UploadedImage[] = [];
@@ -264,25 +264,25 @@ export default class Property {
 
           for ( const f of docsIn ) {
             documents.push( {
-              originalname: f.originalname.trim(),
-              filename: f.filename.trim(),
-              mimetype: f.mimetype.trim(),
-              size: f.size,
+              originalname: f.originalName.trim(),
+              filename: f.storedName.trim(),
+              mimetype: f.mimeType.trim(),
+              size: f.sizeBytes,
               documentURL: `${ req.protocol }://${ req.get(
                 "host"
-              ) }/uploads/properties/${ propertyID }/documents/${ f.filename }`,
+              ) }/uploads/properties/${ propertyID }/documents/${ f.storedName }`,
             } );
           }
 
           for ( const f of imagesIn ) {
             images.push( {
-              originalname: f.originalname.trim(),
-              filename: f.filename.trim(),
-              mimetype: f.mimetype.trim(),
-              size: f.size,
+              originalname: f.originalName.trim(),
+              filename: f.storedName.trim(),
+              mimetype: f.mimeType.trim(),
+              size: f.sizeBytes,
               imageURL: `${ req.protocol }://${ req.get(
                 "host"
-              ) }/uploads/properties/${ propertyID }/images/${ f.filename }`,
+              ) }/uploads/properties/${ propertyID }/images/${ f.storedName }`,
             } );
           }
 
@@ -368,7 +368,7 @@ export default class Property {
           }
 
           // 2) Parse multipart (body + files)
-          const filesByField: Record<string, Express.Multer.File[]> =
+          const filesByField: UploadResultPacket =
             await FileUploader.handleMultiFieldUpload(
               `properties/${ propertyID }`,
               [ { name: "images" }, { name: "documents" } ],
@@ -383,8 +383,8 @@ export default class Property {
               }
             );
 
-          const imagesIn: Express.Multer.File[] = filesByField.images ?? [];
-          const docsIn: Express.Multer.File[] = filesByField.documents ?? [];
+          const imagesIn: FileMetaPacket[] = filesByField.byField.images ?? [];
+          const docsIn: FileMetaPacket[] = filesByField.byField.documents ?? [];
 
           // 3) Existing media
           const existingImages = this.parseJSON<UploadedImage[]>(
@@ -484,26 +484,26 @@ export default class Property {
           // 6) Accept newly uploaded images
           for ( const f of imagesIn ) {
             Images.push( {
-              originalname: f.originalname.trim(),
-              filename: f.filename.trim(),
-              mimetype: f.mimetype.trim(),
-              size: f.size,
+              originalname: f.originalName.trim(),
+              filename: f.storedName.trim(),
+              mimetype: f.mimeType.trim(),
+              size: f.sizeBytes,
               imageURL: `${ req.protocol }://${ req.get(
                 "host"
-              ) }/uploads/properties/${ propertyID }/images/${ f.filename }`,
+              ) }/uploads/properties/${ propertyID }/images/${ f.storedName }`,
             } );
           }
 
           // 7) Accept newly uploaded documents
           for ( const f of docsIn ) {
             Documents.push( {
-              originalname: f.originalname.trim(),
-              filename: f.filename.trim(),
-              mimetype: f.mimetype.trim(),
-              size: f.size,
+              originalname: f.originalName.trim(),
+              filename: f.storedName.trim(),
+              mimetype: f.mimeType.trim(),
+              size: f.sizeBytes,
               documentURL: `${ req.protocol }://${ req.get(
                 "host"
-              ) }/uploads/properties/${ propertyID }/documents/${ f.filename }`,
+              ) }/uploads/properties/${ propertyID }/documents/${ f.storedName }`,
             } );
           }
 

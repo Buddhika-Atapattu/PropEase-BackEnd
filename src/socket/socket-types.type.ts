@@ -10,18 +10,33 @@ import {
 import type { Role } from '../types/roles';
 
 export type JwtPayload = {
-    sub?: string;
+    sub?: string;            // userId (string) if your JWT uses it
     username: string;
     role: Role;
+  
+    // optional scoping hints (multi-team supported)
+    branchId?: string;
+    teamCodes?: string[];    // ✅ one user can belong to many teams
+  
     iat?: number;
     exp?: number;
-};
+  };
+  
 
 export type AuthUser = {
+    // JWT standard subject (user id)
+    sub?: string;
+  
+    // Human identity
     username: string;
     role: Role;
-    sub?: string;
-};
+  
+    // KPI / scoping hints (OPTIONAL)
+    // one user can be in multiple teams
+    teamCodes?: string[];   // e.g. ["TEAM-A", "TEAM-B"]
+    branchId?: string;      // optional org structure
+  };
+  
 
 /**
  * Socket.IO "data" bag for each connection.
@@ -30,7 +45,14 @@ export type AuthUser = {
 export type SocketAuthData = {
     authUser?: AuthUser;
     sessionToken?: string;
-};
+  
+    // -----------------------------
+    // KPI realtime room join helpers
+    // -----------------------------
+    kpiTeams?: string[];      // teamCodes (user can have many)
+    kpiBranchId?: string;     // optional (only if you have branches)
+  };
+  
 
 // Strongly-typed aliases for Socket.IO server / namespace / socket
 export type TypedServer = IOServer<

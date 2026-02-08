@@ -1,13 +1,9 @@
 // Path: src/socket/socket-auth.helper.ts
 // Centralised helper for Socket.IO auth-related operations.
 
-import jwt from 'jsonwebtoken';
-import type {
-  AuthUser,
-  JwtPayload,
-  TypedSocket
-} from './socket-types.type';
-import type { Role } from '../types/roles';
+import jwt from "jsonwebtoken";
+import type { AuthUser, JwtPayload, TypedSocket } from "./socket-types.type";
+import type { Role } from "../types/roles";
 
 export class SocketAuthHelper {
   /** Restrictive room-name regex (anti-garbage / anti-injection). */
@@ -19,6 +15,25 @@ export class SocketAuthHelper {
   public constructor ( jwtSecret: string, allowCookieAuth: boolean ) {
     this.jwtSecret = jwtSecret;
     this.allowCookieAuth = allowCookieAuth;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Small safe parsers (exactOptionalPropertyTypes-safe)
+  // ──────────────────────────────────────────────────────────────────────────
+
+  private static asString( v: unknown ): string | undefined {
+    if ( typeof v !== "string" ) return undefined;
+    const t = v.trim();
+    return t ? t : undefined;
+  }
+
+  private static asStringArray( v: unknown ): string[] | undefined {
+    if ( !Array.isArray( v ) ) return undefined;
+    const out: string[] = v
+      .map( ( x ) => ( typeof x === "string" ? x.trim() : "" ) )
+      .filter( ( x ) => x.length > 0 );
+
+    return out.length ? out : undefined;
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -45,14 +60,9 @@ export class SocketAuthHelper {
     };
 
     const fromAuth = authHandshake.auth?.token;
-    if ( typeof fromAuth === 'string' && fromAuth.trim().length > 0 ) {
+    if ( typeof fromAuth === "string" && fromAuth.trim().length > 0 ) {
       return fromAuth.trim();
     }
-
-    // Legacy cookie / header based JWT auth is disabled by default
-    // in this project, to avoid accidental use of non-JWT tokens.
-    // If you want it back for a specific client, re-enable explicitly
-    // using `allowCookieAuth` or a dedicated helper.
 
     return null;
   }
@@ -74,22 +84,22 @@ export class SocketAuthHelper {
     };
 
     const fromAuth: string | undefined = authHandshake.auth?.sessionToken;
-    if ( typeof fromAuth === 'string' && fromAuth.trim().length > 0 ) {
+    if ( typeof fromAuth === "string" && fromAuth.trim().length > 0 ) {
       return fromAuth.trim();
     }
 
     // 2) Cookie: sessionToken=<value>
-    const cookieHeader: string = socket.handshake.headers.cookie ?? '';
+    const cookieHeader: string = socket.handshake.headers.cookie ?? "";
     if ( cookieHeader ) {
       const segments: string[] = cookieHeader
-        .split( ';' )
+        .split( ";" )
         .map( ( s: string ) => s.trim() )
         .filter( ( s: string ) => s.length > 0 );
 
       for ( const segment of segments ) {
-        if ( segment.startsWith( 'sessionToken=' ) ) {
-          const [ , rawValue ] = segment.split( '=' );
-          const token: string = ( rawValue ?? '' ).trim();
+        if ( segment.startsWith( "sessionToken=" ) ) {
+          const [ , rawValue ] = segment.split( "=" );
+          const token: string = ( rawValue ?? "" ).trim();
           if ( token.length > 0 ) {
             return token;
           }
@@ -98,8 +108,8 @@ export class SocketAuthHelper {
     }
 
     // 3) Optional header for non-browser clients
-    const headerValue = socket.handshake.headers[ 'x-session-token' ];
-    if ( typeof headerValue === 'string' && headerValue.trim().length > 0 ) {
+    const headerValue = socket.handshake.headers[ "x-session-token" ];
+    if ( typeof headerValue === "string" && headerValue.trim().length > 0 ) {
       return headerValue.trim();
     }
 
@@ -124,13 +134,9 @@ export class SocketAuthHelper {
     };
 
     const fromAuth: string | undefined = authHandshake.auth?.wsToken;
-    if ( typeof fromAuth === 'string' && fromAuth.trim().length > 0 ) {
+    if ( typeof fromAuth === "string" && fromAuth.trim().length > 0 ) {
       return fromAuth.trim();
     }
-
-    // For now we ONLY support wsToken via handshake.auth.wsToken.
-    // If you ever need headers/cookies, you can extend this method
-    // similarly to extractSessionToken.
 
     return null;
   }
@@ -147,36 +153,31 @@ export class SocketAuthHelper {
    *    special clients that still send JWTs.
    *  - It will ONLY attempt verification if the token "looks like" a JWT
    *    (3 dot-separated segments). Any other token (e.g., random hex
-   *    sessionToken) is rejected as non-JWT BEFORE calling jwt.verify,
-   *    so we never get noisy "jwt malformed" logs from the lib.
+   *    sessionToken) is rejected as non-JWT BEFORE calling jwt.verify.
    */
   public decodeAuthUser( token: string ): AuthUser {
-    const trimmed = typeof token === 'string' ? token.trim() : '';
+    const trimmed = typeof token === "string" ? token.trim() : "";
 
     if ( trimmed.length === 0 ) {
-      throw new Error( 'Unauthorized: empty token' );
+      throw new Error( "Unauthorized: empty token" );
     }
 
     // Simple heuristic: JWT must have 3 dot-separated parts.
-    const parts = trimmed.split( '.' );
+    const parts = trimmed.split( "." );
     const looksLikeJwt = parts.length === 3;
 
     if ( !looksLikeJwt ) {
-      // In our new design, sessionToken/wsToken are random hex,
-      // not JWTs. Passing them here is a misuse.
-      throw new Error(
-        'Unauthorized: non-JWT token supplied to decodeAuthUser',
-      );
+      throw new Error( "Unauthorized: non-JWT token supplied to decodeAuthUser" );
     }
 
     const decoded: unknown = jwt.verify( trimmed, this.jwtSecret );
 
     if ( !SocketAuthHelper.isJwtPayload( decoded ) ) {
-      throw new Error( 'Unauthorized: invalid JWT payload' );
+      throw new Error( "Unauthorized: invalid JWT payload" );
     }
 
     if ( !decoded.username || !decoded.role ) {
-      throw new Error( 'Unauthorized: bad payload' );
+      throw new Error( "Unauthorized: bad payload" );
     }
 
     return SocketAuthHelper.toAuthUser( decoded );
@@ -200,15 +201,10 @@ export class SocketAuthHelper {
     const result: string[] = [];
 
     for ( const item of rooms ) {
-      if ( typeof item !== 'string' ) {
-        continue;
-      }
+      if ( typeof item !== "string" ) continue;
 
       const trimmed = item.trim();
-      if (
-        trimmed.length > 0 &&
-        SocketAuthHelper.isValidRoomName( trimmed )
-      ) {
+      if ( trimmed.length > 0 && SocketAuthHelper.isValidRoomName( trimmed ) ) {
         result.push( trimmed );
       }
     }
@@ -220,21 +216,32 @@ export class SocketAuthHelper {
   // Internal mapping helpers
   // ──────────────────────────────────────────────────────────────────────────
 
+  /**
+   * IMPORTANT:
+   * - We only attach optional fields if they exist.
+   * - This keeps exactOptionalPropertyTypes happy.
+   * - Multi-team supported: teamCodes: string[]
+   */
   private static toAuthUser( payload: JwtPayload ): AuthUser {
     const base: AuthUser = {
       username: payload.username,
-      role: payload.role
+      role: payload.role,
     };
 
-    if ( payload.sub ) {
-      base.sub = payload.sub;
-    }
+    const sub = SocketAuthHelper.asString( ( payload as any ).sub );
+    if ( sub ) base.sub = sub;
+
+    const branchId = SocketAuthHelper.asString( ( payload as any ).branchId );
+    if ( branchId ) ( base as any ).branchId = branchId;
+
+    const teamCodes = SocketAuthHelper.asStringArray( ( payload as any ).teamCodes );
+    if ( teamCodes ) ( base as any ).teamCodes = teamCodes;
 
     return base;
   }
 
   private static isJwtPayload( decoded: unknown ): decoded is JwtPayload {
-    if ( typeof decoded !== 'object' || decoded === null ) {
+    if ( typeof decoded !== "object" || decoded === null ) {
       return false;
     }
 
@@ -244,23 +251,20 @@ export class SocketAuthHelper {
     };
 
     const hasValidUsername =
-      typeof candidate.username === 'string' &&
-      candidate.username.trim().length > 0;
+      typeof candidate.username === "string" && candidate.username.trim().length > 0;
 
     const validRoles: Role[] = [
-      'admin',
-      'agent',
-      'tenant',
-      'owner',
-      'operator',
-      'manager',
-      'developer',
-      'user'
+      "admin",
+      "agent",
+      "tenant",
+      "owner",
+      "operator",
+      "manager",
+      "developer",
+      "user",
     ];
 
-    const hasValidRole = validRoles.includes(
-      candidate.role as Role
-    );
+    const hasValidRole = validRoles.includes( candidate.role as Role );
 
     return hasValidUsername && hasValidRole;
   }
