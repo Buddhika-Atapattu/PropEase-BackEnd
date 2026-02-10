@@ -31,21 +31,21 @@ import {
 import Database from '../configs/database';
 
 // Route modules
-import UserRoute from '../api/user';
-import Tracking from '../api/tracking';
-import Property from '../api/property';
-import { PlacesController } from '../api/PlacesController';
-import Tenant from '../api/tenant';
-import FileTransfer from '../api/fileTransfer';
-import Lease from '../api/lease';
-import Validator from '../api/validator';
-import Payments from '../api/payment';
-import UploadsRoutes from '../api/uploads';
-import TeamManagement from '../api/teamManagement/teamManagement';
-import TeamTaskManagement from '../api/teamManagement/teamTask';
-import TeamKpiRouter from '../api/teamManagement/teamKpi';
-import WorkItemApi from '../api/teamManagement/workItem';
-import WorkEventApi from '../api/teamManagement/workEvents';
+import UserRoute from '../api/user.router';
+import Tracking from '../api/tracking.router';
+import Property from '../api/property.router';
+import { PlacesController } from '../api/PlacesController.router';
+import Tenant from '../api/tenant.router';
+import FileTransfer from '../api/fileTransfer.router';
+import Lease from '../api/lease.router';
+import Validator from '../api/validator.router';
+import Payments from '../api/payment.router';
+import UploadsRoutes from '../api/uploads.router';
+import TeamManagement from '../api/teamManagement/teamManagement.router';
+import TeamTaskManagement from '../api/teamManagement/teamTask.router';
+import TeamKpiRouter from '../api/teamManagement/teamKpi.router';
+import WorkItemApi from '../api/teamManagement/workItem.router';
+import WorkEventApi from '../api/teamManagement/workEvents.router';
 import { CommentsEngineRouter } from "../api/shared/comments/comments-engine.router";
 
 

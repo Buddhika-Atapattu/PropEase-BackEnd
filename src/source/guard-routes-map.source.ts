@@ -938,60 +938,303 @@ export const GUARD_ROUTES: ReadonlyArray<GuardRouteDefinition> = [
     description: "List all users with team membership (paged via query)",
   },
 
-  // =========================================================================
-  // TEAM TASK MANAGEMENT (mounted at /api-team-management/task)
-  // → WorkItems permissions
-  // =========================================================================
+  // ──────────────────────────────────────────────────────────────────────────
+  // TEAM MANAGEMENT → TEAM TASKS (mounted: /api-team-management/task)
+  // Module key kept as: "TeamManagement.WorkItems" (your existing RBAC mapping)
+  // ──────────────────────────────────────────────────────────────────────────
 
+  // ---------------------------
+  // READ
+  // ---------------------------
   {
-    id: "team-task:assign-task",
-    method: "POST",
-    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/assign-task\/[^/]+$/ ),
-    module: "TeamManagement.WorkItems",
-    action: "assign",
-    description: "Assign task to a team",
-  },
-  {
-    id: "team-task:attach-evidence",
-    method: "POST",
-    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/evidence\/attach\/[^/]+\/[^/]+$/ ),
-    module: "TeamManagement.WorkItems",
-    action: "uploadEvidence",
-    description: "Attach evidence meta to a team task",
-  },
-  {
-    id: "team-task:upload-evidence",
-    method: "POST",
-    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/upload\/evidence\/[^/]+\/[^/]+$/ ),
-    module: "TeamManagement.WorkItems",
-    action: "uploadEvidence",
-    description: "Upload evidence files for a team task",
-  },
-  {
-    id: "team-task:get-tasks",
+    id: "team-task:get-one",
     method: "GET",
-    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/get-tasks\/[^/]+\/?$/ ),
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/get\/[^/]+\/?$/ ),
     module: "TeamManagement.WorkItems",
     action: "view",
-    description: "Get all tasks for a team",
+    description: "Get a TeamTask by MongoId (minimal/advanced via query).",
   },
   {
-    id: "team-task:upload-comment",
+    id: "team-task:list",
     method: "POST",
-    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/upload\/comment\/[^/]+\/[^/]+$/ ),
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/list\/?$/ ),
     module: "TeamManagement.WorkItems",
-    action: "uploadEvidence",
-    description: "Upload comment attachments for a team task",
+    action: "view",
+    description: "List TeamTasks (filters + pagination + sort + mode).",
   },
   {
-    id: "team-task:add-comment",
+    id: "team-task:count",
     method: "POST",
-    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/comment\/add\/[^/]+\/[^/]+$/ ),
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/count\/?$/ ),
     module: "TeamManagement.WorkItems",
-    action: "update",
-    description: "Add a comment to a team task",
+    action: "view",
+    description: "Count TeamTasks by filters.",
+  },
+  {
+    id: "team-task:key-values",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/key-values\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "view",
+    description: "Load key-values (domains/statuses/priorities + distinct labels).",
   },
 
+  // ---------------------------
+  // CRUD
+  // ---------------------------
+  {
+    id: "team-task:create",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/create\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "create",
+    description: "Create TeamTask (multipart supported, evidence optional).",
+  },
+  {
+    id: "team-task:update",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/update\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "update",
+    description: "Update TeamTask (multipart supported, evidence optional).",
+  },
+  {
+    id: "team-task:delete",
+    method: "DELETE",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/delete\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "delete",
+    description: "Delete TeamTask by MongoId.",
+  },
+
+  // ---------------------------
+  // Evidence
+  // ---------------------------
+  {
+    id: "team-task:evidence-remove",
+    method: "DELETE",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/evidence\/[^/]+\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "uploadEvidence",
+    description:
+      "Remove evidence from a TeamTask (2nd param is storageKey unless evidence schema uses _id:true).",
+  },
+
+  // ---------------------------
+  // Status / Priority
+  // ---------------------------
+  {
+    id: "team-task:set-status",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/status\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "update",
+    description: "Set TeamTask status.",
+  },
+  {
+    id: "team-task:set-priority",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/priority\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "update",
+    description: "Set TeamTask priority.",
+  },
+
+  // ---------------------------
+  // Labels
+  // ---------------------------
+  {
+    id: "team-task:labels-set",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/labels\/set\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "update",
+    description: "Replace TeamTask labels (set).",
+  },
+  {
+    id: "team-task:labels-add",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/labels\/add\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "update",
+    description: "Add TeamTask labels.",
+  },
+  {
+    id: "team-task:labels-remove",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/labels\/remove\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "update",
+    description: "Remove TeamTask labels.",
+  },
+
+  // ---------------------------
+  // Members / Captain (assignment)
+  // ---------------------------
+  {
+    id: "team-task:members-set",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/members\/set\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "assign",
+    description: "Set assigned members for a TeamTask.",
+  },
+  {
+    id: "team-task:members-add",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/members\/add\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "assign",
+    description: "Add assigned members to a TeamTask.",
+  },
+  {
+    id: "team-task:members-remove",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/members\/remove\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "assign",
+    description: "Remove assigned members from a TeamTask.",
+  },
+  {
+    id: "team-task:captain-set",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/captain\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "assign",
+    description: "Set/clear TeamTask captain.",
+  },
+
+  // ---------------------------
+  // Location / Address / Notes
+  // ---------------------------
+  {
+    id: "team-task:location-set",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/location\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "update",
+    description: "Set/clear TeamTask location.",
+  },
+  {
+    id: "team-task:address-set",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/address\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "update",
+    description: "Set/clear TeamTask address.",
+  },
+  {
+    id: "team-task:notes-set",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/notes\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "update",
+    description: "Set/clear TeamTask notes.",
+  },
+
+  // ---------------------------
+  // Audit
+  // ---------------------------
+  {
+    id: "team-task:audit-get",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/audit\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "view",
+    description: "Get TeamTask audit object.",
+  },
+  {
+    id: "team-task:audit-set",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/audit\/set\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "update",
+    description: "Set/clear TeamTask audit object.",
+  },
+  {
+    id: "team-task:audit-patch",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/audit\/patch\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "update",
+    description: "Patch TeamTask audit object.",
+  },
+  {
+    id: "team-task:audit-clear",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/audit\/clear\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "update",
+    description: "Clear TeamTask audit object.",
+  },
+
+  // ---------------------------
+  // Timing
+  // ---------------------------
+  {
+    id: "team-task:timing-get",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/timing\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "view",
+    description: "Get TeamTask timing object.",
+  },
+  {
+    id: "team-task:timing-set",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/timing\/set\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "update",
+    description: "Set/clear TeamTask timing object.",
+  },
+  {
+    id: "team-task:timing-patch",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/timing\/patch\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "update",
+    description: "Patch TeamTask timing object.",
+  },
+  {
+    id: "team-task:timing-clear",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/timing\/clear\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "update",
+    description: "Clear TeamTask timing object.",
+  },
+
+  // ---------------------------
+  // SLA (legacy) → deadlinePolicy
+  // ---------------------------
+  {
+    id: "team-task:sla-set",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/sla\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "update",
+    description: "Set/clear SLA (legacy) – service maps to deadlinePolicy.",
+  },
+
+  // ---------------------------
+  // Task Users
+  // ---------------------------
+  {
+    id: "team-task:users-usernames",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/users\/usernames\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "view",
+    description: "Get assigned member usernames for a TeamTask.",
+  },
+  {
+    id: "team-task:users-get",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/users\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "view",
+    description: "Get TeamTask users (members + captain) with optional filter by userId/username.",
+  },
   // =========================================================================
   // WORK EVENTS (/api-work-event)
   // → WorkEvents permissions

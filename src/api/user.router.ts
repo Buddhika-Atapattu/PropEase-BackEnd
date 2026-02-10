@@ -1,5 +1,5 @@
 // ==========================================================
-// File: src/api/user.ts
+// Path: src/api/user.router.ts
 // Description: User routes (create, verify, update, search,
 //              upload docs, token utilities, and deletion).
 // Notes:

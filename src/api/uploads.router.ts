@@ -1,3 +1,4 @@
+//Path: src/api/uploads.router.ts
 import { Router } from 'express';
 import multer, { FileFilterCallback } from 'multer';
 import path from 'node:path';

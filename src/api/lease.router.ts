@@ -1,4 +1,4 @@
-///src/api/lease.ts
+//Path: src/api/lease.router.ts
 // ============================================================================
 // Lease API Controller
 // - Registers and updates lease agreements (files + DB)

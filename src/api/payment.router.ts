@@ -1,4 +1,4 @@
-// src/api/payments.ts
+//Path: src/api/payments.router.ts
 import express, { Request, Response, Router } from 'express';
 import { ApiResponseBuilder } from '../utils/api-combiner.builder';
 

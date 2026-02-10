@@ -26,9 +26,9 @@ import type {
   KpiSeries,
   KpiSnapshotItem,
   KpiTable,
-} from '../../shared/kpi-core.types';
+} from '../../../shared/kpi-core.types';
 
-import type { KpiDbWindow } from '../../data/kpi-query.service';
+import type { KpiDbWindow } from '../../../data/kpi-query.service';
 import { BaseKpiDefinition, type KpiDefinitionContext } from '../base/base-kpi.definition';
 
 // ----------------------------------------------------------------------------

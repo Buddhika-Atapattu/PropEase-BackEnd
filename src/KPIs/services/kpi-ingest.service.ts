@@ -5,12 +5,12 @@
 import { Types } from 'mongoose';
 import { KpiModelAdapter } from '../data/kpi-model.adapter';
 
-import type { KpiDealFactDto } from '../dtos/kpi-deal-fact.dto';
-import type { KpiSatisfactionFactDto } from '../dtos/kpi-satisfaction-fact.dto';
-import type { KpiMaintenanceEventDto } from '../dtos/kpi-maintenance-event.dto';
-import type { KpiTeamTaskFactDto } from '../dtos/kpi-team-task-fact.dto';
-import type { KpiTeamTaskEvidenceDto } from '../dtos/kpi-team-task-evidence.dto';
-import type { KpiTeamTaskEventDto } from '../dtos/kpi-team-task-event.dto';
+import type { KpiDealFactDto } from '../teamManagement/dtos/kpi-deal-fact.dto';
+import type { KpiSatisfactionFactDto } from '../teamManagement/dtos/kpi-satisfaction-fact.dto';
+import type { KpiMaintenanceEventDto } from '../teamManagement/dtos/kpi-maintenance-event.dto';
+import type { KpiTeamTaskFactDto } from '../teamManagement/dtos/kpi-team-task-fact.dto';
+import type { KpiTeamTaskEvidenceDto } from '../teamManagement/dtos/kpi-team-task-evidence.dto';
+import type { KpiTeamTaskEventDto } from '../teamManagement/dtos/kpi-team-task-event.dto';
 
 import type { IKpiSignalBus } from '../shared/kpi-signal-bus.interface';
 import type { KpiDomain, KpiScope } from '../shared/kpi-core.types';

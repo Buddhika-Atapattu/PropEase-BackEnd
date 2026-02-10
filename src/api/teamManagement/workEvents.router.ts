@@ -1,4 +1,4 @@
-// Path: src/api/teamManagement/workEvents.ts
+// Path: src/api/teamManagement/workEvents.router.ts
 // ============================================================================
 // Work Event API (class-based) — DTO-safe, ApiResponseBuilder-safe (ERROR-FREE)
 // ----------------------------------------------------------------------------

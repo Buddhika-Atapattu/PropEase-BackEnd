@@ -22,6 +22,7 @@ import type { User } from "../models/user.model";
 import type { TeamManagementDto } from "../models/teamManagement/teamManagement.model";
 import type { WorkItemDto } from "../models/teamManagement/workItem.model";
 import type { WorkEventDto } from "../models/teamManagement/workEvent.model";
+import type { ListResult, TeamTaskDto } from './teamManagement/teamTasks/team-tasks.type';
 
 // ✅ TYPE-ONLY import (prevents runtime dependency problems)
 import type { CommentDto } from "./comment.types";
@@ -134,6 +135,8 @@ export interface SystemData {
   teams?: TeamManagementDto[];
 
   // Work items / events (DTO ONLY)
+  teamTask?: TeamTaskDto;
+  teamTasks?: TeamTaskDto[];
   workItem?: WorkItemDto;
   workItems?: WorkItemDto[];
   event?: WorkEventDto;
@@ -215,6 +218,8 @@ export type TeamManagementSystemData = Pick<SystemData, "team" | "teams">;
 
 export type WorkSystemData = Pick<SystemData, "workItem" | "workItems" | "event" | "events">;
 
+export type TeamTaskSystemData = Pick<SystemData, 'teamTask' | 'teamTasks'>;
+
 export type FileMetaSystemData = Pick<SystemData, "file" | "files">;
 
 export type DashboardSystemData = Pick<
@@ -234,6 +239,7 @@ export type ComplaintApiData = ApiData<ComplaintSystemData>;
 export type FileUploadApiData = ApiData<FileUploadSystemData>;
 export type TeamManagementApiData = ApiData<TeamManagementSystemData>;
 export type WorkApiData = ApiData<WorkSystemData>;
+export type TeamTaskData = ApiData<TeamTaskSystemData>;
 export type FileMetaApiData = ApiData<FileMetaSystemData>;
 export type DashboardApiData = ApiData<DashboardSystemData>;
 export type CommentApiData = ApiData<CommentSystemData>;

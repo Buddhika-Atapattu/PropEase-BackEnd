@@ -24,10 +24,10 @@ import type {
   KpiSnapshotItem,
   KpiSeries,
   KpiTable,
-} from '../shared/kpi-core.types';
+} from '../../shared/kpi-core.types';
 
-import type { KpiDbWindow } from '../data/kpi-query.service';
-import { KpiQueryService } from '../data/kpi-query.service';
+import type { KpiDbWindow } from '../../data/kpi-query.service';
+import { KpiQueryService } from '../../data/kpi-query.service';
 
 import { BaseKpiDefinition, type KpiDefinitionContext } from './base/base-kpi.definition';
 
@@ -98,7 +98,7 @@ export class KpiRegistry {
   /**
    * List all KPI definitions (for UI KPI picker).
    */
-  public listDefinitions(): ReadonlyArray<import('../shared/kpi-core.types').KpiDefinitionMeta> {
+  public listDefinitions(): ReadonlyArray<import('../../shared/kpi-core.types').KpiDefinitionMeta> {
     return this.defs.map((d) => d.meta);
   }
 

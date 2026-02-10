@@ -19,9 +19,9 @@ import type {
   KpiTable,
   KpiTableColumn,
   KpiTableRow,
-} from '../../shared/kpi-core.types';
+} from '../../../shared/kpi-core.types';
 
-import type { KpiDbWindow } from '../../data/kpi-query.service';
+import type { KpiDbWindow } from '../../../data/kpi-query.service';
 import { BaseKpiDefinition, type KpiDefinitionContext } from '../base/base-kpi.definition';
 
 export class TopAgentsByValueKpi extends BaseKpiDefinition {

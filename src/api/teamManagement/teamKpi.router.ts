@@ -1,5 +1,5 @@
 // ============================================================================
-// Path: src/api/teamManagement/teamKpi.ts
+// Path: src/api/teamManagement/teamKpi.router.ts
 // ============================================================================
 
 import { Router, type Request, type Response } from 'express';

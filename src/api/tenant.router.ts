@@ -1,4 +1,4 @@
-// src/api/tenants.ts
+//Path: src/api/tenants.router.ts
 // ============================================================================
 // Tenants API (PropEase)
 // - Insert new tenant

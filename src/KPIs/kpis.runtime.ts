@@ -10,7 +10,7 @@ import { SocketIoRealtimeTransport } from "./realtime/transport/socket-io.transp
 import { RealtimeHubService } from "./realtime/runtime/realtime-hub.service";
 import { RealtimeTopicBuilder } from "./realtime/core/realtime-topic.builder";
 
-import { KpiRegistry } from "./registry/kpi.registry";
+import { KpiRegistry } from "./teamManagement/registry/kpi.registry";
 import { KpiRealtimeBridgeService } from "./realtime/runtime/kpi-realtime-bridge.service";
 
 export class KpisRuntime {

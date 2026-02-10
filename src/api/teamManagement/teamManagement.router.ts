@@ -1,4 +1,4 @@
-// Path: src/api/teamManagement/teamManagement.ts
+// Path: src/api/teamManagement/teamManagement.router.ts
 // ============================================================================
 // Team Management Router (class-based) — FIXED
 // ----------------------------------------------------------------------------

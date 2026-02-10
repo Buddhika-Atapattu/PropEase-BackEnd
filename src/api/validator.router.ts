@@ -1,5 +1,5 @@
 // ============================================================================
-// File: src/api/validator.ts
+// Path: src/api/validator.router.ts
 // Description: Validation routes (email format + MX DNS check).
 // Notes:
 //  - Class-based router, aligned with ApiResponseBuilder.

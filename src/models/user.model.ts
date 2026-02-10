@@ -444,6 +444,8 @@ export interface IUser extends Document {
   address: Address;
   isActive: boolean;
 
+  branchId?: string;
+
   // Verification & OTP (legacy field name kept)
   otpVerifycation: boolean;
   otpToken: string;
@@ -945,6 +947,8 @@ export class UserModelBuilder {
 
         address: { type: addressSchema, required: true },
         isActive: { type: Boolean, required: true, default: true, index: true },
+
+        branchId: { type: String, required: false, trim: true, default: null },
 
         // ── OTP / email verification (legacy kept)
         otpVerifycation: { type: Boolean, required: true, default: false },

@@ -25,7 +25,7 @@ import type { RealtimeAudience, RealtimeDeliveryHints } from '../types/realtime.
 
 import { RealtimeHubService } from './realtime-hub.service';
 import { RealtimeTopicBuilder } from '../core/realtime-topic.builder';
-import { KpiRegistry } from '../../registry/kpi.registry';
+import { KpiRegistry } from '../../teamManagement/registry/kpi.registry';
 
 interface KpiInvalidationPayload {
   kind: 'kpi_scope_invalidated';

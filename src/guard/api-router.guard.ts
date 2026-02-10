@@ -41,6 +41,7 @@ import {
 } from '../source/guard-routes-map.source';
 
 import type { Role } from '../types/roles';
+import type { AuthUser } from '../socket/socket-types.type';
 
 // =============================================================================
 // Local helpers (keep this file self-contained + type-safe)
@@ -501,5 +502,17 @@ export class ApiGuardExport {
 
     public static async GetLoggedUser( req: Request ): Promise<User | null> {
         return await ApiGuardExport.ApiGuardMain.getLoggedUser( req );
+    }
+
+    public static async GetAuthUser( req: Request ): Promise<AuthUser | null> {
+        const user: User | null = await ApiGuardExport.ApiGuardMain.getLoggedUser( req );
+        if ( !user ) {
+            return null;
+        }
+        const authUser: AuthUser = {
+            role: user.role,
+            username: user.username,
+        };
+        return authUser;
     }
 }

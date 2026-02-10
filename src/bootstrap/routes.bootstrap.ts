@@ -22,21 +22,21 @@ import type { MfaController } from '../controller/mfa.controller';
 import type NotificationController from '../controller/notification.controller';
 import type ReportController from '../controller/report.controller';
 
-import FileTransfer from '../api/fileTransfer';
-import Lease from '../api/lease';
-import Payments from '../api/payment';
-import { PlacesController } from '../api/PlacesController';
-import Property from '../api/property';
-import TeamKpiRouter from '../api/teamManagement/teamKpi';
-import TeamManagement from '../api/teamManagement/teamManagement';
-import TeamTaskManagement from '../api/teamManagement/teamTask';
-import WorkEventApi from '../api/teamManagement/workEvents';
-import WorkItemApi from '../api/teamManagement/workItem';
-import Tenant from '../api/tenant';
-import Tracking from '../api/tracking';
-import UploadsRoutes from '../api/uploads';
-import UserRoute from '../api/user';
-import Validator from '../api/validator';
+import FileTransfer from '../api/fileTransfer.router';
+import Lease from '../api/lease.router';
+import Payments from '../api/payment.router';
+import { PlacesController } from '../api/PlacesController.router';
+import Property from '../api/property.router';
+import TeamKpiRouter from '../api/teamManagement/teamKpi.router';
+import TeamManagement from '../api/teamManagement/teamManagement.router';
+import TeamTaskManagement from '../api/teamManagement/teamTask.router';
+import WorkEventApi from '../api/teamManagement/workEvents.router';
+import WorkItemApi from '../api/teamManagement/workItem.router';
+import Tenant from '../api/tenant.router';
+import Tracking from '../api/tracking.router';
+import UploadsRoutes from '../api/uploads.router';
+import UserRoute from '../api/user.router';
+import Validator from '../api/validator.router';
 import { CommentsEngineRouter } from '../api/shared/comments/comments-engine.router';
 
 

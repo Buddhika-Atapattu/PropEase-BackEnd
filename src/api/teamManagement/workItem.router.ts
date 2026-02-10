@@ -1,4 +1,4 @@
-// Path: src/api/teamManagement/workItem.ts
+// Path: src/api/teamManagement/workItem.router.ts
 // ============================================================================
 // Work Item API (class-based) — DTO-safe, ApiResponseBuilder-safe (ERROR-FREE)
 // ----------------------------------------------------------------------------

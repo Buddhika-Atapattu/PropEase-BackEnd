@@ -32,8 +32,8 @@ import type {
   KpiSeries,
   KpiSnapshotItem,
   KpiTable,
-} from '../../shared/kpi-core.types';
-import type { KpiDbWindow } from '../../data/kpi-query.service';
+} from '../../../shared/kpi-core.types';
+import type { KpiDbWindow } from '../../../data/kpi-query.service';
 
 /**
  * Registry context:
@@ -43,12 +43,12 @@ import type { KpiDbWindow } from '../../data/kpi-query.service';
 export interface KpiDefinitionContext {
   // DB query engine (aggregation methods)
   query: {
-    getSaleRentMix: (target: KpiQueryTarget, window: KpiDbWindow, filters?: KpiQueryFilters) => Promise<import('../../shared/kpi-core.types').KpiMetricValue>;
-    getCommissionEfficiency: (target: KpiQueryTarget, window: KpiDbWindow, filters?: KpiQueryFilters) => Promise<import('../../shared/kpi-core.types').KpiMetricValue>;
-    getCustomerSatisfaction: (target: KpiQueryTarget, window: KpiDbWindow, filters?: KpiQueryFilters) => Promise<import('../../shared/kpi-core.types').KpiMetricValue>;
-    getMaintenanceSlaCompliance: (target: KpiQueryTarget, window: KpiDbWindow, filters?: KpiQueryFilters) => Promise<import('../../shared/kpi-core.types').KpiMetricValue>;
-    getTaskCompletionRate: (target: KpiQueryTarget, window: KpiDbWindow, filters?: KpiQueryFilters) => Promise<import('../../shared/kpi-core.types').KpiMetricValue>;
-    getTopAgents: (target: KpiQueryTarget, window: KpiDbWindow, filters?: KpiQueryFilters, limit?: number) => Promise<ReadonlyArray<import('../../data/kpi-query.service').KpiTopAgentRow>>;
+    getSaleRentMix: (target: KpiQueryTarget, window: KpiDbWindow, filters?: KpiQueryFilters) => Promise<import('../../../shared/kpi-core.types').KpiMetricValue>;
+    getCommissionEfficiency: (target: KpiQueryTarget, window: KpiDbWindow, filters?: KpiQueryFilters) => Promise<import('../../../shared/kpi-core.types').KpiMetricValue>;
+    getCustomerSatisfaction: (target: KpiQueryTarget, window: KpiDbWindow, filters?: KpiQueryFilters) => Promise<import('../../../shared/kpi-core.types').KpiMetricValue>;
+    getMaintenanceSlaCompliance: (target: KpiQueryTarget, window: KpiDbWindow, filters?: KpiQueryFilters) => Promise<import('../../../shared/kpi-core.types').KpiMetricValue>;
+    getTaskCompletionRate: (target: KpiQueryTarget, window: KpiDbWindow, filters?: KpiQueryFilters) => Promise<import('../../../shared/kpi-core.types').KpiMetricValue>;
+    getTopAgents: (target: KpiQueryTarget, window: KpiDbWindow, filters?: KpiQueryFilters, limit?: number) => Promise<ReadonlyArray<import('../../../data/kpi-query.service').KpiTopAgentRow>>;
   };
 }
 
