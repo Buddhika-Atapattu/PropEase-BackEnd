@@ -33,8 +33,8 @@ import type { IProperty } from '../models/property.model';
 import type { ITenant } from '../models/tenant.model';
 import type { IComplaint } from '../models/complaint.model';
 import type { UserDocumentEntity } from '../models/file-upload.model';
-import type { TeamManagementDto } from '../models/teamManagement/teamManagement.model';
-import type { WorkItemDto } from '../models/teamManagement/workItem.model';
+import type { TeamManagementDto } from '../types/teamManagement/teamMain/teamManagement.types';
+import type { WorkItemDto } from '../types/teamManagement/workItem/workItem.types';
 import type { WorkEventDto } from '../models/teamManagement/workEvent.model';
 
 // ----------------------------------------------------------------------------

@@ -3,37 +3,28 @@
 // TeamTaskService — rebuilt to match TeamTaskModel + team-tasks.type.ts
 // =============================================================================
 // Key alignment fixes:
-// - `deadlinePolicy` replaces `sla`
+// - deadlinePolicy replaces sla
 // - dueAt filters/sort use "deadlinePolicy.dueAt"
-// - DTO mapper treats schema empty-string defaults as "absent" (omit)
+// - DTO mapper never assigns undefined to optionals (exactOptionalPropertyTypes-safe)
 // - Lean typing uses LeanTeamTask (plain object), NOT mongoose Document
-// - exactOptionalPropertyTypes safe: never assign undefined to optionals
+// - PaginationInput normalized (page/limit/skip), but tolerates old pageIndex usage
 // =============================================================================
 
 import { Types, type FilterQuery, type PipelineStage } from "mongoose";
 
+import type { ISODateString } from "../../../types/common";
+
+import {
+  TEAM_DOMAINS,
+  type TeamDomain,
+} from "../../../types/teamManagement/teamMain/teamManagement.types";
+
 import {
   TASK_PRIORITIES,
   TASK_STATUSES,
-  TEAM_DOMAINS,
-  type Address,
-  type GeoLocation,
-  type ISODateString,
-  type TaskAuditMeta,
-  type TaskBlockedWindow,
-  type TaskCompletionConfirmation,
-  type TaskPriority,
-  type TaskRuntimeMetrics,
-  type TaskStatus,
-  type TaskTiming,
-  type TeamDomain,
-} from "../../../models/teamManagement/teamManagement.model";
-
-import { TeamTaskModel } from "../../../models/teamManagement/teamTasks/teamTask.model";
-import type { TaskDeadlinePolicy, TaskEvidence, TaskUrgencyLevel } from "../../../models/teamManagement/teamTasks/teamTask.model";
-
-import { TeamTaskSocketService, type TeamTaskWsContext } from "./team-task.socket.service";
-import { UserModel } from "../../../models/user.model";
+  TaskDeadlinePolicy,
+  TaskUrgencyLevel,
+} from "../../../types/teamManagement/teamTasks/team-tasks.type";
 
 import type {
   CreateTeamTaskInput,
@@ -45,17 +36,34 @@ import type {
   TaskUsersResult,
   TeamTaskDto,
   TeamTaskFilterInput,
-  TeamTaskKeyValues,
   TeamTaskLoadMode,
   TeamTaskSortInput,
   UpdateTeamTaskInput,
+  TeamTaskKeyValuesMetaDto,
+  TaskAuditMeta,
+  TaskBlockedWindow,
+  TaskCompletionConfirmation,
+  TaskPriority,
+  TaskRuntimeMetrics,
+  TaskStatus,
+  TaskTiming,
+  TaskEvidence,
 } from "../../../types/teamManagement/teamTasks/team-tasks.type";
 
+import { TeamTaskModel } from "../../../models/teamManagement/teamTasks/teamTask.model";
+
+import { TeamTaskSocketService, type TeamTaskWsContext } from "./team-task.socket.service";
+
+import { UserModel } from "../../../models/user.model";
+
 type LeanRow = LeanTeamTask;
+
 type AdvancedRow = LeanTeamTask & {
-  assignedMemberUsernames?: string[];
+  assignedMember?: string[];
   captainUsername?: string;
 };
+
+type LabelsGroupRow = { _id: string; };
 
 export class TeamTaskService {
   private readonly socket: TeamTaskSocketService = new TeamTaskSocketService();
@@ -68,14 +76,20 @@ export class TeamTaskService {
   // GET ONE
   // ──────────────────────────────────────────────────────────────────────────
 
-  public async getByMongoId( taskMongoId: string, mode: TeamTaskLoadMode = "minimal" ): Promise<TeamTaskDto | null> {
-    if ( mode === "advanced" ) return await this.getByMongoIdAdvanced( taskMongoId );
+  public async getByMongoId(
+    taskMongoId: string,
+    mode: TeamTaskLoadMode = "minimal"
+  ): Promise<TeamTaskDto | null> {
+    if ( mode === "advanced" ) {
+      return await this.getByMongoIdAdvanced( taskMongoId );
+    }
 
     const doc = await TeamTaskModel.findById( this.toObjectId( taskMongoId ) )
       .lean<LeanRow>()
       .exec();
 
     if ( !doc ) return null;
+
     return this.toDtoMinimal( doc );
   }
 
@@ -83,17 +97,34 @@ export class TeamTaskService {
   // LIST (minimal / advanced)
   // ──────────────────────────────────────────────────────────────────────────
 
-  public async listMinimal( filters: TeamTaskFilterInput, page: PaginationInput, sort: TeamTaskSortInput ): Promise<ListResult<TeamTaskDto>> {
+  public async list(
+    filters: TeamTaskFilterInput,
+    page: PaginationInput,
+    sort: TeamTaskSortInput,
+    mode: TeamTaskLoadMode
+  ): Promise<ListResult<TeamTaskDto>> {
+    return mode === "advanced"
+      ? await this.listAdvanced( filters, page, sort )
+      : await this.listMinimal( filters, page, sort );
+  }
+
+  public async listMinimal(
+    filters: TeamTaskFilterInput,
+    page: PaginationInput,
+    sort: TeamTaskSortInput
+  ): Promise<ListResult<TeamTaskDto>> {
     const total = await this.count( filters );
     if ( total <= 0 ) return { items: [], other: { total: 0 } };
 
     const query = this.buildFindQuery( filters );
     const sortDoc = this.buildFindSort( sort );
 
+    const skip = this.normalizeSkip( page );
+
     const docs = await TeamTaskModel.find( query )
       .sort( sortDoc )
-      .skip( page.pageIndex * page.limit )
-      .limit( page.limit )
+      .skip( skip )
+      .limit( this.normalizeLimit( page ) )
       .lean<LeanRow[]>()
       .exec();
 
@@ -101,38 +132,42 @@ export class TeamTaskService {
     return { items, other: { total } };
   }
 
-  public async listAdvanced( filters: TeamTaskFilterInput, page: PaginationInput, sort: TeamTaskSortInput ): Promise<ListResult<TeamTaskDto>> {
+  public async listAdvanced(
+    filters: TeamTaskFilterInput,
+    page: PaginationInput,
+    sort: TeamTaskSortInput
+  ): Promise<ListResult<TeamTaskDto>> {
     const total = await this.count( filters );
     if ( total <= 0 ) return { items: [], other: { total: 0 } };
 
     const match = this.buildAggregateMatch( filters );
     const pipeline = this.buildAdvancedPipeline( match, page, sort );
 
-    const rows = await TeamTaskModel.aggregate( pipeline ).exec();
-    const safeRows: AdvancedRow[] = Array.isArray( rows ) ? ( rows as AdvancedRow[] ) : [];
+    const rows = await TeamTaskModel.aggregate<AdvancedRow>( pipeline ).exec();
+    const safeRows: AdvancedRow[] = Array.isArray( rows ) ? rows : [];
 
     const items = safeRows.map( ( r ) => this.toDtoAdvanced( r ) );
     return { items, other: { total } };
   }
 
-  public async list( filters: TeamTaskFilterInput, page: PaginationInput, sort: TeamTaskSortInput, mode: TeamTaskLoadMode ): Promise<ListResult<TeamTaskDto>> {
-    return mode === "advanced"
-      ? await this.listAdvanced( filters, page, sort )
-      : await this.listMinimal( filters, page, sort );
-  }
-
   // ──────────────────────────────────────────────────────────────────────────
-  // KEY VALUES
+  // KEY VALUES (META)
   // ──────────────────────────────────────────────────────────────────────────
 
-  public async getKeyValues( filters?: { teamCode?: string; teamMongoId?: string; domain?: TeamDomain; status?: TaskStatus; } ): Promise<TeamTaskKeyValues> {
-    const base: TeamTaskKeyValues = {
+  public async getKeyValues( filters?: {
+    teamCode?: string;
+    teamMongoId?: string;
+    domain?: TeamDomain;
+    status?: TaskStatus;
+  } ): Promise<TeamTaskKeyValuesMetaDto> {
+    const base: TeamTaskKeyValuesMetaDto = {
       domains: TEAM_DOMAINS,
       statuses: TASK_STATUSES,
       priorities: TASK_PRIORITIES,
     };
 
     const match: Record<string, unknown> = {};
+
     if ( filters?.teamCode ) match.teamCode = filters.teamCode;
     if ( filters?.teamMongoId ) match.teamMongoId = this.toObjectId( filters.teamMongoId );
     if ( filters?.domain ) match.domain = filters.domain;
@@ -146,16 +181,11 @@ export class TeamTaskService {
       { $limit: 200 },
     ];
 
-    const rows = await TeamTaskModel.aggregate( pipeline ).exec();
-    const distinctLabels =
-      Array.isArray( rows )
-        ? rows
-          .map( ( r ) => {
-            const v = ( r as { _id?: unknown; } )._id;
-            return typeof v === "string" ? v : "";
-          } )
-          .filter( Boolean )
-        : [];
+    const rows = await TeamTaskModel.aggregate<LabelsGroupRow>( pipeline ).exec();
+
+    const distinctLabels: string[] = Array.isArray( rows )
+      ? rows.map( ( r ) => ( typeof r._id === "string" ? r._id : "" ) ).filter( Boolean )
+      : [];
 
     return {
       ...base,
@@ -181,51 +211,44 @@ export class TeamTaskService {
     this.assertStatus( input.status );
     this.assertPriority( input.priority );
 
-    const nowIso = new Date().toISOString();
+    const nowIso: ISODateString = new Date().toISOString();
 
     const created = await TeamTaskModel.create( {
       id: input.id,
 
       teamCode: input.teamCode,
-      teamMongoId: this.toObjectId( input.teamMongoId ),
-
+      teamMongoId: input.teamMongoId, // already ObjectId in CreateTeamTaskInput
       domain: input.domain,
 
       name: input.name,
-      description: input.description ?? "",
+      ...( typeof input.description === "string" ? { description: input.description } : {} ),
 
       ...( input.location ? { location: input.location } : {} ),
       ...( input.address ? { address: input.address } : {} ),
 
-      ...( Array.isArray( input.assignedMembers ) ? { assignedMembers: input.assignedMembers.map( ( x ) => this.toObjectId( x ) ) } : {} ),
-      ...( typeof input.assignedTaskCaptain === "string" && input.assignedTaskCaptain.trim()
-        ? { assignedTaskCaptain: this.toObjectId( input.assignedTaskCaptain.trim() ) }
-        : {} ),
+      ...( Array.isArray( input.assignedMembers ) ? { assignedMembers: input.assignedMembers } : {} ),
+      ...( input.assignedTaskCaptain ? { assignedTaskCaptain: input.assignedTaskCaptain } : {} ),
 
-      ...( Array.isArray( input.workItemMongoIds )
-        ? { workItemMongoIds: input.workItemMongoIds.map( ( x ) => this.toObjectId( String( x ) ) ) }
+      ...( typeof input.plannedStartAt === "string" && input.plannedStartAt.trim()
+        ? { plannedStartAt: input.plannedStartAt.trim() }
         : {} ),
-      workItemCount: typeof input.workItemCount === "number" ? input.workItemCount : 0,
+      ...( typeof input.plannedEndAt === "string" && input.plannedEndAt.trim()
+        ? { plannedEndAt: input.plannedEndAt.trim() }
+        : {} ),
 
       status: input.status ?? "draft",
       priority: input.priority ?? "medium",
 
-      ...( typeof input.plannedStartAt === "string" && input.plannedStartAt.trim() ? { plannedStartAt: input.plannedStartAt.trim() } : {} ),
-      ...( typeof input.plannedEndAt === "string" && input.plannedEndAt.trim() ? { plannedEndAt: input.plannedEndAt.trim() } : {} ),
-
+      // model has default {}, but we set meaningful anchors if caller didn't provide
       timing: input.timing ? this.cleanTiming( input.timing ) : { createdAt: nowIso, updatedAt: nowIso },
 
       ...( input.deadlinePolicy ? { deadlinePolicy: this.cleanDeadlinePolicy( input.deadlinePolicy ) } : {} ),
-
       ...( input.metrics ? { metrics: this.cleanMetrics( input.metrics ) } : {} ),
-
-      ...( Array.isArray( input.blockedWindows ) ? { blockedWindows: input.blockedWindows } : {} ),
-      ...( input.completionConfirmation ? { completionConfirmation: input.completionConfirmation } : {} ),
 
       ...( Array.isArray( input.evidence ) ? { evidence: input.evidence } : {} ),
 
-      ...( typeof input.notes === "string" && input.notes.trim() ? { notes: input.notes } : {} ),
-      labels: Array.isArray( input.labels ) ? this.cleanStringArray( input.labels ) : [],
+      ...( typeof input.notes === "string" && input.notes.trim() ? { notes: input.notes.trim() } : {} ),
+      ...( Array.isArray( input.labels ) ? { labels: this.cleanStringArray( input.labels ) } : {} ),
 
       ...( input.audit ? { audit: this.cleanAudit( input.audit ) } : {} ),
 
@@ -235,17 +258,21 @@ export class TeamTaskService {
 
     const dto = this.toDtoMinimal( created.toObject() as unknown as LeanRow );
 
-    // Optional: populate ctx.assignedMemberUsernames for user:<username> emits
     const ctxWithUsers = await this.withResolvedCtx( dto, ctx );
-
     this.socket.emitTaskCreated( dto, ctxWithUsers );
+
     return dto;
   }
 
-  public async update( taskMongoId: string, input: UpdateTeamTaskInput, ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
-    this.assertDomain( input.domain );
-    this.assertStatus( input.status );
-    this.assertPriority( input.priority );
+  public async update(
+    taskMongoId: string,
+    input: UpdateTeamTaskInput,
+    ctx?: TeamTaskWsContext
+  ): Promise<TeamTaskDto | null> {
+    // Validators only if field present
+    if ( typeof input.domain !== "undefined" && input.domain !== null ) this.assertDomain( input.domain );
+    if ( typeof input.status !== "undefined" && input.status !== null ) this.assertStatus( input.status );
+    if ( typeof input.priority !== "undefined" && input.priority !== null ) this.assertPriority( input.priority );
 
     const $set: Record<string, unknown> = {};
     const $unset: Record<string, 1> = {};
@@ -261,33 +288,30 @@ export class TeamTaskService {
 
     if ( input.assignedMembers === null ) $unset.assignedMembers = 1;
     else if ( Array.isArray( input.assignedMembers ) ) {
-      $set.assignedMembers = input.assignedMembers.map( ( x ) => this.toObjectId( String( x ) ) );
+      $set.assignedMembers = input.assignedMembers;
     }
 
     if ( input.assignedTaskCaptain === null ) $unset.assignedTaskCaptain = 1;
-    else if ( typeof input.assignedTaskCaptain === "string" && input.assignedTaskCaptain.trim() ) {
-      $set.assignedTaskCaptain = this.toObjectId( input.assignedTaskCaptain.trim() );
-    }
-
-    if ( input.workItemMongoIds === null ) $unset.workItemMongoIds = 1;
-    else if ( Array.isArray( input.workItemMongoIds ) ) {
-      $set.workItemMongoIds = input.workItemMongoIds.map( ( x ) => this.toObjectId( String( x ) ) );
-      // keep cache count in sync if caller provides ids
-      $set.workItemCount = input.workItemMongoIds.length;
-    }
-
-    if ( input.workItemCount === null ) $unset.workItemCount = 1;
-    else if ( typeof input.workItemCount === "number" ) $set.workItemCount = input.workItemCount;
-
-    if ( typeof input.status === "string" ) $set.status = input.status;
-    if ( typeof input.priority === "string" ) $set.priority = input.priority;
-    if ( typeof input.domain === "string" ) $set.domain = input.domain;
+    else if ( input.assignedTaskCaptain ) $set.assignedTaskCaptain = input.assignedTaskCaptain;
 
     if ( input.plannedStartAt === null ) $unset.plannedStartAt = 1;
-    else if ( typeof input.plannedStartAt === "string" && input.plannedStartAt.trim() ) $set.plannedStartAt = input.plannedStartAt.trim();
+    else if ( typeof input.plannedStartAt === "string" && input.plannedStartAt.trim() ) {
+      $set.plannedStartAt = input.plannedStartAt.trim();
+    }
 
     if ( input.plannedEndAt === null ) $unset.plannedEndAt = 1;
-    else if ( typeof input.plannedEndAt === "string" && input.plannedEndAt.trim() ) $set.plannedEndAt = input.plannedEndAt.trim();
+    else if ( typeof input.plannedEndAt === "string" && input.plannedEndAt.trim() ) {
+      $set.plannedEndAt = input.plannedEndAt.trim();
+    }
+
+    if ( input.status === null ) $unset.status = 1;
+    else if ( typeof input.status === "string" ) $set.status = input.status;
+
+    if ( input.priority === null ) $unset.priority = 1;
+    else if ( typeof input.priority === "string" ) $set.priority = input.priority;
+
+    if ( input.domain === null ) $unset.domain = 1;
+    else if ( typeof input.domain === "string" ) $set.domain = input.domain;
 
     if ( input.timing === null ) $unset.timing = 1;
     else if ( input.timing ) $set.timing = this.cleanTiming( input.timing );
@@ -298,17 +322,14 @@ export class TeamTaskService {
     if ( input.metrics === null ) $unset.metrics = 1;
     else if ( input.metrics ) $set.metrics = this.cleanMetrics( input.metrics );
 
-    if ( input.blockedWindows === null ) $unset.blockedWindows = 1;
-    else if ( Array.isArray( input.blockedWindows ) ) $set.blockedWindows = input.blockedWindows;
-
-    if ( input.completionConfirmation === null ) $unset.completionConfirmation = 1;
-    else if ( input.completionConfirmation ) $set.completionConfirmation = input.completionConfirmation;
-
     if ( input.notes === null ) $unset.notes = 1;
     else if ( typeof input.notes === "string" ) $set.notes = input.notes;
 
     if ( input.labels === null ) $unset.labels = 1;
     else if ( Array.isArray( input.labels ) ) $set.labels = this.cleanStringArray( input.labels );
+
+    if ( input.completionConfirmation === null ) $unset.completionConfirmation = 1;
+    else if ( input.completionConfirmation ) $set.completionConfirmation = input.completionConfirmation;
 
     if ( input.audit === null ) $unset.audit = 1;
     else if ( input.audit ) $set.audit = this.cleanAudit( input.audit );
@@ -320,7 +341,9 @@ export class TeamTaskService {
       ...( Object.keys( $unset ).length > 0 ? { $unset } : {} ),
     };
 
-    if ( Object.keys( updateDoc ).length <= 0 ) return await this.getByMongoId( taskMongoId, "minimal" );
+    if ( Object.keys( updateDoc ).length <= 0 ) {
+      return await this.getByMongoId( taskMongoId, "minimal" );
+    }
 
     const updated = await TeamTaskModel.findByIdAndUpdate( this.toObjectId( taskMongoId ), updateDoc, { new: true } )
       .lean<LeanRow>()
@@ -330,10 +353,9 @@ export class TeamTaskService {
 
     const dto = this.toDtoMinimal( updated );
 
-    // Optional: populate ctx.assignedMemberUsernames for user:<username> emits
     const ctxWithUsers = await this.withResolvedCtx( dto, ctx );
-
     this.socket.emitTaskUpdated( dto, ctxWithUsers );
+
     return dto;
   }
 
@@ -351,12 +373,14 @@ export class TeamTaskService {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Evidence (model stores evidence as subdocs, but schema uses _id:false.
-  // So remove by "index" or by "storageKey/url/name" — NOT by mongoId.
-  // If you want mongo-id removal, change evidenceSchema to {_id:true}.
+  // Evidence
   // ──────────────────────────────────────────────────────────────────────────
 
-  public async appendEvidence( taskMongoId: string, evidenceItems: TaskEvidence[], ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
+  public async appendEvidence(
+    taskMongoId: string,
+    evidenceItems: TaskEvidence[],
+    ctx?: TeamTaskWsContext
+  ): Promise<TeamTaskDto | null> {
     const safe = Array.isArray( evidenceItems ) ? evidenceItems : [];
     if ( safe.length <= 0 ) return await this.getByMongoId( taskMongoId, "minimal" );
 
@@ -377,8 +401,11 @@ export class TeamTaskService {
     return dto;
   }
 
-  // ✅ Removal by storageKey (best unique key for files)
-  public async removeEvidenceByStorageKey( taskMongoId: string, storageKey: string, ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
+  public async removeEvidenceByStorageKey(
+    taskMongoId: string,
+    storageKey: string,
+    ctx?: TeamTaskWsContext
+  ): Promise<TeamTaskDto | null> {
     const key = this.safeStr( storageKey );
     if ( !key ) return await this.getByMongoId( taskMongoId, "minimal" );
 
@@ -400,10 +427,10 @@ export class TeamTaskService {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Users (same pattern, but now DTO/service aligned)
+  // Users
   // ──────────────────────────────────────────────────────────────────────────
 
-  public async getAssignedMemberUsernames( taskMongoId: string ): Promise<string[]> {
+  public async getassignedMembers( taskMongoId: string ): Promise<string[]> {
     const task = await TeamTaskModel.findById( this.toObjectId( taskMongoId ) )
       .select( { assignedMembers: 1 } )
       .lean<{ assignedMembers?: Types.ObjectId[]; }>()
@@ -415,7 +442,10 @@ export class TeamTaskService {
     return await this.resolveUsernamesByIds( ids );
   }
 
-  public async getTaskUsers( taskMongoId: string, filter?: { userId?: string; username?: string; } ): Promise<TaskUsersResult | null> {
+  public async getTaskUsers(
+    taskMongoId: string,
+    filter?: { userId?: string; username?: string; }
+  ): Promise<TaskUsersResult | null> {
     const task = await TeamTaskModel.findById( this.toObjectId( taskMongoId ) )
       .select( { assignedMembers: 1, assignedTaskCaptain: 1 } )
       .lean<{ assignedMembers?: Types.ObjectId[]; assignedTaskCaptain?: Types.ObjectId; }>()
@@ -427,7 +457,7 @@ export class TeamTaskService {
     const captainId = task.assignedTaskCaptain ? task.assignedTaskCaptain : null;
 
     const idsToLoad: Types.ObjectId[] = captainId ? [ ...memberIds, captainId ] : [ ...memberIds ];
-    if ( idsToLoad.length <= 0 ) return { members: [], captain: null };
+    if ( idsToLoad.length <= 0 ) return { captain: null, members: [], other: { memberTotal: 0 } };
 
     const query: Record<string, unknown> = { _id: { $in: idsToLoad } };
 
@@ -437,71 +467,54 @@ export class TeamTaskService {
     if ( filterUserId ) {
       const oid = this.toObjectId( filterUserId );
       const existsInTask = idsToLoad.some( ( x ) => String( x ) === String( oid ) );
-      if ( !existsInTask ) return { members: [], captain: null };
+      if ( !existsInTask ) return { captain: null, members: [], other: { memberTotal: 0 } };
       query._id = oid;
     }
 
     if ( filterUsername ) query.username = filterUsername;
 
     const users = await UserModel.find( query )
-      .select( { _id: 1, username: 1, role: 1, email: 1 } )
+      .select( { _id: 1, username: 1, role: 1, email: 1, fullName: 1, phone: 1, imageUrl: 1, isActive: 1 } )
       .lean<LeanUserLite[]>()
       .exec();
 
-    const mapped = users.map( ( u ) => this.toUserLiteDto( u ) );
+    const mapped = Array.isArray( users ) ? users.map( ( u ) => this.toUserLiteDto( u ) ) : [];
 
-    const captain = captainId ? mapped.find( ( x ) => x.mongoId === String( captainId ) ) ?? null : null;
-    const members = mapped.filter( ( x ) => memberIds.some( ( m ) => String( m ) === x.mongoId ) );
+    const captain = captainId ? mapped.find( ( x ) => x.userId === String( captainId ) ) ?? null : null;
 
-    return { members, captain };
+    const members = mapped.filter( ( x ) => memberIds.some( ( m ) => String( m ) === x.userId ) );
+
+    return {
+      captain,
+      members,
+      other: { memberTotal: members.length },
+    };
   }
 
-
   // ──────────────────────────────────────────────────────────────────────────
-  // Operations expected by TeamTaskController (TS2339 fix set)
+  // Operations expected by TeamTaskController
   // ──────────────────────────────────────────────────────────────────────────
 
-  public async setStatus(
-    taskMongoId: string,
-    status: TaskStatus,
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
-    // Reuse the central update() so WS emit rules stay consistent
+  public async setStatus( taskMongoId: string, status: TaskStatus, ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     return await this.update( taskMongoId, { status }, ctx );
   }
 
-  public async setPriority(
-    taskMongoId: string,
-    priority: TaskPriority,
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
+  public async setPriority( taskMongoId: string, priority: TaskPriority, ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     return await this.update( taskMongoId, { priority }, ctx );
   }
 
-  public async setLabels(
-    taskMongoId: string,
-    labels: string[],
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
-    // "set" means replace the full array
+  public async setLabels( taskMongoId: string, labels: string[], ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     const clean = this.cleanStringArray( labels );
     return await this.update( taskMongoId, { labels: clean }, ctx );
   }
 
-  public async addLabels(
-    taskMongoId: string,
-    labels: string[],
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
+  public async addLabels( taskMongoId: string, labels: string[], ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     const clean = this.cleanStringArray( labels );
     if ( clean.length <= 0 ) return await this.getByMongoId( taskMongoId, "minimal" );
 
     const updated = await TeamTaskModel.findByIdAndUpdate(
       this.toObjectId( taskMongoId ),
-      {
-        $addToSet: { labels: { $each: clean } },
-        $set: { updatedAt: new Date().toISOString() },
-      },
+      { $addToSet: { labels: { $each: clean } }, $set: { updatedAt: new Date().toISOString() } },
       { new: true }
     )
       .lean<LeanRow>()
@@ -511,24 +524,17 @@ export class TeamTaskService {
 
     const dto = this.toDtoMinimal( updated );
     const ctxWithUsers = await this.withResolvedCtx( dto, ctx );
-    await Promise.resolve( this.socket.emitTaskUpdated( dto, ctxWithUsers ) );
+    this.socket.emitTaskUpdated( dto, ctxWithUsers );
     return dto;
   }
 
-  public async removeLabels(
-    taskMongoId: string,
-    labels: string[],
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
+  public async removeLabels( taskMongoId: string, labels: string[], ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     const clean = this.cleanStringArray( labels );
     if ( clean.length <= 0 ) return await this.getByMongoId( taskMongoId, "minimal" );
 
     const updated = await TeamTaskModel.findByIdAndUpdate(
       this.toObjectId( taskMongoId ),
-      {
-        $pull: { labels: { $in: clean } },
-        $set: { updatedAt: new Date().toISOString() },
-      },
+      { $pull: { labels: { $in: clean } }, $set: { updatedAt: new Date().toISOString() } },
       { new: true }
     )
       .lean<LeanRow>()
@@ -538,27 +544,17 @@ export class TeamTaskService {
 
     const dto = this.toDtoMinimal( updated );
     const ctxWithUsers = await this.withResolvedCtx( dto, ctx );
-    await Promise.resolve( this.socket.emitTaskUpdated( dto, ctxWithUsers ) );
+    this.socket.emitTaskUpdated( dto, ctxWithUsers );
     return dto;
   }
 
-  public async setAssignedMembers(
-    taskMongoId: string,
-    memberIds: string[],
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
-    // Replace whole assignedMembers array
+  public async setAssignedMembers( taskMongoId: string, memberIds: string[], ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     const ids = this.cleanStringArray( memberIds );
     const oids = ids.map( ( x ) => this.toObjectId( x ) );
 
     const updated = await TeamTaskModel.findByIdAndUpdate(
       this.toObjectId( taskMongoId ),
-      {
-        $set: {
-          assignedMembers: oids,
-          updatedAt: new Date().toISOString(),
-        },
-      },
+      { $set: { assignedMembers: oids, updatedAt: new Date().toISOString() } },
       { new: true }
     )
       .lean<LeanRow>()
@@ -568,15 +564,11 @@ export class TeamTaskService {
 
     const dto = this.toDtoMinimal( updated );
     const ctxWithUsers = await this.withResolvedCtx( dto, ctx );
-    await Promise.resolve( this.socket.emitTaskUpdated( dto, ctxWithUsers ) );
+    this.socket.emitTaskUpdated( dto, ctxWithUsers );
     return dto;
   }
 
-  public async addAssignedMembers(
-    taskMongoId: string,
-    memberIds: string[],
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
+  public async addAssignedMembers( taskMongoId: string, memberIds: string[], ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     const ids = this.cleanStringArray( memberIds );
     if ( ids.length <= 0 ) return await this.getByMongoId( taskMongoId, "minimal" );
 
@@ -584,10 +576,7 @@ export class TeamTaskService {
 
     const updated = await TeamTaskModel.findByIdAndUpdate(
       this.toObjectId( taskMongoId ),
-      {
-        $addToSet: { assignedMembers: { $each: oids } },
-        $set: { updatedAt: new Date().toISOString() },
-      },
+      { $addToSet: { assignedMembers: { $each: oids } }, $set: { updatedAt: new Date().toISOString() } },
       { new: true }
     )
       .lean<LeanRow>()
@@ -597,15 +586,11 @@ export class TeamTaskService {
 
     const dto = this.toDtoMinimal( updated );
     const ctxWithUsers = await this.withResolvedCtx( dto, ctx );
-    await Promise.resolve( this.socket.emitTaskUpdated( dto, ctxWithUsers ) );
+    this.socket.emitTaskUpdated( dto, ctxWithUsers );
     return dto;
   }
 
-  public async removeAssignedMembers(
-    taskMongoId: string,
-    memberIds: string[],
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
+  public async removeAssignedMembers( taskMongoId: string, memberIds: string[], ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     const ids = this.cleanStringArray( memberIds );
     if ( ids.length <= 0 ) return await this.getByMongoId( taskMongoId, "minimal" );
 
@@ -613,10 +598,7 @@ export class TeamTaskService {
 
     const updated = await TeamTaskModel.findByIdAndUpdate(
       this.toObjectId( taskMongoId ),
-      {
-        $pull: { assignedMembers: { $in: oids } },
-        $set: { updatedAt: new Date().toISOString() },
-      },
+      { $pull: { assignedMembers: { $in: oids } }, $set: { updatedAt: new Date().toISOString() } },
       { new: true }
     )
       .lean<LeanRow>()
@@ -626,174 +608,36 @@ export class TeamTaskService {
 
     const dto = this.toDtoMinimal( updated );
     const ctxWithUsers = await this.withResolvedCtx( dto, ctx );
-    await Promise.resolve( this.socket.emitTaskUpdated( dto, ctxWithUsers ) );
+    this.socket.emitTaskUpdated( dto, ctxWithUsers );
     return dto;
   }
 
-  public async setCaptain(
-    taskMongoId: string,
-    captainUserId: string | null,
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
-    // null clears it (controller supports that)
-    return await this.update( taskMongoId, { assignedTaskCaptain: captainUserId }, ctx );
+  public async setCaptain( taskMongoId: string, captainUserId: string | null, ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
+    if ( captainUserId === null ) return await this.update( taskMongoId, { assignedTaskCaptain: null }, ctx );
+    const oid = this.toObjectId( captainUserId );
+    return await this.update( taskMongoId, { assignedTaskCaptain: oid }, ctx );
   }
 
-  public async setLocation(
-    taskMongoId: string,
-    location: GeoLocation | null,
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
-    return await this.update( taskMongoId, { location }, ctx );
-  }
-
-  public async setAddress(
-    taskMongoId: string,
-    address: Address | null,
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
-    return await this.update( taskMongoId, { address }, ctx );
-  }
-
-  public async setNotes(
-    taskMongoId: string,
-    notes: string | null,
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
+  public async setNotes( taskMongoId: string, notes: string | null, ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     return await this.update( taskMongoId, { notes }, ctx );
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Audit CRUD
-  // ──────────────────────────────────────────────────────────────────────────
-
-  public async getAudit( taskMongoId: string ): Promise<TaskAuditMeta | null> {
-    const row = await TeamTaskModel.findById( this.toObjectId( taskMongoId ) )
-      .select( { audit: 1 } )
-      .lean<{ audit?: TaskAuditMeta; }>()
-      .exec();
-
-    if ( !row ) return null;
-    return row.audit ?? null;
-  }
-
-  public async setAudit(
-    taskMongoId: string,
-    audit: TaskAuditMeta | null,
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
-    // Clean only if present (keeps exactOptionalPropertyTypes safe)
-    const clean = audit ? this.cleanAudit( audit ) : null;
-    return await this.update( taskMongoId, { audit: clean }, ctx );
-  }
-
-  public async patchAudit(
-    taskMongoId: string,
-    patch: TaskAuditMeta,
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
-    const current = await this.getAudit( taskMongoId );
-
-    // If task not found -> null
-    if ( current === null ) {
-      const exists = await TeamTaskModel.exists( { _id: this.toObjectId( taskMongoId ) } );
-      if ( !exists ) return null;
-
-      // Audit missing but task exists -> set audit = patch
-      return await this.setAudit( taskMongoId, patch, ctx );
-    }
-
-    // Merge shallowly (audit is a flat object in your contract style)
-    const merged: TaskAuditMeta = { ...current, ...patch };
-    return await this.setAudit( taskMongoId, merged, ctx );
-  }
-
-  public async clearAudit(
-    taskMongoId: string,
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
-    return await this.update( taskMongoId, { audit: null }, ctx );
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // Timing CRUD
-  // ──────────────────────────────────────────────────────────────────────────
-
-  public async getTiming( taskMongoId: string ): Promise<TaskTiming | null> {
-    const row = await TeamTaskModel.findById( this.toObjectId( taskMongoId ) )
-      .select( { timing: 1 } )
-      .lean<{ timing?: TaskTiming; }>()
-      .exec();
-
-    if ( !row ) return null;
-    return row.timing ?? null;
-  }
-
-  public async setTiming(
-    taskMongoId: string,
-    timing: TaskTiming | null,
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
-    const clean = timing ? this.cleanTiming( timing ) : null;
-    return await this.update( taskMongoId, { timing: clean }, ctx );
-  }
-
-  public async patchTiming(
-    taskMongoId: string,
-    patch: TaskTiming,
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
-    const current = await this.getTiming( taskMongoId );
-
-    if ( current === null ) {
-      const exists = await TeamTaskModel.exists( { _id: this.toObjectId( taskMongoId ) } );
-      if ( !exists ) return null;
-
-      // timing missing but task exists
-      return await this.setTiming( taskMongoId, patch, ctx );
-    }
-
-    const merged: TaskTiming = { ...current, ...patch };
-    return await this.setTiming( taskMongoId, merged, ctx );
-  }
-
-  public async clearTiming(
-    taskMongoId: string,
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
-    return await this.update( taskMongoId, { timing: null }, ctx );
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // SLA (COMPAT) — your system moved to deadlinePolicy
-  // ──────────────────────────────────────────────────────────────────────────
-
-  public async setSla(
-    taskMongoId: string,
-    policy: TaskDeadlinePolicy | null,
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
-    // Old method name kept for controller compatibility
-    const clean = policy ? this.cleanDeadlinePolicy( policy ) : null;
-    return await this.update( taskMongoId, { deadlinePolicy: clean }, ctx );
-  }
-
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // Advanced aggregate (enrich usernames)
+  // Advanced aggregate
   // ──────────────────────────────────────────────────────────────────────────
 
   private async getByMongoIdAdvanced( taskMongoId: string ): Promise<TeamTaskDto | null> {
     const pipeline = this.buildAdvancedPipeline(
       { _id: this.toObjectId( taskMongoId ) },
-      { limit: 1, pageIndex: 0 },
-      { sortBy: "createdAt", sortDir: "desc" }
+      { page: 1, limit: 1 },
+      { key: "createdAt", dir: "desc" }
     );
 
-    const rows = await TeamTaskModel.aggregate( pipeline ).exec();
+    const rows = await TeamTaskModel.aggregate<AdvancedRow>( pipeline ).exec();
     if ( !Array.isArray( rows ) || rows.length <= 0 ) return null;
+    if ( !rows[ 0 ] ) return null;
 
-    return this.toDtoAdvanced( rows[ 0 ] as AdvancedRow );
+    return this.toDtoAdvanced( rows[ 0 ] );
   }
 
   private buildAdvancedPipeline( match: Record<string, unknown>, page: PaginationInput, sort: TeamTaskSortInput ): PipelineStage[] {
@@ -801,8 +645,12 @@ export class TeamTaskService {
 
     stages.push( { $match: match } );
     stages.push( { $sort: this.buildAggregateSort( sort ) } );
-    stages.push( { $skip: page.pageIndex * page.limit } );
-    stages.push( { $limit: page.limit } );
+
+    const skip = this.normalizeSkip( page );
+    const limit = this.normalizeLimit( page );
+
+    stages.push( { $skip: skip } );
+    stages.push( { $limit: limit } );
 
     stages.push( {
       $lookup: {
@@ -824,8 +672,15 @@ export class TeamTaskService {
 
     stages.push( {
       $addFields: {
-        assignedMemberUsernames: { $map: { input: "$assignedMemberUsers", as: "u", in: "$$u.username" } },
-        captainUsername: { $let: { vars: { c: { $arrayElemAt: [ "$captainUser", 0 ] } }, in: "$$c.username" } },
+        assignedMember: {
+          $map: { input: "$assignedMemberUsers", as: "u", in: "$$u.username" },
+        },
+        captainUsername: {
+          $let: {
+            vars: { c: { $arrayElemAt: [ "$captainUser", 0 ] } },
+            in: "$$c.username",
+          },
+        },
       },
     } );
 
@@ -842,17 +697,17 @@ export class TeamTaskService {
     const q: Record<string, unknown> = {};
 
     if ( filters.teamCode ) q.teamCode = filters.teamCode;
-    if ( filters.teamMongoId ) q.teamMongoId = this.toObjectId( filters.teamMongoId );
+    if ( filters.teamMongoId ) q.teamMongoId = this.toObjectId( filters.teamMongoId.toString() );
 
     if ( filters.domain ) q.domain = filters.domain;
-    if ( filters.status ) q.status = filters.status;
-    if ( filters.priority ) q.priority = filters.priority;
 
-    if ( filters.assignedMemberId ) q.assignedMembers = this.toObjectId( filters.assignedMemberId );
-    if ( filters.captainUserId ) q.assignedTaskCaptain = this.toObjectId( filters.captainUserId );
+    if ( typeof filters.status !== "undefined" ) q.status = filters.status;
+    if ( typeof filters.priority !== "undefined" ) q.priority = filters.priority;
 
-    if ( filters.country ) q[ "address.country" ] = filters.country;
-    if ( filters.city ) q[ "address.city" ] = filters.city;
+    if ( filters.assignedMemberId ) q.assignedMembers = this.toObjectId( filters.assignedMemberId.toString() );
+    if ( filters.assignedCaptainId ) q.assignedTaskCaptain = this.toObjectId( filters.assignedCaptainId.toString() );
+
+    if ( filters.label && filters.label.trim() ) q.labels = filters.label.trim();
 
     // ✅ deadlinePolicy dueAt range
     if ( filters.dueFrom || filters.dueTo ) {
@@ -869,9 +724,20 @@ export class TeamTaskService {
       q.createdAt = cond;
     }
 
-    if ( filters.label && filters.label.trim() ) q.labels = filters.label.trim();
+    if ( filters.updatedFrom || filters.updatedTo ) {
+      const cond: Record<string, unknown> = {};
+      if ( filters.updatedFrom ) cond.$gte = filters.updatedFrom;
+      if ( filters.updatedTo ) cond.$lte = filters.updatedTo;
+      q.updatedAt = cond;
+    }
 
-    if ( filters.q && filters.q.trim() ) q.$text = { $search: filters.q.trim() };
+    if ( filters.text && filters.text.trim() ) {
+      q.$text = { $search: filters.text.trim() };
+    }
+
+    if ( filters.hasEvidence === true ) {
+      q[ "evidence.0" ] = { $exists: true };
+    }
 
     return q as FilterQuery<unknown>;
   }
@@ -881,9 +747,10 @@ export class TeamTaskService {
   }
 
   private buildFindSort( sort: TeamTaskSortInput ): Record<string, 1 | -1> {
-    const dir: 1 | -1 = sort.sortDir === "asc" ? 1 : -1;
-    if ( sort.sortBy === "dueAt" ) return { "deadlinePolicy.dueAt": dir };
-    return { [ sort.sortBy ]: dir } as Record<string, 1 | -1>;
+    const dir: 1 | -1 = sort.dir === "asc" ? 1 : -1;
+
+    if ( sort.key === "dueAt" ) return { "deadlinePolicy.dueAt": dir };
+    return { [ sort.key ]: dir } as Record<string, 1 | -1>;
   }
 
   private buildAggregateSort( sort: TeamTaskSortInput ): Record<string, 1 | -1> {
@@ -891,13 +758,12 @@ export class TeamTaskService {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // DTO mapping (model-aware)
+  // DTO mapping
   // ──────────────────────────────────────────────────────────────────────────
 
   private toDtoMinimal( doc: LeanRow ): TeamTaskDto {
     const dto: TeamTaskDto = {
-      mongoId: String( doc._id ),
-
+      taskMongoId: String( doc._id ),
       id: String( doc.id ),
 
       teamCode: String( doc.teamCode ),
@@ -908,37 +774,37 @@ export class TeamTaskService {
       name: typeof doc.name === "string" ? doc.name : "",
       description: typeof doc.description === "string" ? doc.description : "",
 
-      assignedMembers: Array.isArray( doc.assignedMembers ) ? doc.assignedMembers.map( ( x ) => String( x ) ) : [],
+      workItemCount: typeof doc.workItemCount === "number" ? doc.workItemCount : 0,
+
       status: ( doc.status ?? "draft" ) as TaskStatus,
       priority: ( doc.priority ?? "medium" ) as TaskPriority,
 
-      workItemCount: typeof doc.workItemCount === "number" ? doc.workItemCount : 0,
-
       timing: doc.timing ?? {},
-
-      labels: Array.isArray( doc.labels ) ? doc.labels : [],
 
       createdAt: String( doc.createdAt ) as ISODateString,
       updatedAt: String( doc.updatedAt ) as ISODateString,
     };
 
+    if ( Array.isArray( doc.assignedMembers ) ) {
+      dto.assignedMembers = doc.assignedMembers.map( ( x ) => String( x ) );
+    }
+
     if ( doc.assignedTaskCaptain ) dto.assignedTaskCaptain = String( doc.assignedTaskCaptain );
 
-    if ( doc.location ) dto.location = doc.location as GeoLocation;
-    if ( doc.address ) dto.address = doc.address as Address;
+    if ( doc.location ) dto.location = doc.location;
+    if ( doc.address ) dto.address = doc.address;
 
     const ps = this.safeStr( doc.plannedStartAt );
     const pe = this.safeStr( doc.plannedEndAt );
-    if ( ps ) dto.plannedStartAt = ps as ISODateString;
-    if ( pe ) dto.plannedEndAt = pe as ISODateString;
+    if ( ps ) dto.plannedStartAt = ps;
+    if ( pe ) dto.plannedEndAt = pe;
 
     if ( doc.deadlinePolicy ) {
       const clean = this.cleanDeadlinePolicy( doc.deadlinePolicy );
-      // Only attach if it has at least one meaningful key
       if ( this.hasAnyDeadlinePolicy( clean ) ) dto.deadlinePolicy = clean;
     }
 
-    if ( doc.metrics && this.hasAnyMetrics( doc.metrics ) ) dto.metrics = doc.metrics as TaskRuntimeMetrics;
+    if ( doc.metrics && this.hasAnyMetrics( doc.metrics ) ) dto.metrics = doc.metrics;
 
     if ( Array.isArray( doc.workItemMongoIds ) && doc.workItemMongoIds.length > 0 ) {
       dto.workItemMongoIds = doc.workItemMongoIds.map( ( x ) => String( x ) );
@@ -948,12 +814,22 @@ export class TeamTaskService {
       dto.blockedWindows = doc.blockedWindows as TaskBlockedWindow[];
     }
 
-    if ( doc.completionConfirmation ) dto.completionConfirmation = doc.completionConfirmation as TaskCompletionConfirmation;
+    if ( Array.isArray( doc.assigneeHistory ) && doc.assigneeHistory.length > 0 ) {
+      dto.assigneeHistory = doc.assigneeHistory;
+    }
+
+    if ( doc.completionConfirmation ) {
+      dto.completionConfirmation = doc.completionConfirmation as TaskCompletionConfirmation;
+    }
 
     if ( Array.isArray( doc.evidence ) && doc.evidence.length > 0 ) dto.evidence = doc.evidence as TaskEvidence[];
 
     const notes = this.safeStr( doc.notes );
     if ( notes ) dto.notes = notes;
+
+    if ( Array.isArray( doc.labels ) && doc.labels.length > 0 ) {
+      dto.labels = doc.labels;
+    }
 
     if ( doc.audit && this.hasAnyAudit( doc.audit ) ) dto.audit = this.cleanAudit( doc.audit );
 
@@ -963,30 +839,28 @@ export class TeamTaskService {
   private toDtoAdvanced( row: AdvancedRow ): TeamTaskDto {
     const base = this.toDtoMinimal( row );
 
-    const assignedMemberUsernames = Array.isArray( row.assignedMemberUsernames )
-      ? row.assignedMemberUsernames.map( ( x ) => ( typeof x === "string" ? x : "" ) ).filter( Boolean )
+    const assignedMember = Array.isArray( row.assignedMember )
+      ? row.assignedMember.map( ( x ) => ( typeof x === "string" ? x : "" ) ).filter( Boolean )
       : [];
 
     const captainUsername = typeof row.captainUsername === "string" ? row.captainUsername : "";
 
     return {
       ...base,
-      ...( assignedMemberUsernames.length > 0 ? { assignedMemberUsernames } : {} ),
+      ...( assignedMember.length > 0 ? { assignedMember } : {} ),
       ...( captainUsername ? { captainUsername } : {} ),
     };
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // WS ctx helper (optional usernames for user:<username> emits)
+  // WS ctx helper
   // ──────────────────────────────────────────────────────────────────────────
 
   private async withResolvedCtx( dto: TeamTaskDto, ctx?: TeamTaskWsContext ): Promise<TeamTaskWsContext | undefined> {
     if ( !ctx ) return undefined;
 
-    // If caller already provided, keep it.
-    if ( Array.isArray( ctx.assignedMemberUsernames ) && ctx.assignedMemberUsernames.length > 0 ) return ctx;
+    if ( Array.isArray( ctx.assignedMember ) && ctx.assignedMember.length > 0 ) return ctx;
 
-    // Resolve usernames from dto.assignedMembers (no extra DB fetch of task)
     if ( !Array.isArray( dto.assignedMembers ) || dto.assignedMembers.length <= 0 ) return ctx;
 
     const ids = dto.assignedMembers.map( ( x ) => this.toObjectId( x ) );
@@ -994,15 +868,8 @@ export class TeamTaskService {
 
     if ( usernames.length <= 0 ) return ctx;
 
-    return {
-      ...ctx,
-      assignedMemberUsernames: usernames,
-    };
+    return { ...ctx, assignedMember: usernames };
   }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // User helpers
-  // ──────────────────────────────────────────────────────────────────────────
 
   private async resolveUsernamesByIds( ids: Types.ObjectId[] ): Promise<string[]> {
     if ( !Array.isArray( ids ) || ids.length <= 0 ) return [];
@@ -1012,17 +879,23 @@ export class TeamTaskService {
       .lean<Array<{ _id: Types.ObjectId; username?: string; }>>()
       .exec();
 
-    return rows.map( ( r ) => ( typeof r.username === "string" ? r.username : "" ) ).filter( Boolean );
+    return Array.isArray( rows )
+      ? rows.map( ( r ) => ( typeof r.username === "string" ? r.username : "" ) ).filter( Boolean )
+      : [];
   }
 
-  private toUserLiteDto( u: { _id: Types.ObjectId; username?: string; role?: string; email?: string; } ): TaskUserLiteDto {
+  private toUserLiteDto( u: LeanUserLite ): TaskUserLiteDto {
     const dto: TaskUserLiteDto = {
-      mongoId: String( u._id ),
+      userId: String( u._id ),
       username: typeof u.username === "string" ? u.username : "",
     };
 
-    if ( typeof u.role === "string" && u.role.trim() ) dto.role = u.role.trim();
+    if ( typeof u.fullName === "string" && u.fullName.trim() ) dto.fullName = u.fullName.trim();
     if ( typeof u.email === "string" && u.email.trim() ) dto.email = u.email.trim();
+    if ( typeof u.phone === "string" && u.phone.trim() ) dto.phone = u.phone.trim();
+    if ( typeof u.role === "string" && u.role.trim() ) dto.role = u.role.trim();
+    if ( typeof u.imageUrl === "string" && u.imageUrl.trim() ) dto.imageUrl = u.imageUrl.trim();
+    if ( typeof u.isActive === "boolean" ) dto.isActive = u.isActive;
 
     return dto;
   }
@@ -1047,7 +920,7 @@ export class TeamTaskService {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Cleaners (deadlinePolicy-aware)
+  // Cleaners
   // ──────────────────────────────────────────────────────────────────────────
 
   private cleanStringArray( list: string[] ): string[] {
@@ -1077,7 +950,6 @@ export class TeamTaskService {
   }
 
   private cleanTiming( timing: TaskTiming ): TaskTiming {
-    // Model uses nulls; normalize empty strings to null for correct querying.
     const norm = ( v: unknown ): ISODateString | null | undefined => {
       if ( typeof v === "string" ) return v.trim() ? ( v.trim() as ISODateString ) : null;
       if ( v === null ) return null;
@@ -1113,7 +985,6 @@ export class TeamTaskService {
     const dueAt = this.safeStr( ( input as { dueAt?: unknown; } ).dueAt );
     const breachAt = this.safeStr( ( input as { breachAt?: unknown; } ).breachAt );
 
-    // Policy allows null too (schema default is null)
     if ( typeof ( input as { dueAt?: unknown; } ).dueAt === "string" ) out.dueAt = dueAt ? dueAt : null;
     if ( ( input as { dueAt?: unknown; } ).dueAt === null ) out.dueAt = null;
 
@@ -1128,10 +999,8 @@ export class TeamTaskService {
   }
 
   private cleanMetrics( metrics: TaskRuntimeMetrics ): TaskRuntimeMetrics {
-    // Keep as-is, but normalize invalid numbers
     const out: TaskRuntimeMetrics = { ...metrics };
 
-    // Common numeric guards (avoid NaN sneaking in)
     for ( const k of Object.keys( out ) ) {
       const v = ( out as unknown as Record<string, unknown> )[ k ];
       if ( typeof v === "number" && Number.isNaN( v ) ) ( out as unknown as Record<string, unknown> )[ k ] = 0;
@@ -1149,11 +1018,38 @@ export class TeamTaskService {
   }
 
   private hasAnyMetrics( m: TaskRuntimeMetrics ): boolean {
-    return Object.keys( m ).length > 0;
+    return m && Object.keys( m ).length > 0;
   }
 
   private hasAnyAudit( a: TaskAuditMeta ): boolean {
-    return Object.keys( a ).length > 0;
+    return a && Object.keys( a ).length > 0;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Pagination helpers (supports legacy "pageIndex")
+  // ──────────────────────────────────────────────────────────────────────────
+
+  private normalizeLimit( page: PaginationInput ): number {
+    const raw = typeof page.limit === "number" ? page.limit : 20;
+    const safe = Number.isFinite( raw ) && raw > 0 ? Math.min( raw, 200 ) : 20;
+    return safe;
+  }
+
+  private normalizeSkip( page: PaginationInput ): number {
+    // Prefer explicit skip
+    if ( typeof page.skip === "number" && Number.isFinite( page.skip ) && page.skip >= 0 ) return page.skip;
+
+    // Support legacy runtime shape: pageIndex
+    const legacyPageIndex = ( page as unknown as { pageIndex?: number; } ).pageIndex;
+    if ( typeof legacyPageIndex === "number" && legacyPageIndex >= 0 ) {
+      return legacyPageIndex * this.normalizeLimit( page );
+    }
+
+    // Standard: 1-based page
+    const p = typeof page.page === "number" ? page.page : 1;
+    const safePage = Number.isFinite( p ) && p > 0 ? p : 1;
+
+    return ( safePage - 1 ) * this.normalizeLimit( page );
   }
 
   // ──────────────────────────────────────────────────────────────────────────

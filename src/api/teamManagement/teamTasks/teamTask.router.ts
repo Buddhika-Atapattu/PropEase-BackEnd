@@ -11,7 +11,7 @@
 // ============================================================================
 
 import express, { type Router } from "express";
-import { TeamTaskController } from "../../controller/teamManagement/teamTasks/teamTask.controller";
+import { TeamTaskController } from "../../../controller/teamManagement/teamTasks/teamTask.controller";
 
 export default class TeamTaskRouter {
   private readonly router: Router;
@@ -72,7 +72,7 @@ export default class TeamTaskRouter {
     // NOTE:
     // - Your evidence schema is `_id:false`, so `evidenceMongoId` cannot be a real subdoc ObjectId.
     // - Treat this param as a "storageKey" (recommended) OR change evidence schema to `_id:true`.
-    this.router.delete( "/evidence/:taskMongoId/:evidenceMongoId", this.ctrl.removeEvidenceById );
+    this.router.delete( "/evidence/:taskMongoId/:evidenceMongoId", this.ctrl.removeEvidenceByStorageKey );
 
     // ------------------------------------------------------------------------
     // Status / Priority

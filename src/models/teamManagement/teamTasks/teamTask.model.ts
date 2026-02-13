@@ -1,4 +1,4 @@
-// Path: src/models/teamManagement/teamTask.model.ts
+// Path: src/models/teamManagement/teamTask/teamTask.model.ts
 // ============================================================================
 // TeamTask Model (Standalone collection) — Meaningful Names ✅
 //
@@ -8,113 +8,98 @@
 // ✅ Hook keeps timing anchors consistent and keeps counts accurate
 // ============================================================================
 
-import { Schema, model, type Document, type Model, Types } from "mongoose";
+import { Schema, Types, model, type Document, type Model } from "mongoose";
+
+import type { Address, GeoLocation, ISODateString } from "../../../types/common";
 
 import {
-  Address,
-  GeoLocation,
-  TaskTiming,
-  TaskRuntimeMetrics,
-  TaskAuditMeta,
-  TaskBlockedWindow,
-  TaskAssigneeHistoryEntry,
-  TaskCompletionConfirmation,
-  TASK_STATUSES,
-  TASK_PRIORITIES,
   TEAM_DOMAINS,
-  type TaskStatus,
-  type TaskPriority,
-  type TeamDomain,
   type FileMetaBase,
-} from "../teamManagement.model";
-import type { User } from "../../user.model";
-import type { ISODateString } from "../../../types/common";
+  type TeamDomain,
+} from "../../../types/teamManagement/teamMain/teamManagement.types";
 
-export interface TaskEvidence {
-    name: string;
+import {
+  TASK_PRIORITIES,
+  TASK_STATUSES,
+  TaskDeadlinePolicy,
+  type TaskAssigneeHistoryEntry,
+  type TaskAuditMeta,
+  type TaskBlockedWindow,
+  type TaskCompletionConfirmation,
+  type TaskCompletionSignature,
+  type TaskEvidence,
+  type TaskPriority,
+  type TaskRuntimeMetrics,
+  type TaskStatus,
+  type TaskTiming
+} from "../../../types/teamManagement/teamTasks/team-tasks.type";
 
-    file?: FileMetaBase;
 
-    url?: string;
-    storageKey?: string;
-
-    uploadedById?: Types.ObjectId;
-    uploadedByName?: User[ "username" ];
-    uploadedAt?: ISODateString;
-}
-
-/**
- * Urgency level = impact of missing deadline (not execution order).
- */
-export type TaskUrgencyLevel = "low" | "medium" | "high" | "critical";
-
-/**
- * Deadline policy = expectation rules.
- * - dueAt:     expected completion deadline
- * - breachAt:  hard breach threshold (optional)
- * - urgency:   impact level if missed
- */
-export interface TaskDeadlinePolicy {
-  dueAt?: string | null;
-  breachAt?: string | null;
-  urgency?: TaskUrgencyLevel | null;
-}
+// ─────────────────────────────────────────────
+// Root document
+// ─────────────────────────────────────────────
 
 export interface ITeamTask extends Document {
   id: string;
 
   teamCode: string;
-  teamMongoId: Types.ObjectId;
-  domain: TeamDomain;
+  teamMongoId: Types.ObjectId | null;
+  domain: TeamDomain | null;
 
   name: string;
   description: string;
 
-  location?: GeoLocation;
-  address?: Address;
+  location?: GeoLocation | null;
+  address?: Address | null;
 
   assignedMembers?: Types.ObjectId[];
   assignedTaskCaptain?: Types.ObjectId;
 
   /**
    * Optional cache:
-   * - Useful for quickly listing member tasks under this TeamTask.
+   * - Useful for quickly listing member work items under this TeamTask.
    * - True relationship should still live in WorkItem.teamTaskMongoId (child -> parent).
    */
   workItemMongoIds?: Types.ObjectId[];
   workItemCount: number;
 
-  status: TaskStatus;
-  priority: TaskPriority;
+  status: TaskStatus | null;
+  priority: TaskPriority | null;
 
-  plannedStartAt?: string;
-  plannedEndAt?: string;
+  plannedStartAt?: string | null;
+  plannedEndAt?: string | null;
 
-  timing: TaskTiming;
+  timing: TaskTiming | null;
 
-  deadlinePolicy?: TaskDeadlinePolicy;
+  deadlinePolicy?: TaskDeadlinePolicy | null;
 
-  metrics?: TaskRuntimeMetrics;
+  metrics?: TaskRuntimeMetrics | null;
 
   blockedWindows?: TaskBlockedWindow[];
   assigneeHistory?: TaskAssigneeHistoryEntry[];
 
-  completionConfirmation?: TaskCompletionConfirmation;
+  completionConfirmation?: TaskCompletionConfirmation | null;
 
-  evidence?: TaskEvidence[];
+  evidence?: TaskEvidence[] | null;
 
   notes?: string;
   labels?: string[];
 
-  audit?: TaskAuditMeta;
+  audit?: TaskAuditMeta | null;
 
   createdAt: string;
   updatedAt: string;
 }
 
+// ─────────────────────────────────────────────
+// Model builder (class-based only)
+// ─────────────────────────────────────────────
+
 class TeamTaskModelBuilder {
   private readonly geoLocationSchema: Schema<GeoLocation>;
   private readonly addressSchema: Schema<Address>;
+
+  private readonly fileMetaBaseSchema: Schema<FileMetaBase>;
   private readonly evidenceSchema: Schema<TaskEvidence>;
 
   private readonly timingSchema: Schema<TaskTiming>;
@@ -122,12 +107,17 @@ class TeamTaskModelBuilder {
   private readonly metricsSchema: Schema<TaskRuntimeMetrics>;
   private readonly blockedWindowSchema: Schema<TaskBlockedWindow>;
   private readonly assigneeHistorySchema: Schema<TaskAssigneeHistoryEntry>;
+
+  private readonly completionSignatureSchema: Schema<TaskCompletionSignature>;
   private readonly completionConfirmationSchema: Schema<TaskCompletionConfirmation>;
+
   private readonly auditSchema: Schema<TaskAuditMeta>;
 
   public constructor() {
     this.geoLocationSchema = this.buildGeoLocationSchema();
     this.addressSchema = this.buildAddressSchema();
+
+    this.fileMetaBaseSchema = this.buildFileMetaBaseSchema();
     this.evidenceSchema = this.buildEvidenceSchema();
 
     this.timingSchema = this.buildTimingSchema();
@@ -135,7 +125,10 @@ class TeamTaskModelBuilder {
     this.metricsSchema = this.buildMetricsSchema();
     this.blockedWindowSchema = this.buildBlockedWindowSchema();
     this.assigneeHistorySchema = this.buildAssigneeHistorySchema();
+
+    this.completionSignatureSchema = this.buildCompletionSignatureSchema();
     this.completionConfirmationSchema = this.buildCompletionConfirmationSchema();
+
     this.auditSchema = this.buildAuditSchema();
   }
 
@@ -156,15 +149,15 @@ class TeamTaskModelBuilder {
         houseNumber: { type: String, required: false, default: "" },
         street: { type: String, required: false, default: "" },
         city: { type: String, required: true, default: "" },
-        provinceOrState: { type: String, required: false, default: "" },
+        stateOrProvince: { type: String, required: false, default: "" },
         country: { type: String, required: true, default: "" },
       },
       { _id: false, timestamps: false }
     );
   }
 
-  private buildEvidenceSchema(): Schema<TaskEvidence> {
-    const fileMetaSchema: Schema = new Schema(
+  private buildFileMetaBaseSchema(): Schema<FileMetaBase> {
+    return new Schema<FileMetaBase>(
       {
         originalName: { type: String, required: true, default: "" },
         storedName: { type: String, required: true, default: "" },
@@ -174,18 +167,26 @@ class TeamTaskModelBuilder {
       },
       { _id: false, timestamps: false }
     );
+  }
 
+  private buildEvidenceSchema(): Schema<TaskEvidence> {
     return new Schema<TaskEvidence>(
       {
         name: { type: String, required: true, default: "" },
-        file: { type: fileMetaSchema, required: false },
+
+        file: { type: this.fileMetaBaseSchema, required: false, default: null },
 
         url: { type: String, required: false, default: "" },
         storageKey: { type: String, required: false, default: "" },
 
-        uploadedById: { type: Schema.Types.ObjectId, ref: "User", required: false },
+        uploadedById: { type: Schema.Types.ObjectId, ref: "User", required: false, default: null },
         uploadedByName: { type: String, required: false, default: "" },
-        uploadedAt: { type: String, required: false, default: () => new Date().toISOString() },
+
+        uploadedAt: {
+          type: String,
+          required: false,
+          default: () => new Date().toISOString(),
+        },
       },
       { _id: false, timestamps: false }
     );
@@ -203,6 +204,7 @@ class TeamTaskModelBuilder {
 
         completedAt: { type: String, required: false, default: null },
         confirmedAt: { type: String, required: false, default: null },
+
         cancelledAt: { type: String, required: false, default: null },
       },
       { _id: false, timestamps: false }
@@ -210,9 +212,8 @@ class TeamTaskModelBuilder {
   }
 
   /**
-   * deadlinePolicy schema (formerly SLA)
-   * IMPORTANT:
-   * - Use null for date fields instead of "" (better for querying + KPI math)
+   * deadlinePolicy schema
+   * - Use null for date fields (better query semantics)
    */
   private buildDeadlinePolicySchema(): Schema<TaskDeadlinePolicy> {
     return new Schema<TaskDeadlinePolicy>(
@@ -254,9 +255,10 @@ class TeamTaskModelBuilder {
       {
         from: { type: String, required: true, default: () => new Date().toISOString() },
         to: { type: String, required: false, default: null },
+
         reason: { type: String, required: false, default: null },
 
-        setByUserId: { type: Schema.Types.ObjectId, ref: "User", required: false },
+        setByUserId: { type: Schema.Types.ObjectId, ref: "User", required: false, default: null },
         setByUsername: { type: String, required: false, default: "" },
       },
       { _id: false, timestamps: false }
@@ -266,13 +268,13 @@ class TeamTaskModelBuilder {
   private buildAssigneeHistorySchema(): Schema<TaskAssigneeHistoryEntry> {
     return new Schema<TaskAssigneeHistoryEntry>(
       {
-        userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
-        username: { type: String, required: true, trim: true, index: true },
+        userId: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true, default: null },
+        username: { type: String, required: true, trim: true, index: true, default: null },
 
         from: { type: String, required: true, default: () => new Date().toISOString() },
         to: { type: String, required: false, default: null },
 
-        changedByUserId: { type: Schema.Types.ObjectId, ref: "User", required: false },
+        changedByUserId: { type: Schema.Types.ObjectId, ref: "User", required: false, default: null },
         changedByUsername: { type: String, required: false, default: "" },
 
         reason: { type: String, required: false, default: null },
@@ -281,20 +283,47 @@ class TeamTaskModelBuilder {
     );
   }
 
-  private buildCompletionConfirmationSchema(): Schema<TaskCompletionConfirmation> {
-    return new Schema(
+  private buildCompletionSignatureSchema(): Schema<TaskCompletionSignature> {
+    return new Schema<TaskCompletionSignature>(
       {
-        status: { type: String, required: true, default: "not_required" },
+        role: { type: String, enum: [ "customer", "supervisor" ], required: true, default: null },
+
+        signerUserId: { type: Schema.Types.ObjectId, ref: "User", required: false, default: null },
+        signerUsername: { type: String, required: false, default: "" },
+        signerName: { type: String, required: false, default: "" },
+
+        signatureFile: { type: this.fileMetaBaseSchema, required: false },
+        signatureUrl: { type: String, required: false, default: "" },
+        signatureStorageKey: { type: String, required: false, default: "" },
+
+        signedAt: { type: String, required: false, default: () => new Date().toISOString() },
+      },
+      { _id: false, timestamps: false }
+    );
+  }
+
+  private buildCompletionConfirmationSchema(): Schema<TaskCompletionConfirmation> {
+    return new Schema<TaskCompletionConfirmation>(
+      {
+        status: {
+          type: String,
+          enum: [ "not_required", "pending", "rejected", "confirmed" ],
+          required: true,
+          default: "not_required",
+        },
+
         requiredRoles: { type: [String], required: false, default: [] },
-        signatures: { type: [Schema.Types.Mixed], required: false, default: [] },
+
+        signatures: { type: [ this.completionSignatureSchema ], required: false, default: [] },
 
         confirmedAt: { type: String, required: false, default: "" },
-        confirmedByUserId: { type: Schema.Types.ObjectId, ref: "User", required: false },
+        confirmedByUserId: { type: Schema.Types.ObjectId, ref: "User", required: false, default: null },
         confirmedByUsername: { type: String, required: false, default: "" },
 
         rejectedAt: { type: String, required: false, default: "" },
-        rejectedByUserId: { type: Schema.Types.ObjectId, ref: "User", required: false },
+        rejectedByUserId: { type: Schema.Types.ObjectId, ref: "User", required: false, default: null },
         rejectedByUsername: { type: String, required: false, default: "" },
+
         rejectReason: { type: String, required: false, default: "" },
       },
       { _id: false, timestamps: false }
@@ -304,14 +333,20 @@ class TeamTaskModelBuilder {
   private buildAuditSchema(): Schema<TaskAuditMeta> {
     return new Schema<TaskAuditMeta>(
       {
-        source: { type: String, enum: ["ui", "system", "automation", "import"], required: false, default: "ui" },
+        source: {
+          type: String,
+          enum: [ "ui", "system", "automation", "import" ],
+          required: false,
+          default: "ui",
+        },
+
         requestId: { type: String, required: false, default: "" },
         deviceId: { type: String, required: false, default: "" },
 
-        createdByUserId: { type: Schema.Types.ObjectId, ref: "User", required: false },
+        createdByUserId: { type: Schema.Types.ObjectId, ref: "User", required: false, default: null },
         createdByUsername: { type: String, required: false, default: "" },
 
-        lastUpdatedByUserId: { type: Schema.Types.ObjectId, ref: "User", required: false },
+        lastUpdatedByUserId: { type: Schema.Types.ObjectId, ref: "User", required: false, default: null },
         lastUpdatedByUsername: { type: String, required: false, default: "" },
       },
       { _id: false, timestamps: false }
@@ -321,22 +356,22 @@ class TeamTaskModelBuilder {
   private buildSchema(): Schema<ITeamTask> {
     const schema: Schema<ITeamTask> = new Schema<ITeamTask>(
       {
-        id: { type: String, required: true, unique: true, trim: true, index: true },
+        id: { type: String, required: true, unique: true, trim: true, index: true, default: null },
 
-        teamCode: { type: String, required: true, trim: true, index: true },
-        teamMongoId: { type: Schema.Types.ObjectId, required: true, ref: "TeamManagement", index: true },
-        domain: { type: String, enum: [...TEAM_DOMAINS], required: true, index: true },
+        teamCode: { type: String, required: true, trim: true, index: true, default: null },
+        teamMongoId: { type: Schema.Types.ObjectId, required: true, ref: "TeamManagement", index: true, default: null },
+        domain: { type: String, enum: [ ...TEAM_DOMAINS ], required: true, index: true, default: null },
 
-        name: { type: String, required: true, trim: true },
+        name: { type: String, required: true, trim: true, default: null },
         description: { type: String, required: false, default: "" },
 
-        location: { type: this.geoLocationSchema, required: false },
-        address: { type: this.addressSchema, required: false },
+        location: { type: this.geoLocationSchema, required: false, default: null },
+        address: { type: this.addressSchema, required: false, default: null },
 
-        assignedMembers: [{ type: Schema.Types.ObjectId, ref: "User", required: false, index: true }],
-        assignedTaskCaptain: { type: Schema.Types.ObjectId, ref: "User", required: false, index: true },
+        assignedMembers: [ { type: Schema.Types.ObjectId, ref: "User", required: false, index: true, default: null } ],
+        assignedTaskCaptain: { type: Schema.Types.ObjectId, ref: "User", required: false, index: true, default: null },
 
-        workItemMongoIds: [{ type: Schema.Types.ObjectId, ref: "WorkItem", required: false, index: true }],
+        workItemMongoIds: [ { type: Schema.Types.ObjectId, ref: "WorkItem", required: false, index: true, default: null } ],
         workItemCount: { type: Number, required: true, default: 0, index: true },
 
         status: { type: String, enum: [...TASK_STATUSES], required: true, default: "draft", index: true },
@@ -345,23 +380,24 @@ class TeamTaskModelBuilder {
         plannedStartAt: { type: String, required: false, default: "" },
         plannedEndAt: { type: String, required: false, default: "" },
 
-        timing: { type: this.timingSchema, required: true },
+        // Ensure timing always exists so hook can safely write into it.
+        timing: { type: this.timingSchema, required: true, default: {} },
 
-        deadlinePolicy: { type: this.deadlinePolicySchema, required: false },
+        deadlinePolicy: { type: this.deadlinePolicySchema, required: false, default: null },
 
-        metrics: { type: this.metricsSchema, required: false },
+        metrics: { type: this.metricsSchema, required: false, default: null },
 
         blockedWindows: { type: [this.blockedWindowSchema], required: false, default: [] },
         assigneeHistory: { type: [this.assigneeHistorySchema], required: false, default: [] },
 
-        completionConfirmation: { type: this.completionConfirmationSchema, required: false },
+        completionConfirmation: { type: this.completionConfirmationSchema, required: false, default: null },
 
         evidence: { type: [this.evidenceSchema], required: false, default: [] },
 
         notes: { type: String, required: false, default: "" },
         labels: { type: [String], required: false, default: [] },
 
-        audit: { type: this.auditSchema, required: false },
+        audit: { type: this.auditSchema, required: false, default: null },
 
         createdAt: { type: String, required: true, default: () => new Date().toISOString(), index: true },
         updatedAt: { type: String, required: true, default: () => new Date().toISOString(), index: true },
@@ -383,10 +419,11 @@ class TeamTaskModelBuilder {
     // Keep timing anchors consistent + maintain derived fields
     schema.pre<ITeamTask>("save", function (next) {
       try {
-        const now = new Date().toISOString();
+        const now: ISODateString = new Date().toISOString();
 
         this.updatedAt = now;
 
+        // timing always exists (schema default {}), but keep guard for safety
         if (!this.timing) this.timing = {};
         if (!this.timing.createdAt) this.timing.createdAt = now;
         this.timing.updatedAt = now;
@@ -417,11 +454,9 @@ class TeamTaskModelBuilder {
         // ✅ Keep work item cache consistent (dedupe + count)
         if (!Array.isArray(this.workItemMongoIds)) this.workItemMongoIds = [];
 
-_toggle_dedupe_workitems: {
-          const unique: string[] = Array.from(new Set(this.workItemMongoIds.map((id) => String(id))));
-          this.workItemMongoIds = unique.map((s) => new Types.ObjectId(s));
-          this.workItemCount = unique.length;
-        }
+        const unique: string[] = Array.from( new Set( this.workItemMongoIds.map( ( id ) => String( id ) ) ) );
+        this.workItemMongoIds = unique.map( ( s ) => new Types.ObjectId( s ) );
+        this.workItemCount = unique.length;
 
         next();
         return;
@@ -435,7 +470,7 @@ _toggle_dedupe_workitems: {
   }
 
   public buildModel(): Model<ITeamTask> {
-    const schema = this.buildSchema();
+    const schema: Schema<ITeamTask> = this.buildSchema();
     return model<ITeamTask>("TeamTask", schema, "team_tasks");
   }
 }

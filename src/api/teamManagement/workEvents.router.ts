@@ -25,9 +25,9 @@ import {
 import type {
   WorkItemPriority,
   WorkItemStatus,
-} from "../../models/teamManagement/workItem.model";
+} from "../../types/teamManagement/workItem/workItem.types";
 
-import type { TeamDomain } from "../../models/teamManagement/teamManagement.model";
+import type { TeamDomain } from "../../types/teamManagement/teamMain/teamManagement.types";
 
 export default class WorkEventApi {
   private readonly router: Router;

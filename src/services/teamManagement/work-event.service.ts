@@ -16,7 +16,7 @@ import {
     WorkEventKind,
 } from '../../models/teamManagement/workEvent.model';
 import { IWorkItem } from '../../models/teamManagement/workItem.model';
-import { TeamDomain } from '../../models/teamManagement/teamManagement.model';
+import { TeamDomain } from '../../models/teamManagement/teamMain/teamManagement.model';
 import {
     WorkItemPriority,
     WorkItemStatus,

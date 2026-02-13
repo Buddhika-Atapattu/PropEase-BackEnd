@@ -19,10 +19,12 @@ import type { User } from "../models/user.model";
 
 // IMPORTANT: Do NOT import Document-extended types into API contracts.
 // These must be plain DTOs (Lean-safe).
-import type { TeamManagementDto } from "../models/teamManagement/teamManagement.model";
-import type { WorkItemDto } from "../models/teamManagement/workItem.model";
 import type { WorkEventDto } from "../models/teamManagement/workEvent.model";
-import type { ListResult, TeamTaskDto } from './teamManagement/teamTasks/team-tasks.type';
+import type { MemberActivityDto } from "./teamManagement/memberActivities/memberActivities.types";
+import type { TeamManagementDto } from "./teamManagement/teamMain/teamManagement.types";
+import type { TeamTaskDto } from './teamManagement/teamTasks/team-tasks.type';
+import type { WorkItemDto } from "./teamManagement/workItem/workItem.types";
+import type { MilestoneDto } from './teamManagement/milestones/milestone.types'
 
 // ✅ TYPE-ONLY import (prevents runtime dependency problems)
 import type { CommentDto } from "./comment.types";
@@ -141,6 +143,10 @@ export interface SystemData {
   workItems?: WorkItemDto[];
   event?: WorkEventDto;
   events?: WorkEventDto[];
+  memberActivity: MemberActivityDto;
+  memberActivities: MemberActivityDto[];
+  milestone: MilestoneDto;
+  milestones: MilestoneDto[];
 
   // Comments
   comment?: CommentDto;
@@ -229,6 +235,10 @@ export type DashboardSystemData = Pick<
 
 export type CommentSystemData = Pick<SystemData, "comment" | "comments">;
 
+export type MemberActivitySystemData = Pick<SystemData, 'memberActivity' | 'memberActivities'>;
+
+export type MilestoneSystemData = Pick<SystemData, 'milestone' | 'milestones'>;
+
 // ──────────────────────────────────────────────────────────────
 // 7) Convenience ApiData aliases per module
 // ──────────────────────────────────────────────────────────────
@@ -243,3 +253,5 @@ export type TeamTaskData = ApiData<TeamTaskSystemData>;
 export type FileMetaApiData = ApiData<FileMetaSystemData>;
 export type DashboardApiData = ApiData<DashboardSystemData>;
 export type CommentApiData = ApiData<CommentSystemData>;
+export type MemberActivityApiData = ApiData<MemberActivitySystemData>;
+export type MilestoneApiData = ApiData<MilestoneSystemData>;

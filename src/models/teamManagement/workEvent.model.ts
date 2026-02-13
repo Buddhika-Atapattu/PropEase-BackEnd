@@ -14,13 +14,13 @@
 import { Schema, model, type Document, type Model, Types } from "mongoose";
 
 import type { ISODateString } from "../../types/common";
-import { TEAM_DOMAINS, type TeamDomain } from "./teamManagement.model";
+import { TEAM_DOMAINS, type TeamDomain } from "../../types/teamManagement/teamMain/teamManagement.types";
 import {
-    WORK_ITEM_PRIORITIES,
-    WORK_ITEM_STATUSES,
+    WORK_ITEM_PRIORITY,
+    WORK_ITEM_STATUS,
     type WorkItemPriority,
     type WorkItemStatus,
-} from "./workItem.model";
+} from "../../types/teamManagement/workItem/workItem.types";
 
 /**
  * KPI/Analytics goal for WorkEvent:
@@ -215,8 +215,8 @@ class WorkEventModelBuilder {
                 assigneeUserIds: [ { type: Schema.Types.ObjectId, ref: "User", required: false } ],
                 assigneeUsernames: [ { type: String, required: false, default: "" } ],
 
-                priority: { type: String, enum: [ ...WORK_ITEM_PRIORITIES ], required: false },
-                status: { type: String, enum: [ ...WORK_ITEM_STATUSES ], required: false },
+                priority: { type: String, enum: [ ...WORK_ITEM_PRIORITY ], required: false },
+                status: { type: String, enum: [ ...WORK_ITEM_STATUS ], required: false },
             },
             { _id: false, timestamps: false },
         );
@@ -274,11 +274,11 @@ class WorkEventModelBuilder {
                 requestId: { type: String, required: false, default: "", index: true },
                 deviceId: { type: String, required: false, default: "" },
 
-                fromStatus: { type: String, enum: [ ...WORK_ITEM_STATUSES ], required: false },
-                toStatus: { type: String, enum: [ ...WORK_ITEM_STATUSES ], required: false },
+                fromStatus: { type: String, enum: [ ...WORK_ITEM_STATUS ], required: false },
+                toStatus: { type: String, enum: [ ...WORK_ITEM_STATUS ], required: false },
 
-                fromPriority: { type: String, enum: [ ...WORK_ITEM_PRIORITIES ], required: false },
-                toPriority: { type: String, enum: [ ...WORK_ITEM_PRIORITIES ], required: false },
+                fromPriority: { type: String, enum: [ ...WORK_ITEM_PRIORITY ], required: false },
+                toPriority: { type: String, enum: [ ...WORK_ITEM_PRIORITY ], required: false },
 
                 delta: { type: [ this.deltaSchema ], required: false, default: [] },
 

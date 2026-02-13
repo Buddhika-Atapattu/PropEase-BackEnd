@@ -23,8 +23,8 @@ import type { Model } from 'mongoose';
 
 // You MUST replace these imports with your existing model exports.
 // I am using names based on your established Team module architecture.
-import { TeamManagementModel } from '../../models/teamManagement/teamManagement.model';
-import { WorkItemModel } from '../../models/teamManagement/workItem.model';
+import { TeamManagementModel } from '../../models/teamManagement/teamMain/teamManagement.model';
+import { WorkItemModel } from '../../models/teamManagement/workItems/workItem.model';
 import { WorkEventModel } from '../../models/teamManagement/workEvent.model';
 
 // ----------------------------------------------------------------------------

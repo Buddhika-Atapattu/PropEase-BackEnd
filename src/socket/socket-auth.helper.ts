@@ -2,7 +2,8 @@
 // Centralised helper for Socket.IO auth-related operations.
 
 import jwt from "jsonwebtoken";
-import type { AuthUser, JwtPayload, TypedSocket } from "./socket-types.type";
+import type { JwtPayload, TypedSocket } from "./socket-types.type";
+import {AuthUser} from '../types/common';
 import type { Role } from "../types/roles";
 
 export class SocketAuthHelper {
@@ -226,6 +227,7 @@ export class SocketAuthHelper {
     const base: AuthUser = {
       username: payload.username,
       role: payload.role,
+      userId: payload.userId,
     };
 
     const sub = SocketAuthHelper.asString( ( payload as any ).sub );

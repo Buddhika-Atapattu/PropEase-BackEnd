@@ -44,7 +44,6 @@ import type { WsTokenRegistryRedis } from "../services/ws-service/ws-token-regis
 import type { Role } from "../types/roles";
 import { SocketAuthHelper } from "./socket-auth.helper";
 import type {
-  AuthUser,
   CallAnswerPayload,
   CallCandidatePayload,
   CallEndPayload,
@@ -55,6 +54,7 @@ import type {
   TypedNamespace,
   TypedSocket,
 } from "./socket-types.type";
+import { AuthUser } from '../types/common'
 
 // ============================================================================
 // WsTokenPushPayload

@@ -10,8 +10,8 @@ import type { User } from "../models/user.model";
 
 // IMPORTANT: Do NOT import Document-extended types into API contracts.
 // These must be plain DTOs (Lean-safe).
-import type { TeamManagementDto } from "../models/teamManagement/teamManagement.model";
-import type { WorkItemDto } from "../models/teamManagement/workItem.model";
+import type { TeamManagementDto } from "./teamManagement/teamMain/teamManagement.types";
+import type { WorkItemDto } from "./teamManagement/workItem/workItem.types";
 import type { WorkEventDto } from "../models/teamManagement/workEvent.model";
 
 // =============================================================================

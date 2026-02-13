@@ -41,6 +41,7 @@ import {
   models,
   type Document,
   type Model,
+  Types,
 } from "mongoose";
 
 import type { Address } from "./property.model";
@@ -500,7 +501,10 @@ export interface IUser extends Document {
  * Safe DTO for API (no secrets).
  * (You can move this into contracts later; for now it keeps your current style.)
  */
-export interface User extends Omit<
+
+
+
+export type User = Omit<
   IUser,
   | "password"
   | "resetToken"
@@ -512,7 +516,9 @@ export interface User extends Omit<
   | "multiAuthSecret"
   | "toSafeDTO"
   | keyof Document
-> {}
+  > & {
+    _id: Types.ObjectId; // or: string (choose based on what you return to FE)
+  };
 
 export const USER_MODEL_PROJECTION = {
   password: 0,

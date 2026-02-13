@@ -35,12 +35,13 @@ import { Server as HttpServer } from 'http';
 import { Server as IOServer } from 'socket.io';
 
 import type {
-  AuthUser,
   NotificationPayload,
   TypedNamespace,
   TypedServer,
   TypedSocket
 } from '../socket/socket-types.type';
+
+import { AuthUser } from '../types/common'
 
 // Handles extraction of sessionToken from cookies/headers/handshake
 import { SocketAuthHelper } from '../socket/socket-auth.helper';
@@ -229,7 +230,8 @@ export default class SocketServer {
           // Minimal information stored on socket for downstream handlers
           const authUser: AuthUser = {
             username: user.username,
-            role: user.role as any
+            role: user.role as any,
+            userId: user._id
           };
   
           socket.data.authUser = authUser;

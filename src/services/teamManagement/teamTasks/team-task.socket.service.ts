@@ -10,7 +10,7 @@
 // ============================================================================
 
 import type { Role } from "../../../types/roles";
-import type { AuthUser } from "../../../socket/socket-types.type";
+import type { AuthUser } from "../../../types/common";
 import type { TeamTaskDto } from "../../../types/teamManagement/teamTasks/team-tasks.type";
 
 import { TeamTaskWsEvents } from "../../../socket/events/teamManagement/teamTasks/team-task.ws.events";
@@ -99,7 +99,7 @@ export interface TeamTaskWsContext {
   requestId?: string;
 
   // Optional: emit to `user:<username>` rooms in addition to aud.member.<id>
-  assignedMemberUsernames?: string[];
+  assignedMember?: string[];
 }
 
 export class TeamTaskSocketService {
@@ -334,7 +334,7 @@ export class TeamTaskSocketService {
   /**
    * Member broadcast:
    * - aud.member.<userId> from dto.assignedMembers (preferred)
-   * - user:<username> from ctx.assignedMemberUsernames (optional)
+   * - user:<username> from ctx.assignedMember (optional)
    */
   private emitToMembers(
     dto: TeamTaskDto,
@@ -350,7 +350,7 @@ export class TeamTaskSocketService {
       emitter.emitToRoom(`aud.member.${id}`, payload.event, payload);
     }
 
-    const usernames = Array.isArray(ctx?.assignedMemberUsernames) ? ctx!.assignedMemberUsernames : [];
+    const usernames = Array.isArray( ctx?.assignedMember ) ? ctx!.assignedMember : [];
     for (const un of usernames) {
       const safeUn = this.safeStr(un);
       if (!safeUn) continue;
@@ -374,7 +374,7 @@ export class TeamTaskSocketService {
     const ref: TeamTaskSingleRef = {
       kind: "single",
       taskId: this.safeStr(dto.id),
-      taskMongoId: this.safeStr(dto.mongoId),
+      taskMongoId: this.safeStr( dto.taskMongoId ),
       teamCode: this.safeStr(dto.teamCode),
       teamMongoId: this.safeStr(dto.teamMongoId),
       domain: this.safeStr(dto.domain),
