@@ -229,6 +229,7 @@ export default class SocketServer {
   
           // Minimal information stored on socket for downstream handlers
           const authUser: AuthUser = {
+            name: user.name,
             username: user.username,
             role: user.role as any,
             userId: user._id

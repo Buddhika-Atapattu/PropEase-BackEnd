@@ -24,83 +24,22 @@ import type { MemberActivityDto } from "./teamManagement/memberActivities/member
 import type { TeamManagementDto } from "./teamManagement/teamMain/teamManagement.types";
 import type { TeamTaskDto } from './teamManagement/teamTasks/team-tasks.type';
 import type { WorkItemDto } from "./teamManagement/workItem/workItem.types";
-import type { MilestoneDto } from './teamManagement/milestones/milestone.types'
+import type { MilestoneDto } from './teamManagement/milestones/milestone.types';
+import type { RecycleBinEntryDto } from './recyclebin/recyclebin.types';
 
 // ✅ TYPE-ONLY import (prevents runtime dependency problems)
 import type { CommentDto } from "./comment.types";
+import type { FileMetaPacket, PaginationMeta, ValidationUnit } from "./common";
+import type { NotificationInboxItemDto } from './notification/notification.types';
 
 // ──────────────────────────────────────────────────────────────
 // 1) Core primitives
 // ──────────────────────────────────────────────────────────────
 export type ApiStatus = "success" | "error" | "fail";
-export type IsoDateString = string;
+
 
 // ──────────────────────────────────────────────────────────────
-// 2) Shared utility payloads
-// ──────────────────────────────────────────────────────────────
-export interface DateRange {
-  start: string | Date;
-  end: string | Date;
-}
-
-export interface PaginationMeta {
-  index?: number;
-  limit?: number;
-  total?: number;
-  offset?: number;
-
-  start?: number;
-  end?: number;
-
-  search?: string;
-  dateRange?: DateRange;
-
-  hasNext?: boolean;
-  hasPrevious?: boolean;
-  hasResults?: boolean;
-  hasMore?: boolean;
-
-  nextCursor?: string;
-}
-
-export interface ValidationUnit {
-  token?: string;
-  isValid?: boolean;
-  expiresAt?: string;
-}
-
-/**
- * Minimal file metadata used across backend.
- * NOTE:
- * - You also have FileMetaPacket in teamManagement.model.ts.
- * - Later, export and reuse ONE shared type to avoid drift.
- */
-export interface FileMetaPacket {
-  // Identity
-  originalName: string;
-  storedName: string;
-
-  // Type + size
-  extension: string;
-  mimeType: string;
-  sizeBytes: number;
-
-  // Where it lives (filesystem + public mapping)
-  relativePath: string;   // under "public/" no leading "/" (PropEase rule)
-  publicUrl: string;      // absolute URL that clients can use
-  absDiskPath: string;    // full path on disk (useful for internal ops)
-
-  // Upload context
-  fieldName: string;      // multer fieldname ("attachments", "files", "images"...)
-  uploadedAtIso: IsoDateString;
-
-  // Optional but valuable diagnostics/integrity
-  encoding?: string;
-  checksumSha256?: string;
-}
-
-// ──────────────────────────────────────────────────────────────
-// 3) Domain payload (SystemData)
+// 2) Domain payload (SystemData)
 //    Typed “dictionary” of business models.
 // ──────────────────────────────────────────────────────────────
 export interface SystemData {
@@ -151,6 +90,14 @@ export interface SystemData {
   // Comments
   comment?: CommentDto;
   comments?: CommentDto[];
+
+  // RecycleBin
+  recycleBinItem?: RecycleBinEntryDto;
+  recycleBinItems?: RecycleBinEntryDto[];
+
+  //Notifications
+  notification?: NotificationInboxItemDto;
+  notifications?: NotificationInboxItemDto[];
 
   // Dashboard summaries
   totalUsers?: number;
@@ -239,6 +186,10 @@ export type MemberActivitySystemData = Pick<SystemData, 'memberActivity' | 'memb
 
 export type MilestoneSystemData = Pick<SystemData, 'milestone' | 'milestones'>;
 
+export type RecycleBinSystemData = Pick<SystemData, 'recycleBinItem' | 'recycleBinItems'>;
+
+export type NotificationSystemData = Pick<SystemData, 'notification' | 'notifications'>;
+
 // ──────────────────────────────────────────────────────────────
 // 7) Convenience ApiData aliases per module
 // ──────────────────────────────────────────────────────────────
@@ -255,3 +206,6 @@ export type DashboardApiData = ApiData<DashboardSystemData>;
 export type CommentApiData = ApiData<CommentSystemData>;
 export type MemberActivityApiData = ApiData<MemberActivitySystemData>;
 export type MilestoneApiData = ApiData<MilestoneSystemData>;
+export type RecycleBinApiData = ApiData<RecycleBinSystemData>;
+export type NotificationApiData = ApiData<NotificationSystemData>;
+

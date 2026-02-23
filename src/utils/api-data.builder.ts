@@ -14,8 +14,6 @@
 
 import type {
     ApiData,
-    PaginationMeta,
-    ValidationUnit,
     SystemData,
     LeaseSystemData,
     PropertySystemData,
@@ -23,10 +21,15 @@ import type {
     ComplaintSystemData,
     FileUploadSystemData,
     TeamManagementSystemData,
-    FileMetaPacket,
     FileMetaSystemData,
     WorkSystemData,
 } from '../types/api-message';
+
+import {
+    PaginationMeta,
+    ValidationUnit,
+    FileMetaPacket,
+} from '../types/common';
 
 import type { LeasePayload, LeasePayloadWithProperty } from '../models/lease.model';
 import type { IProperty } from '../models/property.model';

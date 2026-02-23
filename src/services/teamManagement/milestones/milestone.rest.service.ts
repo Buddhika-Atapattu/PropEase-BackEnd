@@ -14,6 +14,8 @@
 // - exactOptionalPropertyTypes safe: omit optionals (never set undefined)
 // ============================================================================
 
+import { Request } from "express";
+
 import { Types } from "mongoose";
 
 import { MilestoneModel } from "../../../models/teamManagement/milestones/milestone.model";
@@ -26,6 +28,9 @@ import type {
 } from "../../../types/teamManagement/milestones/milestone.types";
 
 import { MilestoneWsService, type MilestoneWsContext } from "./milestone.ws.service";
+import { type DomainDeletePlan, RecycleBinDomainDeleteService } from '../../../services/recyclebin/recyclebin-domain-delete.service';
+import type { FileMetaPacket } from "../../../types/common";
+import { FileMetaPacketBuilder } from "../../../utils/files/file-meta-packet.builder";
 
 // ----------------------------------------------------------------------------
 // Filters / Paging / Inputs
@@ -146,6 +151,7 @@ export class MilestoneServiceError extends Error {
 
 export class MilestoneRestService {
     private readonly ws: MilestoneWsService;
+    private readonly deleteSvc = new RecycleBinDomainDeleteService();
 
     public constructor () {
         // WS is best-effort (lazy handler inside), so it won't break REST.
@@ -271,26 +277,57 @@ export class MilestoneRestService {
     public async deleteById( ctx: MilestoneWsContext, milestoneId: string ): Promise<void> {
         const _id = this.toObjectId( milestoneId );
 
-        const existing = await MilestoneModel.findById( _id ).lean().exec();
+        const existing = await MilestoneModel.findById( _id ).lean<MilestoneDto>().exec();
         if ( !existing ) throw new MilestoneServiceError( "MILESTONE_NOT_FOUND", "Milestone not found." );
 
-        await MilestoneModel.deleteOne( { _id } ).exec();
+        const files = await this.buildRecycleFilesFromMilestoneAsync( existing );
 
-        const dto = existing as MilestoneDto;
+        const plan: DomainDeletePlan<MilestoneDto> = {
+            sourceKey: "Milestone",
+            refId: String( ( existing as unknown as { _id: unknown; } )._id ),
+            label: this.buildRecycleLabel( existing ),
+            ...( this.buildRecycleDescription( existing ) ? { description: this.buildRecycleDescription( existing ) } : {} ),
 
-        const workItemId = ctx.workItemId ?? this.extractWorkItemIdFromDto( dto );
-        const teamIdStr = this.extractTeamIdFromDto( dto );
-        const userIdStr = this.extractUserIdFromDto( dto );
+            // ✅ FIX: snapshotData expects Record<string, unknown>
+            snapshotData: existing as unknown as Record<string, unknown>,
 
-        this.ws.emitMilestoneDeleted(
-            this.buildEmitCtx( ctx, {
-                teamCode: ctx.teamCode ?? teamIdStr,
-                workItemId,
-                milestoneId,
-                memberUserIds: ctx.memberUserIds && ctx.memberUserIds.length > 0 ? ctx.memberUserIds : [ userIdStr ],
-            } ),
-            milestoneId
-        );
+            files,
+            deleteDbRecord: async (): Promise<void> => {
+                const res = await MilestoneModel.deleteOne( { _id } ).exec();
+                if ( !res.deletedCount || res.deletedCount < 1 ) {
+                    throw new MilestoneServiceError( "MILESTONE_DELETE_FAILED", "Milestone delete failed." );
+                }
+            },
+        };
+
+        // ✅ Call ONCE (durability-first)
+        await this.deleteSvc.deleteWithRecycleBin( ctx.actor, plan );
+
+        // WS emit (best-effort; must not break REST)
+        try {
+            const dto = existing;
+
+            const workItemId = ctx.workItemId ?? this.extractWorkItemIdFromDto( dto );
+            const teamIdStr = this.extractTeamIdFromDto( dto );
+            const userIdStr = this.extractUserIdFromDto( dto );
+
+            this.ws.emitMilestoneDeleted(
+                this.buildEmitCtx( ctx, {
+                    teamCode: ctx.teamCode ?? teamIdStr,
+                    workItemId,
+                    milestoneId,
+                    memberUserIds:
+                        ctx.memberUserIds && ctx.memberUserIds.length > 0
+                            ? ctx.memberUserIds
+                            : [ userIdStr ],
+                } ),
+                milestoneId
+            );
+        } catch ( err: unknown ) {
+            const msg = err instanceof Error ? err.message : "Unknown error";
+            // eslint-disable-next-line no-console
+            console.warn( `[Warning:] [MilestoneRestService] WS emitMilestoneDeleted failed: ${ msg }\n` );
+        }
     }
 
     // =========================================================================
@@ -712,5 +749,98 @@ export class MilestoneRestService {
     private uniqueTags( tags: string[] ): string[] {
         const cleaned = tags.map( ( t ) => t.trim() ).filter( ( t ) => t.length > 0 );
         return Array.from( new Set( cleaned ) );
+    }
+
+    private buildRecycleLabel( dto: MilestoneDto ): string {
+        const title = this.safeString( ( dto as unknown as { title?: unknown; } ).title );
+        if ( title ) return `Milestone: ${ title }`;
+        return "Milestone";
+    }
+
+    private buildRecycleDescription( dto: MilestoneDto ): string {
+        const notes = this.safeString( ( dto as unknown as { notes?: unknown; } ).notes );
+        return notes;
+    }
+
+    /**
+ * Convert milestone evidence into FileMetaPacket[] for recyclebin mirror move.
+ *
+ * WHY:
+ * - RecycleBin engine expects FileMetaPacket[] (full file metadata)
+ * - Evidence usually stores only relativePath/publicUrl, so we rebuild packets from disk
+ *
+ * IMPORTANT (PropEase rule):
+ * - relativePath must be under "public/" and must NOT start with "/"
+ */
+    private async buildRecycleFilesFromMilestoneAsync( dto: MilestoneDto ): Promise<FileMetaPacket[]> {
+        const evidenceUnknown: unknown = ( dto as unknown as { evidence?: unknown; } ).evidence;
+
+        if ( !Array.isArray( evidenceUnknown ) || evidenceUnknown.length === 0 ) return [];
+
+        const packets: FileMetaPacket[] = [];
+
+        for ( const ev of evidenceUnknown ) {
+            if ( !ev || typeof ev !== "object" ) continue;
+
+            // Support both naming styles:
+            // - new style: relativePath/publicUrl
+            // - older style: relPath/url
+            const relativePath =
+                this.safeString( ( ev as Record<string, unknown> )[ "relativePath" ] ) ||
+                this.safeString( ( ev as Record<string, unknown> )[ "relPath" ] );
+
+            // If we don't have a public-relative disk path, we can't move it safely.
+            if ( !relativePath ) continue;
+
+            // Normalize (PropEase: must be "public/..." with no leading "/")
+            const normalized = this.normalizePublicRelativePath( relativePath );
+            if ( !normalized ) continue;
+
+            // Build a proper FileMetaPacket by scanning the file on disk.
+            // This guarantees required fields: sizeBytes, absDiskPath, mimeType, etc.
+            try {
+                const pkt = await FileMetaPacketBuilder.fromExistingPublicRelativePath( normalized, {
+                    // Optional context: recyclebin may need this; keep stable.
+                    fieldName: "evidence",
+                } );
+
+                packets.push( pkt );
+            } catch ( err: unknown ) {
+                const msg = err instanceof Error ? err.message : "Unknown error";
+                // eslint-disable-next-line no-console
+                console.warn(
+                    `[Warning:] [MilestoneRestService] buildRecycleFilesFromMilestoneAsync skipped missing/invalid file: ${ msg }\n`
+                );
+            }
+        }
+
+        return packets;
+    }
+
+
+
+    /**
+     * Enforce PropEase disk path rule:
+     * - Must start with "public/"
+     * - Must not start with "/"
+     */
+    private normalizePublicRelativePath( input: string ): string {
+        const s = this.safeString( input );
+
+        if ( !s ) return "";
+
+        // Remove leading slash if some caller accidentally stored "/public/..."
+        const withoutLeadingSlash = s.startsWith( "/" ) ? s.slice( 1 ) : s;
+
+        // Must be under public/
+        if ( !withoutLeadingSlash.startsWith( "public/" ) ) return "";
+
+        return withoutLeadingSlash;
+    }
+
+    private safeString( v: unknown ): string {
+        if ( typeof v === "string" ) return v.trim();
+        if ( typeof v === "number" ) return String( v );
+        return "";
     }
 }

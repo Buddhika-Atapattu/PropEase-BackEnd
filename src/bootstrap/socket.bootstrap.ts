@@ -32,7 +32,6 @@ import { FRONTEND_ORIGIN, JWT_SECRET } from "../configs/env.config";
 import { WsTokenRegistryProvider } from "../services/ws-service/ws-token-registry.provider.service";
 import type { WsTokenRegistryRedis } from "../services/ws-service/ws-token-registry.redis.service";
 
-import { KpisRuntime } from "../KPIs/kpis.runtime";
 
 import { CommentsWsGateway } from "../socket/comments/comments-ws.gateway";
 import { CommentsWsRegistry } from "../socket/comments/comments-ws.registry";
@@ -244,12 +243,7 @@ export class SocketBootstrap {
     // - This should happen AFTER io is attached and connection handler is ready,
     //   so KPI runtime can broadcast to valid rooms/users.
     // =========================================================================
-    try {
-      KpisRuntime.getInstance().startRealtime( io );
-      console.log( "[Info:] [SocketBootstrap] KPI runtime realtime started.\n" );
-    } catch ( err ) {
-      console.error( "[Warning:] [SocketBootstrap] KPI runtime realtime start failed.\n", err );
-    }
+   
 
     // ------------------------------------------------------------------------
     // 9) Return handles

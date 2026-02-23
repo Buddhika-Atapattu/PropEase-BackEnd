@@ -17,7 +17,7 @@ import express, {
 } from "express";
 
 // Controller (your path)
-import { TeamManagementController } from "../../../controller/teamManagement/teamMain/teamManagement.controller";
+import { TeamManagementController } from "../../../controllers/teamManagement/teamMain/teamManagement.controller";
 
 type TeamCodeParams = { teamCode: string; };
 type TeamNameParams = { teamName: string; };

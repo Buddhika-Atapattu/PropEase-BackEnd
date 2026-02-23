@@ -14,7 +14,7 @@
 // ============================================================================
 
 import express, { type Router } from "express";
-import { MemberActivitiesControllerExport } from "../../../controller/teamManagement/memberActivities/memberActivities.controller";
+import { MemberActivitiesControllerExport } from "../../../controllers/teamManagement/memberActivities/memberActivities.controller";
 
 export default class MemberActivitiesRouter {
   private readonly router: Router;

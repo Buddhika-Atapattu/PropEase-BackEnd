@@ -11,7 +11,7 @@
 // ============================================================================
 
 import express, { type Router } from "express";
-import { TeamTaskController } from "../../../controller/teamManagement/teamTasks/teamTask.controller";
+import { TeamTaskController } from "../../../controllers/teamManagement/teamTasks/teamTask.controller";
 
 export default class TeamTaskRouter {
   private readonly router: Router;

@@ -1,519 +1,307 @@
-// src/models/notification.model.ts
-// ─────────────────────────────────────────────────────────────────────────────
-// Notification model (Mongoose)
-// PURPOSE of this file: Type declarations + DB schema only.
-//   • No business logic, no room creation, no service operations here.
-//   • Controllers/services will create documents and perform operations.
-// NOTE on "user notification rooms":
-//   • This model DOES NOT create any rooms/collections by itself.
-//   • If you see two user-notification rooms in DB, that logic lives in the
-//     separate user-notification model/service. Add a unique index + idempotent
-//     upsert there. (See TODO near bottom for a reminder.)
-// ─────────────────────────────────────────────────────────────────────────────
+// Path: src/models/notifications/notification.model.ts
+// =============================================================================
+// Notification Hub — Notification Model (Mongoose)
+// -----------------------------------------------------------------------------
+// PURPOSE:
+// - DB schema ONLY for the base Notification document (no per-user state here)
+// - Built strictly according to:
+//   src/types/notification/notification.types.ts
+//
+// IMPORTANT:
+// - This model is NOT the "user notification room" model.
+// - You already have a user notification model → keep that separate.
+// - This model stores:
+//   eventKey, category, severity, title, body, icon/tags, target, actor, audiences[],
+//   createdAt, expiresAt
+//
+// RULES:
+// - 100% class-based (no loose functions)
+// - No business logic or room creation here
+// =============================================================================
 
-import { Schema, model, type Document } from 'mongoose';
+import { Schema, model, type Document, type Model } from "mongoose";
 
-/* ============================================================================
- * A) Encapsulate constants & helpers in a class (class-based requirement)
- *    - No service/ops methods here—only values + pure helpers
- * ==========================================================================*/
+import type {
+  NotificationActorDto,
+  NotificationAudience,
+  NotificationCategory,
+  NotificationEventKey,
+  NotificationSeverity,
+  NotificationTarget,
+} from "../../types/notification/notification.types";
+import { NOTIFICATION_ACTION_KEYS } from "../../types/notification/notification-action-keys.catalog";
+
+/* =============================================================================
+ * A) Catalog (enums + safe setters only)
+ * ========================================================================== */
 class NotificationCatalog {
-  // ── A.1 Categories (domains)
-  public static readonly CATEGORIES = [
-    'User', 'Tenant', 'Property', 'Lease',
-    'Agent', 'Developer', 'Maintenance', 'Complaint',
-    'Team', 'Registration', 'Payment', 'System', 'Comment'
-  ] as const;
-  public static readonly CATEGORY_ICON_MAP: Record<TitleCategory, string> = {
-    User: 'person',
-    Tenant: 'recent_actors',
-    Property: 'home',
-    Lease: 'description',
-    Agent: 'support_agent',
-    Developer: 'engineering',
-    Maintenance: 'build',
-    Complaint: 'report_problem',
-    Team: 'groups',
-    Registration: 'verified_user',
-    Payment: 'payments',
-    System: 'settings',
-    Comment: 'speaker_notes',
-  };
+  private constructor () {}
 
-  // ── A.2 Channels / severity / audience
-  public static readonly SEVERITY_VALUES: Severity[] = [ 'info', 'success', 'warning', 'error' ];
-  public static readonly CHANNEL_VALUES: Channel[] = [ 'inapp', 'email', 'sms', 'push' ];
-  public static readonly AUDIENCE_MODE_VALUES: AudienceMode[] = [ 'user', 'role', 'broadcast' ];
-
-  // ── A.3 Titles (single source of truth)
-  // Add Restore X / Permanent Delete X for EVERY category
-  public static readonly TITLE_VALUES = [
-    // User
-    'New User', 'Update User', 'Delete User', 'Restore User', 'Permanent Delete User',
-    'User Role Changed', 'User Password Reset', 'User Suspended', 'User Reactivated',
-
-    // Tenant
-    'New Tenant', 'Update Tenant', 'Delete Tenant', 'Restore Tenant', 'Permanent Delete Tenant',
-    'Tenant Verified', 'Tenant Moved Out', 'Tenant Complaint Filed',
-
-    // Property
-    'New Property', 'Update Property', 'Delete Property', 'Restore Property', 'Permanent Delete Property',
-    'Property Approved', 'Property Listing Expired', 'Property Maintenance Requested',
-    'Property Maintenance Completed', 'Property Inspection Scheduled',
-
-    // Lease
-    'New Lease', 'Update Lease', 'Delete Lease', 'Restore Lease', 'Permanent Delete Lease',
-    'Lease Renewed', 'Lease Terminated', 'Lease Payment Received', 'Lease Reminder Sent',
-    'Lease Agreement Download', 'Lease Agreement View',
-
-    // Agent
-    'New Agent', 'Update Agent', 'Delete Agent', 'Restore Agent', 'Permanent Delete Agent',
-    'Agent Assigned Property',
-
-    // Developer
-    'New Developer', 'Update Developer', 'Delete Developer', 'Restore Developer', 'Permanent Delete Developer',
-
-    // Maintenance
-    'New Maintenance Request', 'Update Maintenance Request', 'Close Maintenance Request',
-    'Restore Maintenance Request', 'Permanent Delete Maintenance Request',
-    'Assign Maintenance Team', 'Maintenance In Progress', 'Maintenance Completed',
-
-    // Complaint
-    'New Complaint', 'Update Complaint', 'Close Complaint',
-    'Restore Complaint', 'Permanent Delete Complaint',
-    'Complaint Escalated', 'Complaint Resolved',
-
-    // Team
-    'New Team', 'Update Team', 'Delete Team', 'Restore Team', 'Permanent Delete Team',
-    'Assign Team Member', 'Team Task Created', 'Team Task Completed',
-
-    // Registration / KYC
-    'New Registration', 'Update Registration', 'Delete Registration',
-    'Restore Registration', 'Permanent Delete Registration',
-    'Account Verified', 'KYC Document Uploaded', 'KYC Document Approved', 'KYC Document Rejected',
-
-    // Payment
-    'New Invoice', 'Update Invoice', 'Delete Invoice',
-    'Restore Invoice', 'Permanent Delete Invoice',
-    'Invoice Paid', 'Invoice Overdue', 'Refund Issued', 'Payment Failed',
-
-    // System
-    'New Notification', 'Update Notification', 'Delete Notification',
-    'Restore Notification', 'Permanent Delete Notification',
-    'System Update', 'Security Alert', 'Backup Completed', 'New Message', 'Broadcast Announcement',
-
-    // Comment
-    'New Comment', 'Update Comment', 'Delete Comment', 'Reject Comment',
+  public static readonly CATEGORY_VALUES: ReadonlyArray<NotificationCategory> = [
+    "User",
+    "Tenant",
+    "Property",
+    "Lease",
+    "Complaint",
+    "Payment",
+    "Team",
+    "Comment",
+    "System",
   ] as const;
 
-  // ── A.4 Normalized action types (includes restore & permanent_delete)
-  public static readonly DEFINED_TYPE_VALUES = [
-    'create', 'update', 'delete', 'restore', 'permanent_delete', 'archive',
-    'assign', 'reassign',
-    'approve', 'reject', 'verify', 'publish', 'unpublish',
-    'renew', 'terminate', 'expire', 'download',
-    'schedule', 'start', 'in_progress', 'complete', 'reschedule', 'cancel',
-    'maintenance_request', 'maintenance_ack', 'maintenance_in_progress', 'maintenance_completed', 'maintenance_closed',
-    'payment_received', 'payment_failed', 'refund_issued', 'invoice_created', 'invoice_overdue',
-    'notify', 'reminder', 'escalate', 'broadcast',
-    'import', 'export', 'sync',
+  public static readonly SEVERITY_VALUES: ReadonlyArray<NotificationSeverity> = [
+    "info",
+    "success",
+    "warning",
+    "error",
   ] as const;
 
-  // ── A.5 Mapping Title → Category (include Restore/PermDelete for all)
-  public static readonly TITLE_CATEGORY_MAP: Record<Title, TitleCategory> = ( () => {
-    const M: Partial<Record<string, TitleCategory>> = {};
+  public static readonly AUDIENCE_MODE_VALUES: ReadonlyArray<
+    NotificationAudience[ "mode" ]
+  > = [ "Company", "Role", "Team", "User" ] as const;
 
-    // Helper to add a block of titles for one category
-    const add = ( cat: TitleCategory, titles: string[] ) => {
-      for ( const t of titles ) M[ t ] = cat;
-    };
+  /**
+   * DB-level sanitation for tags.
+   * - Keeps indexes sane
+   * - Avoids empty strings / duplicates
+   */
+  public static sanitizeTags( input: unknown ): string[] {
+    if ( !Array.isArray( input ) ) return [];
 
-    add( 'User', [
-      'New User', 'Update User', 'Delete User', 'Restore User', 'Permanent Delete User',
-      'User Role Changed', 'User Password Reset', 'User Suspended', 'User Reactivated',
-    ] );
+    const raw = input
+      .map( ( x ) => ( typeof x === "string" ? x.trim() : "" ) )
+      .filter( ( x ) => x.length > 0 );
 
-    add( 'Tenant', [
-      'New Tenant', 'Update Tenant', 'Delete Tenant', 'Restore Tenant', 'Permanent Delete Tenant',
-      'Tenant Verified', 'Tenant Moved Out', 'Tenant Complaint Filed',
-    ] );
-
-    add( 'Property', [
-      'New Property', 'Update Property', 'Delete Property', 'Restore Property', 'Permanent Delete Property',
-      'Property Approved', 'Property Listing Expired', 'Property Maintenance Requested',
-      'Property Maintenance Completed', 'Property Inspection Scheduled',
-    ] );
-
-    add( 'Lease', [
-      'New Lease', 'Update Lease', 'Delete Lease', 'Restore Lease', 'Permanent Delete Lease',
-      'Lease Renewed', 'Lease Terminated', 'Lease Payment Received', 'Lease Reminder Sent', 'Lease Agreement Download', 'Lease Agreement View',
-    ] );
-
-    add( 'Agent', [
-      'New Agent', 'Update Agent', 'Delete Agent', 'Restore Agent', 'Permanent Delete Agent',
-      'Agent Assigned Property',
-    ] );
-
-    add( 'Developer', [
-      'New Developer', 'Update Developer', 'Delete Developer', 'Restore Developer', 'Permanent Delete Developer',
-    ] );
-
-    add( 'Maintenance', [
-      'New Maintenance Request', 'Update Maintenance Request', 'Close Maintenance Request',
-      'Restore Maintenance Request', 'Permanent Delete Maintenance Request',
-      'Assign Maintenance Team', 'Maintenance In Progress', 'Maintenance Completed',
-    ] );
-
-    add( 'Complaint', [
-      'New Complaint', 'Update Complaint', 'Close Complaint',
-      'Restore Complaint', 'Permanent Delete Complaint',
-      'Complaint Escalated', 'Complaint Resolved',
-    ] );
-
-    add( 'Team', [
-      'New Team', 'Update Team', 'Delete Team', 'Restore Team', 'Permanent Delete Team',
-      'Assign Team Member', 'Team Task Created', 'Team Task Completed',
-    ] );
-
-    add( 'Registration', [
-      'New Registration', 'Update Registration', 'Delete Registration',
-      'Restore Registration', 'Permanent Delete Registration',
-      'Account Verified', 'KYC Document Uploaded', 'KYC Document Approved', 'KYC Document Rejected',
-    ] );
-
-    add( 'Payment', [
-      'New Invoice', 'Update Invoice', 'Delete Invoice',
-      'Restore Invoice', 'Permanent Delete Invoice',
-      'Invoice Paid', 'Invoice Overdue', 'Refund Issued', 'Payment Failed',
-    ] );
-
-    add( 'System', [
-      'New Notification', 'Update Notification', 'Delete Notification',
-      'Restore Notification', 'Permanent Delete Notification',
-      'System Update', 'Security Alert', 'Backup Completed', 'New Message', 'Broadcast Announcement',
-    ] );
-
-    add( 'Comment', [ 'New Comment', 'Update Comment', 'Delete Comment', 'Reject Comment', ] );
-
-    return M as Record<Title, TitleCategory>;
-  } )();
-
-  // ── A.6 Helpers
-  public static isLikelyUrl( v?: string ) { return !!v && /^(https?:)?\/\//i.test( v ); }
-  public static dedupeTrim( arr?: unknown[] ) {
-    return Array.isArray( arr ) ? Array.from( new Set( arr.map( ( x ) => ( typeof x === 'string' ? x.trim() : x ) ) ) ).filter( Boolean ) as string[] : [];
-  }
-  public static capTags( tags: string[], maxTags = 20, maxPerTag = 40 ) {
-    return tags.map( ( t ) => String( t ).slice( 0, maxPerTag ) ).slice( 0, maxTags );
+    const uniq = Array.from( new Set( raw ) );
+    return uniq.map( ( t ) => t.slice( 0, 40 ) ).slice( 0, 20 );
   }
 
-  // ── A.7 Title → normalized DefinedType (now detects restore/permanent delete)
-  public static mapTitleToType( title: Title ): DefinedTypes {
-    const t = title.toLowerCase();
-    if ( t.startsWith( 'new ' ) ) return 'create';
-    if ( t.startsWith( 'update ' ) ) return 'update';
-    if ( t.startsWith( 'delete ' ) ) return 'delete';
-    if ( t.startsWith( 'restore ' ) ) return 'restore';
-    if ( t.startsWith( 'permanent delete' ) ) return 'permanent_delete';
+  /**
+   * DB default timestamp helper (keeps default function class-based).
+   */
+  public static now(): Date {
+    return new Date();
+  }
 
-    if ( t.includes( 'approved' ) ) return 'approve';
-    if ( t.includes( 'listing expired' ) ) return 'expire';
-    if ( t.includes( 'inspection' ) ) return 'schedule';
-    if ( t.includes( 'maintenance requested' ) ) return 'maintenance_request';
-    if ( t.includes( 'maintenance in progress' ) ) return 'maintenance_in_progress';
-    if ( t.includes( 'maintenance completed' ) ) return 'maintenance_completed';
-
-    if ( t.includes( 'lease renewed' ) ) return 'renew';
-    if ( t.includes( 'lease terminated' ) ) return 'terminate';
-    if ( t.includes( 'payment received' ) ) return 'payment_received';
-    if ( t.includes( 'reminder sent' ) ) return 'reminder';
-    if ( t.includes( 'agreement download' ) ) return 'download';
-
-    if ( t.includes( 'close complaint' ) ) return 'maintenance_closed';
-    if ( t.includes( 'task created' ) ) return 'create';
-    if ( t.includes( 'task completed' ) ) return 'complete';
-
-    if ( t.includes( 'invoice paid' ) ) return 'payment_received';
-    if ( t.includes( 'invoice overdue' ) ) return 'invoice_overdue';
-    if ( t.includes( 'refund issued' ) ) return 'refund_issued';
-    if ( t.includes( 'payment failed' ) ) return 'payment_failed';
-
-    if ( t.includes( 'broadcast' ) ) return 'broadcast';
-    if ( t.includes( 'security alert' ) ) return 'notify';
-    return 'notify';
+  /**
+   * DB validation helper:
+   * - audiences must be an array with at least 1 item
+   */
+  public static hasAtLeastOneAudience( v: unknown ): boolean {
+    return Array.isArray( v ) && v.length >= 1;
   }
 }
 
-/* ============================================================================
- * B) Types derived from the catalog (single source)
- * ==========================================================================*/
-export type Title = ( typeof NotificationCatalog.TITLE_VALUES )[ number ];
-export type TitleCategory = ( typeof NotificationCatalog.CATEGORIES )[ number ];
-export type Severity = 'info' | 'success' | 'warning' | 'error';
-export type Channel = 'inapp' | 'email' | 'sms' | 'push';
-export type AudienceMode = 'user' | 'role' | 'broadcast';
-export type DefinedTypes = ( typeof NotificationCatalog.DEFINED_TYPE_VALUES )[ number ];
+/* =============================================================================
+ * B) Document shape (DB)
+ * NOTE:
+ * - In DB, store createdAt/expiresAt as Date for correct indexing + range queries.
+ * - When building DTOs (NotificationCoreDto), convert Date -> ISO string.
+ * ========================================================================== */
+export interface NotificationDoc extends Document {
+  eventKey: NotificationEventKey;
+  category: NotificationCategory;
+  severity: NotificationSeverity;
 
-/* ============================================================================
- * C) Document shape (DB)
- * ==========================================================================*/
-export interface DeliveryStatus {
-  channel: Channel;
-  status: 'pending' | 'sent' | 'failed';
-  detail?: string;
-  at?: Date;
-}
-
-export interface NotificationEntity extends Document {
-  title: Title;
-  category: TitleCategory;               // derived + stored (fast filtering)
-  type: DefinedTypes;                    // derived from title unless explicitly set
-  severity: Severity;
+  title: string;
   body: string;
-
-  target?: {
-    kind?: TitleCategory;                // defaults to category if missing
-    refId?: string;
-  };
-
-  audience: {
-    mode: AudienceMode;
-    usernames: string[];
-    roles: string[];
-  };
-
-  channels: Channel[];
-  deliveries?: DeliveryStatus[];
 
   icon?: string;
   tags?: string[];
-  link?: string;
-  source?: string;
-  metadata?: {
-    refId: string;
-    data?: Record<string, any>;
-  };
 
-  readBy?: string[];
+  target?: NotificationTarget;
+
+  actor: NotificationActorDto;
+
+  /**
+   * ✅ FIX:
+   * - Store audiences as an array (even for single target).
+   * - This matches your engine rule and WS/query expectations.
+   */
+  audiences: NotificationAudience[];
 
   createdAt: Date;
   expiresAt?: Date;
 }
 
-/* ============================================================================
- * D) Schemas + hooks (derive category/type; defaults; indexes)
- * ==========================================================================*/
-const AudienceSchema = new Schema<NotificationEntity[ 'audience' ]>(
-  {
-    mode: { type: String, enum: NotificationCatalog.AUDIENCE_MODE_VALUES, required: true, index: true },
-    usernames: {
-      type: [ String ],
-      index: true,
-      default: [],
-      set: ( v: unknown ) => NotificationCatalog.dedupeTrim( Array.isArray( v ) ? v : [] ),
-    },
-    roles: {
-      type: [ String ],
-      index: true,
-      default: [],
-      set: ( v: unknown ) => NotificationCatalog.dedupeTrim( Array.isArray( v ) ? v : [] ),
-    },
-  },
-  { _id: false }
-);
+/* =============================================================================
+ * C) Embedded schema factories (class-based)
+ * ========================================================================== */
 
-const DeliverySchema = new Schema<DeliveryStatus>(
-  {
-    channel: { type: String, enum: NotificationCatalog.CHANNEL_VALUES, required: true },
-    status: { type: String, enum: [ 'pending', 'sent', 'failed' ], required: true, default: 'pending' },
-    detail: { type: String, trim: true },
-    at: { type: Date, default: () => new Date() },
-  },
-  { _id: false }
-);
+class NotificationActorSchemaFactory {
+  private constructor () {}
 
-const NotificationSchema = new Schema<NotificationEntity>(
-  {
-    title: { type: String, enum: NotificationCatalog.TITLE_VALUES, required: true, trim: true },
+  public static build(): Schema<NotificationActorDto> {
+    return new Schema<NotificationActorDto>(
+      {
+        userId: { type: String, required: true, trim: true, index: true },
+        username: { type: String, required: true, trim: true, index: true },
+        role: { type: String, required: true, trim: true, index: true },
 
-    // Stored category (derived in hook; keeps queries fast)
-    category: {
-      type: String,
-      enum: NotificationCatalog.CATEGORIES,
-      required: true,
-      index: true,
-    },
-
-    type: {
-      type: String,
-      enum: NotificationCatalog.DEFINED_TYPE_VALUES,
-      required: true,
-      default: 'notify',
-      trim: true,
-      index: true,
-    },
-
-    severity: { type: String, enum: NotificationCatalog.SEVERITY_VALUES, default: 'info', required: true },
-
-    body: { type: String, required: true, trim: true },
-
-    target: {
-      kind: { type: String, enum: NotificationCatalog.CATEGORIES, trim: true },
-      refId: { type: String, trim: true, index: true },
-    },
-
-    audience: { type: AudienceSchema, required: true },
-
-    channels: {
-      type: [ String ],
-      enum: NotificationCatalog.CHANNEL_VALUES,
-      default: [ 'inapp' ],
-      set: ( v: unknown ) => {
-        const arr = Array.isArray( v ) ? v : [ 'inapp' ];
-        const cleaned = NotificationCatalog
-          .dedupeTrim( arr )
-          .filter( ( c ) => ( NotificationCatalog.CHANNEL_VALUES as string[] ).includes( String( c ) ) );
-        return cleaned.length ? cleaned : [ 'inapp' ];
+        // Optional scoping hints (store [] rather than null; avoid null pollution)
+        teamCodes: { type: [ String ], required: false, default: [], index: true },
+        branchId: { type: String, required: false, trim: true, index: true },
       },
-    },
-
-    deliveries: { type: [ DeliverySchema ], default: [] },
-
-    createdAt: { type: Date, default: () => new Date(), index: true },
-    expiresAt: { type: Date, index: true },
-
-    metadata: {
-      refId: { type: String, trim: true, required: true, default: '' },
-      data: { type: Schema.Types.Mixed, required: false },
-    },
-    icon: { type: String, trim: true },
-    tags: {
-      type: [ String ],
-      index: true,
-      default: [],
-      set: ( v: unknown ) => NotificationCatalog.capTags( NotificationCatalog.dedupeTrim( Array.isArray( v ) ? v : [] ) ),
-    },
-    link: {
-      type: String,
-      trim: true,
-      set: ( v: unknown ) => {
-        const s = typeof v === 'string' ? v.trim() : '';
-        return NotificationCatalog.isLikelyUrl( s ) ? s : s;
-      },
-    },
-    source: { type: String, trim: true },
-
-    readBy: {
-      type: [ String ],
-      index: true,
-      default: [],
-      set: ( v: unknown ) => NotificationCatalog.dedupeTrim( Array.isArray( v ) ? v : [] ),
-    },
-  },
-  { versionKey: false, minimize: true }
-);
-
-// ── Hook: derive category/type/target.kind from title; apply icon/tags defaults
-NotificationSchema.pre( 'validate', function ( next ) {
-  const doc = this as NotificationEntity;
-
-  // 1) Category from title (single truth map)
-  if ( doc.title ) {
-    const mapped = NotificationCatalog.TITLE_CATEGORY_MAP[ doc.title ];
-    if ( !mapped ) return next( new Error( `No category mapping for title "${ doc.title }"` ) );
-    doc.category = mapped;
-
-    // 2) Keep target.kind aligned unless explicitly set
-    if ( !doc.target ) doc.target = {};
-    if ( !doc.target.kind ) doc.target.kind = mapped;
+      { _id: false }
+    );
   }
-
-  // 3) Normalized type from title (unless explicitly given)
-  if ( !doc.type ) {
-    doc.type = NotificationCatalog.mapTitleToType( doc.title );
-  }
-
-  // 4) Category icon default (if not provided)
-  if ( !doc.icon && doc.category ) {
-    doc.icon = NotificationCatalog.CATEGORY_ICON_MAP[ doc.category ] ?? 'notifications';
-  }
-
-  // 5) Category default tags (first create only, if not provided)
-  if ( doc.isNew ) {
-    const existing = Array.isArray( doc.tags ) ? NotificationCatalog.dedupeTrim( doc.tags ) : [];
-    if ( existing.length === 0 ) {
-      // A tiny, safe default tag set per category (optional to extend later)
-      const defaults: Record<TitleCategory, string[]> = {
-        User: [ 'user', 'account' ],
-        Tenant: [ 'tenant', 'occupancy' ],
-        Property: [ 'property', 'listing' ],
-        Lease: [ 'lease', 'agreement' ],
-        Agent: [ 'agent', 'staff' ],
-        Developer: [ 'developer', 'project' ],
-        Maintenance: [ 'maintenance', 'workorder' ],
-        Complaint: [ 'complaint', 'ticket' ],
-        Team: [ 'team', 'task' ],
-        Registration: [ 'registration', 'kyc' ],
-        Payment: [ 'payment', 'invoice' ],
-        System: [ 'system', 'security' ],
-        Comment: [ 'comment', 'idea' ]
-      };
-      const dt = defaults[ doc.category ] || [];
-      if ( dt.length ) doc.tags = NotificationCatalog.capTags( NotificationCatalog.dedupeTrim( dt ) );
-    }
-  }
-
-  return next();
-} );
-
-// ── Keep category/type in sync on update()
-function syncOnQueryUpdate( this: any, next: Function ) {
-  const update: any = this.getUpdate() || {};
-  const set = update.$set ?? update;
-
-  if ( set.title ) {
-    const mapped = NotificationCatalog.TITLE_CATEGORY_MAP[ set.title as Title ];
-    if ( !mapped ) return next( new Error( `No category mapping for title "${ set.title }"` ) );
-    ( update.$set ??= {} ).category = mapped;
-
-    if ( !update.$set?.[ 'target.kind' ] && !( set?.target && set.target.kind ) ) {
-      ( update.$set ??= {} )[ 'target.kind' ] = mapped;
-    }
-
-    if ( !set.type && !( update.$set && update.$set.type ) ) {
-      ( update.$set ??= {} ).type = NotificationCatalog.mapTitleToType( set.title as Title );
-    }
-  }
-
-  this.setUpdate( update );
-  return next();
 }
-NotificationSchema.pre( 'findOneAndUpdate', syncOnQueryUpdate );
-NotificationSchema.pre( 'updateOne', syncOnQueryUpdate );
 
-// ── Indexes (fast filters)
-NotificationSchema.index( { title: 1, createdAt: -1 } );
-NotificationSchema.index( { category: 1, type: 1, createdAt: -1 } );
-NotificationSchema.index( { 'audience.mode': 1, createdAt: -1 } );
-NotificationSchema.index( { 'audience.usernames': 1, createdAt: -1 } );
-NotificationSchema.index( { 'audience.roles': 1, createdAt: -1 } );
-NotificationSchema.index( { severity: 1, createdAt: -1 } );
-NotificationSchema.index( { tags: 1, createdAt: -1 } );
-NotificationSchema.index( { 'target.refId': 1, createdAt: -1 } );
+class NotificationAudienceSchemaFactory {
+  private constructor () {}
 
-/* ============================================================================
- * E) Model export
- * ==========================================================================*/
-export const NotificationModel = model<NotificationEntity>( 'Notification', NotificationSchema, 'notifications' );
+  public static build(): Schema<NotificationAudience> {
+    return new Schema<NotificationAudience>(
+      {
+        mode: {
+          type: String,
+          required: true,
+          enum: NotificationCatalog.AUDIENCE_MODE_VALUES,
+          index: true,
+        },
 
-/* ============================================================================
- * F) TODO (re: duplicate "user notification rooms")
- * ==========================================================================*
- * If you see duplicate user-notification rooms in DB:
- * 1) That logic belongs to your separate user-notification model/service.
- * 2) Add a UNIQUE index on the identifying tuple (e.g., { roomType, userId }).
- *    Example: RoomSchema.index({ roomType: 1, userId: 1 }, { unique: true });
- * 3) Use idempotent upsert patterns:
- *    await RoomModel.findOneAndUpdate(filter, {$setOnInsert: payload}, {upsert: true, new: true});
- * This Notification model does NOT create rooms.
- * ==========================================================================*/
+        /**
+         * Optional keys (only one should exist based on mode).
+         * Enforcement belongs to engine validation (NOT DB hooks).
+         */
+        roleKey: { type: String, required: false, trim: true, index: true },
+        teamCode: { type: String, required: false, trim: true, index: true },
+        userId: { type: String, required: false, trim: true, index: true },
+      },
+      { _id: false }
+    );
+  }
+}
+
+class NotificationTargetSchemaFactory {
+  private constructor () {}
+
+  public static build(): Schema<NotificationTarget> {
+    return new Schema<NotificationTarget>(
+      {
+        module: { type: String, required: false, trim: true, index: true },
+        category: { type: String, required: false, trim: true, index: true },
+        refId: { type: String, required: false, trim: true, index: true },
+        route: { type: String, required: false, trim: true },
+        actionKey: { type: String, enum: NOTIFICATION_ACTION_KEYS, required: false, trim: true },
+        params: { type: Schema.Types.Mixed, required: false },
+      },
+      { _id: false }
+    );
+  }
+}
+
+/* =============================================================================
+ * D) Main schema factory (class-based)
+ * ========================================================================== */
+
+class NotificationSchemaFactory {
+  private constructor () {}
+
+  public static build(): Schema<NotificationDoc> {
+    const ActorSchema = NotificationActorSchemaFactory.build();
+    const AudienceSchema = NotificationAudienceSchemaFactory.build();
+    const TargetSchema = NotificationTargetSchemaFactory.build();
+
+    const schema = new Schema<NotificationDoc>(
+      {
+        eventKey: { type: String, required: true, trim: true, index: true },
+
+        category: {
+          type: String,
+          required: true,
+          enum: NotificationCatalog.CATEGORY_VALUES,
+          index: true,
+        },
+
+        severity: {
+          type: String,
+          required: true,
+          enum: NotificationCatalog.SEVERITY_VALUES,
+          index: true,
+          default: "info",
+        },
+
+        title: { type: String, required: true, trim: true },
+        body: { type: String, required: true, trim: true },
+
+        icon: { type: String, required: false, trim: true },
+
+        tags: {
+          type: [ String ],
+          required: false,
+          default: [],
+          index: true,
+
+          // ✅ class-based setter reference (no inline loose function)
+          set: NotificationCatalog.sanitizeTags,
+        },
+
+        target: { type: TargetSchema, required: false },
+
+        actor: { type: ActorSchema, required: true },
+
+        /**
+         * ✅ FIX:
+         * - audiences is an array of embedded audience objects
+         * - required (must exist)
+         * - default [] to prevent null pollution
+         * - validate length >= 1 for safety
+         */
+        audiences: {
+          type: [ AudienceSchema ],
+          required: true,
+          default: [],
+          validate: {
+            validator: NotificationCatalog.hasAtLeastOneAudience,
+            message: "audiences must contain at least one audience entry",
+          },
+        },
+
+        // ✅ class-based default reference (no inline loose function)
+        createdAt: { type: Date, default: NotificationCatalog.now, index: true },
+        expiresAt: { type: Date, required: false, index: true },
+      },
+      { versionKey: false, minimize: true }
+    );
+
+    // Common query accelerators
+    schema.index( { createdAt: -1 } );
+    schema.index( { category: 1, createdAt: -1 } );
+    schema.index( { severity: 1, createdAt: -1 } );
+    schema.index( { eventKey: 1, createdAt: -1 } );
+
+    // ✅ Audience filters (array path)
+    schema.index( { "audiences.mode": 1, createdAt: -1 } );
+    schema.index( { "audiences.roleKey": 1, createdAt: -1 } );
+    schema.index( { "audiences.teamCode": 1, createdAt: -1 } );
+    schema.index( { "audiences.userId": 1, createdAt: -1 } );
+
+    // Actor filters (audit)
+    schema.index( { "actor.userId": 1, createdAt: -1 } );
+    schema.index( { "actor.username": 1, createdAt: -1 } );
+    schema.index( { "actor.role": 1, createdAt: -1 } );
+
+    // Target filters (entity-centric)
+    schema.index( { "target.refId": 1, createdAt: -1 } );
+
+    return schema;
+  }
+}
+
+/* =============================================================================
+ * E) Model export (class-based)
+ * ========================================================================== */
+
+class NotificationModelExport {
+  private constructor () {}
+
+  public static readonly COLLECTION = "notifications";
+
+  public static build(): Model<NotificationDoc> {
+    const schema = NotificationSchemaFactory.build();
+    return model<NotificationDoc>( "Notification", schema, this.COLLECTION );
+  }
+}
+
+export const NotificationModel = NotificationModelExport.build();

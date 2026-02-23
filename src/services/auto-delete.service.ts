@@ -2,13 +2,17 @@
 import fs from 'fs';
 import path from 'path';
 import cron from 'node-cron';
-import {Namespace} from 'socket.io';
-import {UserModel} from '../models/user.model';
-import NotificationService from './notification.service';
+import { Namespace } from 'socket.io';
+import { UserModel } from '../models/user.model';
+import { NotificationHubEngineService } from './notifications/notification-hub-engine.service';
+import { SystemActorFactory } from "../utils/system-actor.factory"; // adjust relative 
+import type { Role } from '../types/roles';
+import type { NotificationAudience } from '../types/notification/notification.types';
 
-const asBool = (v: unknown, def = false) => {
-  if(typeof v === 'string') return ['1', 'true', 'yes', 'on'].includes(v.toLowerCase());
-  if(typeof v === 'boolean') return v;
+
+const asBool = ( v: unknown, def = false ) => {
+  if ( typeof v === 'string' ) return [ '1', 'true', 'yes', 'on' ].includes( v.toLowerCase() );
+  if ( typeof v === 'boolean' ) return v;
   return def;
 };
 
@@ -23,20 +27,20 @@ export class AutoDeleteUserService {
   );
 
   /** Toggle deletion behavior with env. If false, runs dry-run & notifies. */
-  private readonly ENABLED = asBool(process.env.AUTO_DELETE_ENABLED, false);
+  private readonly ENABLED = asBool( process.env.AUTO_DELETE_ENABLED, false );
 
   /** How many days old to be eligible for auto deletion */
-  private readonly AGE_DAYS = Number(process.env.AUTO_DELETE_AGE_DAYS ?? 30);
+  private readonly AGE_DAYS = Number( process.env.AUTO_DELETE_AGE_DAYS ?? 30 );
 
   /** Roles to notify about auto-deletion events */
-  private readonly NOTIFY_ROLES = (process.env.AUTO_DELETE_NOTIFY_ROLES ?? 'admin,operator,manager')
-    .split(',')
-    .map(r => r.trim())
-    .filter(Boolean);
+  private readonly NOTIFY_ROLES = ( process.env.AUTO_DELETE_NOTIFY_ROLES ?? 'admin,operator,manager' )
+    .split( ',' )
+    .map( r => r.trim() )
+    .filter( Boolean );
 
-  private readonly notificationService = new NotificationService();
+  private readonly notificationService: NotificationHubEngineService = new NotificationHubEngineService();
 
-  constructor (private io: Namespace) {
+  constructor ( private io: Namespace ) {
     // Kick off the scheduler when the service is created.
     this.initializeCronJob();
   }
@@ -49,16 +53,16 @@ export class AutoDeleteUserService {
     cron.schedule(
       '0 1 * * *',
       () => {
-        this.performAutoDeletion().catch((err) => {
+        this.performAutoDeletion().catch( ( err ) => {
           const msg = '[AutoDelete:] Unhandled error in performAutoDeletion';
-          console.error(msg, err);
-          this.safeEmit('auto-delete-notify', {
+          console.error( msg, err );
+          this.safeEmit( 'auto-delete-notify', {
             type: 'error',
             message: msg,
-            error: err?.message || String(err),
+            error: err?.message || String( err ),
             date: new Date().toISOString(),
-          });
-        });
+          } );
+        } );
       },
       // { timezone: 'Asia/Colombo' }
     );
@@ -80,33 +84,33 @@ export class AutoDeleteUserService {
    */
   private async performAutoDeletion(): Promise<void> {
     const now = new Date();
-    const cutoff = new Date(now.getTime() - this.AGE_DAYS * 24 * 60 * 60 * 1000);
-    const folderName = this.formatDateFolderName(now);
-    const targetDir = path.join(this.RECYCLE_BASE_PATH, folderName);
+    const cutoff = new Date( now.getTime() - this.AGE_DAYS * 24 * 60 * 60 * 1000 );
+    const folderName = this.formatDateFolderName( now );
+    const targetDir = path.join( this.RECYCLE_BASE_PATH, folderName );
 
     try {
       // Ensure parent folder exists
-      fs.mkdirSync(targetDir, {recursive: true});
+      fs.mkdirSync( targetDir, { recursive: true } );
 
       // Find users that should be auto-deleted
-      const usersToDelete = await UserModel.find({
+      const usersToDelete = await UserModel.find( {
         autoDelete: true,
-        createdAt: {$lte: cutoff},
-      })
+        createdAt: { $lte: cutoff },
+      } )
         .lean()
         .exec();
 
       // If no users to delete, notify and exit
-      if(!usersToDelete.length) {
+      if ( !usersToDelete.length ) {
         const infoMsg = '[AutoDelete:] No users to delete today.';
         console.log( infoMsg, '\n' );
-        this.safeEmit('auto-delete-notify', {
+        this.safeEmit( 'auto-delete-notify', {
           type: 'info',
           message: infoMsg,
           date: now.toISOString(),
-        });
+        } );
 
-        await this.notifyAdmins({
+        await this.notifyAdmins( {
           runMode: 'dry-run', // nothing to delete anyway
           cutoffISO: cutoff.toISOString(),
           deletedCount: 0,
@@ -114,14 +118,14 @@ export class AutoDeleteUserService {
           backupPath: null,
           recycleFolder: folderName,
           when: now.toISOString(),
-        });
+        } );
 
         return;
       }
 
       // Backup user data as JSON before deletion (kept even in dry-run)
-      const backupFilePath = path.join(targetDir, 'users.json');
-      fs.writeFileSync(backupFilePath, JSON.stringify(usersToDelete, null, 2), 'utf-8');
+      const backupFilePath = path.join( targetDir, 'users.json' );
+      fs.writeFileSync( backupFilePath, JSON.stringify( usersToDelete, null, 2 ), 'utf-8' );
 
       // Keep this false in non-prod to avoid any real deletions.
       // In production, you can either:
@@ -131,7 +135,7 @@ export class AutoDeleteUserService {
 
       let deletedCount = 0;
 
-      if(deletionActive) {
+      if ( deletionActive ) {
         /* ───────────────────────────────────────────────────────────────
          *  PROD-ONLY: UNCOMMENT TO ENABLE ACTUAL DELETION
          * ───────────────────────────────────────────────────────────────
@@ -158,41 +162,41 @@ export class AutoDeleteUserService {
         // Dry-run
         const dryMsg =
           `[AutoDelete:] Dry-run: would delete ${ usersToDelete.length } user(s). ` +
-          `Backup preview saved to: ${backupFilePath}. Cutoff: ${cutoff.toISOString()}`;
+          `Backup preview saved to: ${ backupFilePath }. Cutoff: ${ cutoff.toISOString() }`;
         console.log( dryMsg, '\n' );
 
-        this.safeEmit('auto-delete-notify', {
+        this.safeEmit( 'auto-delete-notify', {
           type: 'info',
           message: dryMsg,
           wouldDeleteCount: usersToDelete.length,
           backupPath: backupFilePath,
           date: now.toISOString(),
-        });
+        } );
       }
 
       // Notify admins/operators with full metadata
-      await this.notifyAdmins({
+      await this.notifyAdmins( {
         runMode: deletionActive ? 'delete' : 'dry-run',
         cutoffISO: cutoff.toISOString(),
         deletedCount: deletionActive ? deletedCount : 0,
-        deletedUsers: this.packUsersForMeta(usersToDelete), // safe mapper (no undefineds)
+        deletedUsers: this.packUsersForMeta( usersToDelete ), // safe mapper (no undefineds)
         backupPath: backupFilePath,
         recycleFolder: folderName,
         when: now.toISOString(),
-      });
-    } catch(error: any) {
+      } );
+    } catch ( error: any ) {
       const errMsg = '[AutoDelete:] Error during deletion.';
       console.error( errMsg, error, '\n' );
 
-      this.safeEmit('auto-delete-notify', {
+      this.safeEmit( 'auto-delete-notify', {
         type: 'error',
         message: errMsg,
-        error: error?.message || String(error),
+        error: error?.message || String( error ),
         date: now.toISOString(),
-      });
+      } );
 
       // Also notify admins about the failure (as a notification)
-      await this.notifyAdmins({
+      await this.notifyAdmins( {
         runMode: 'dry-run',
         cutoffISO: cutoff.toISOString(),
         deletedCount: 0,
@@ -200,14 +204,14 @@ export class AutoDeleteUserService {
         backupPath: null,
         recycleFolder: folderName,
         when: now.toISOString(),
-        error: error?.message || String(error),
-      });
+        error: error?.message || String( error ),
+      } );
     }
   }
 
 
   /** Reduce user docs to lightweight, useful metadata for Notifications. */
-  private packUsersForMeta(users: any[]) {
+  private packUsersForMeta( users: any[] ) {
     type MetaUser = {
       _id: string;
       username?: string;
@@ -218,24 +222,24 @@ export class AutoDeleteUserService {
       autoDelete?: boolean;
     };
 
-    return users.map((u): MetaUser => {
-      const m: MetaUser = {_id: String(u._id)};
+    return users.map( ( u ): MetaUser => {
+      const m: MetaUser = { _id: String( u._id ) };
 
-      if(typeof u.username === 'string' && u.username) m.username = u.username;
-      if(typeof u.email === 'string' && u.email) m.email = u.email;
-      if(typeof u.role === 'string' && u.role) m.role = u.role;
-      if(typeof u.isActive === 'boolean') m.isActive = u.isActive;
+      if ( typeof u.username === 'string' && u.username ) m.username = u.username;
+      if ( typeof u.email === 'string' && u.email ) m.email = u.email;
+      if ( typeof u.role === 'string' && u.role ) m.role = u.role;
+      if ( typeof u.isActive === 'boolean' ) m.isActive = u.isActive;
 
       // Only set createdAt if we have a valid date; otherwise omit the property entirely
-      if(u.createdAt) {
-        const d = new Date(u.createdAt);
-        if(!Number.isNaN(d.getTime())) m.createdAt = d.toISOString();
+      if ( u.createdAt ) {
+        const d = new Date( u.createdAt );
+        if ( !Number.isNaN( d.getTime() ) ) m.createdAt = d.toISOString();
       }
 
-      if(u.autoDelete != null) m.autoDelete = !!u.autoDelete;
+      if ( u.autoDelete != null ) m.autoDelete = !!u.autoDelete;
 
       return m;
-    });
+    } );
   }
 
 
@@ -243,7 +247,7 @@ export class AutoDeleteUserService {
    * Create an in-app notification to admins/operators with a rich metadata payload.
    * Uses NotificationService.createNotification and emits via Socket.IO rooms.
    */
-  private async notifyAdmins(meta: {
+  private async notifyAdmins( meta: {
     runMode: 'delete' | 'dry-run';
     cutoffISO: string;
     deletedCount: number;
@@ -260,32 +264,32 @@ export class AutoDeleteUserService {
     recycleFolder: string;
     when: string;
     error?: string;
-  }) {
+  } ) {
     const title = meta.error
-      ? ('Auto Delete Users Failed' as const)
-      : (meta.runMode === 'delete'
-        ? ('Users Auto-Deleted' as const)
-        : ('Users Auto-Delete Dry-Run' as const));
+      ? ( 'Auto Delete Users Failed' as const )
+      : ( meta.runMode === 'delete'
+        ? ( 'Users Auto-Deleted' as const )
+        : ( 'Users Auto-Delete Dry-Run' as const ) );
 
     const body = meta.error
       ? `Auto delete process failed. Check server logs.`
       : meta.runMode === 'delete'
-        ? `Deleted ${meta.deletedCount} user(s).`
-        : `Dry-run: would delete ${meta.deletedUsers.length} user(s).`;
+        ? `Deleted ${ meta.deletedCount } user(s).`
+        : `Dry-run: would delete ${ meta.deletedUsers.length } user(s).`;
 
     // Build notification doc
     const doc = {
       title,
       body,
-      type: meta.error ? ('error' as const) : ('maintenance' as const),
-      severity: meta.error ? ('error' as const) : ('info' as const),
+      type: meta.error ? ( 'error' as const ) : ( 'maintenance' as const ),
+      severity: meta.error ? ( 'error' as const ) : ( 'info' as const ),
       audience: {
         mode: 'role' as const,
         roles: this.NOTIFY_ROLES as Array<
           'admin' | 'agent' | 'tenant' | 'owner' | 'operator' | 'manager' | 'developer' | 'user'
         >,
       },
-      channels: ['inapp'] as const, // add 'email' later if you also want email delivery
+      channels: [ 'inapp' ] as const, // add 'email' later if you also want email delivery
       metadata: {
         runMode: meta.runMode,
         cutoffISO: meta.cutoffISO,
@@ -297,24 +301,63 @@ export class AutoDeleteUserService {
         error: meta.error,
       },
       source: 'auto-delete-service',
-      tags: ['system', 'auto-delete'],
+      tags: [ 'system', 'auto-delete' ],
     } as const;
 
-    // Send + emit
-    await this.notificationService.createNotification(
-      doc as any,
-      (rooms, payload) => {
-        // rooms is string[] like ['role:admin', 'role:operator']
-        rooms.forEach((room) => this.io.to(room).emit('notification.new', payload));
+    const actor = SystemActorFactory.build( {
+      source: "auto-delete-users",
+      label: "Auto Delete Service",
+      role: "system",
+    } );
+
+    await this.notificationService.emit(
+      {
+        eventKey: meta.error ? "user:auto_delete.failed" : "user:auto_delete.executed",
+        actor,
+        audiences: [
+          ...this.createAudienceRoles( this.NOTIFY_ROLES as Role[] ),
+        ],
+        category: "System",
+        severity: meta.error ? "error" : "info",
+        tags: [ "system", "auto-delete" ],
+        target: {
+          module: "UserManagement",
+          category: "autoDelete",
+          refId: "system:auto-delete-users",
+          actionKey: "system:auto.deleted", // or your actionKey mapping if you have one
+          params: {
+            runMode: meta.runMode,
+            cutoffISO: meta.cutoffISO,
+            deletedCount: meta.deletedCount,
+            recycleFolder: meta.recycleFolder,
+            executedAt: meta.when,
+            ...( meta.backupPath ? { backupPath: meta.backupPath } : {} ),
+            ...( meta.error ? { error: meta.error } : {} ),
+          },
+        },
       }
+
+      // Send + emit
     );
   }
 
+  private createAudienceRoles( roles: Role[] ): NotificationAudience[] {
+    const result: NotificationAudience[] = [];
+
+    for ( const role of roles ) {
+      result.push( {
+        mode: 'Role',
+        roleKey: role,
+      } );
+    }
+
+    return result;
+  }
   /**
    * Format folder name like "1st of July 2025"
    * Uses a type-safe ordinal generator (no out-of-range array indexing).
    */
-  private formatDateFolderName(date: Date): string {
+  private formatDateFolderName( date: Date ): string {
     const day = date.getDate();
     const monthNames = [
       'January',
@@ -330,38 +373,38 @@ export class AutoDeleteUserService {
       'November',
       'December',
     ] as const;
-    const month = monthNames[date.getMonth()];
+    const month = monthNames[ date.getMonth() ];
     const year = date.getFullYear();
 
-    return `${this.getOrdinal(day)} of ${month} ${year}`;
+    return `${ this.getOrdinal( day ) } of ${ month } ${ year }`;
   }
 
   /**
    * Return day-of-month with ordinal: 1 -> "1st", 2 -> "2nd", 3 -> "3rd", else "th".
    * This avoids any possibly-undefined array indexing.
    */
-  private getOrdinal(n: number): string {
+  private getOrdinal( n: number ): string {
     const v = n % 100;
-    if(v > 10 && v < 20) return `${n}th`; // 11th, 12th, 13th, ...
-    switch(n % 10) {
+    if ( v > 10 && v < 20 ) return `${ n }th`; // 11th, 12th, 13th, ...
+    switch ( n % 10 ) {
       case 1:
-        return `${n}st`;
+        return `${ n }st`;
       case 2:
-        return `${n}nd`;
+        return `${ n }nd`;
       case 3:
-        return `${n}rd`;
+        return `${ n }rd`;
       default:
-        return `${n}th`;
+        return `${ n }th`;
     }
   }
 
   /**
    * Emit safely to the socket namespace; guards against runtime issues.
    */
-  private safeEmit(event: string, payload: unknown): void {
+  private safeEmit( event: string, payload: unknown ): void {
     try {
-      this.io.emit(event, payload as any);
-    } catch(e) {
+      this.io.emit( event, payload as any );
+    } catch ( e ) {
       console.error( '[AutoDelete:] Socket emit failed:', e, '\n' );
     }
   }

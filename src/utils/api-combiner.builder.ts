@@ -17,10 +17,14 @@ import type { Response } from 'express';
 import type {
     ApiData,
     SystemData,
-    PaginationMeta,
-    ValidationUnit,
+
     ApiStatus,
 } from '../types/api-message';
+
+import {
+    PaginationMeta,
+    ValidationUnit,
+} from '../types/common';
 
 import { ApiDataBuilder } from './api-data.builder';
 import { BaseResponseBuilder } from './api-response.builder';

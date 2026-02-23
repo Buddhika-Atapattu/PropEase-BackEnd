@@ -39,7 +39,7 @@ import {
   CommentAudienceValues,
 } from "../../../types/comment.types";
 
-import type { PaginationMeta } from "../../../types/api-message";
+import type { AuthUser, PaginationMeta } from "../../../types/common";
 import { ApiResponseBuilder } from "../../../utils/api-combiner.builder";
 
 import { CommentEngineRestService } from "../../../services/comments/comment-engine.rest.service";
@@ -48,15 +48,13 @@ import { CommentEngineService } from "../../../services/comments/comment-engine.
 import { CommentModel } from "../../../models/comments/comments.model";
 import { CommentTargetRuntimeRegistry } from "./comment-target-runtime.registry";
 
-import FileUploader from "../../../utils/file-uploader.helper";
+import FileUploader from "../../../utils/files/file-uploader.helper";
 import { ApiGuardExport } from "../../../guard/api-router.guard";
 
-import { NotificationPolicySource } from '../../../source/notifications/notification-policy.source';
-import { NotificationBuilderSource } from '../../../source/notifications/notification-builder.source';
-
-import NotificationService from "../../../services/notification.service";
+import { NotificationHubEngineService } from "../../../services/notifications/notification-hub-engine.service";
 import type { Role } from "../../../types/roles";
 import { DEFAULT_ROLES } from "../../../models/user.model";
+import type { NotificationActorDto } from "../../../types/notification/notification.types";
 
 type MulterFilesMap = Record<string, Express.Multer.File[]>;
 
@@ -66,6 +64,7 @@ export class CommentsEngineRouter {
   private readonly service: CommentEngineService;
   private readonly rest: CommentEngineRestService;
   private readonly targetRegistry: CommentTargetRuntimeRegistry;
+  private readonly notificationHub: NotificationHubEngineService;
 
   private static readonly DEFAULT_LIMIT = 20;
   private static readonly MAX_LIMIT = 200;
@@ -90,6 +89,8 @@ export class CommentsEngineRouter {
 
   public constructor () {
     this.router = express.Router();
+
+    this.notificationHub = new NotificationHubEngineService();
 
     this.service = new CommentEngineService( CommentModel, {
       cleanupLocalFilesOnDelete: false,
@@ -395,6 +396,12 @@ export class CommentsEngineRouter {
 
       async ( req: Request, res: Response ): Promise<void> => {
         try {
+          const actor: NotificationActorDto | null = await this.getAuth( req );
+          if ( !actor ) {
+            ApiResponseBuilder.conflict( res, 'invalid auth user!' );
+            return;
+          }
+
           const commentId = this.getReqCommentId( req );
           if ( !commentId ) {
             throw new Error( "commentId missing in request context." );
@@ -430,22 +437,37 @@ export class CommentsEngineRouter {
 
           await this.cleanupTmpDirSafe( req );
 
-          // ✅ Build notification via builder (no undefined optional props)
-          const notifyDto = NotificationBuilderSource.commentCreated( {
-            commentId: created.commentId,
-            audience: NotificationBuilderSource.audienceRole( [ "admin", "operator", "manager" ] ),
+          this.notificationHub.emit( {
+            eventKey: 'comment:create',
+            actor,
+            audiences: [
+              {
+                mode: 'User',
+                userId: actor.userId,
+              },
+              {
+                mode: 'Role',
+                roleKey: 'admin'
+              },
+              {
+                mode: 'Role',
+                roleKey: 'operator'
+              },
+              {
+                mode: 'Role',
+                roleKey: 'manager'
+              },
+            ],
+            category: 'Comment',
             target: {
-              section: String( created.commentTarget.section ),
-              refId: String( created.commentTarget.refId ),
-              ...( created.commentTarget.subSection ? { subSection: String( created.commentTarget.subSection ) } : {} ),
-              ...( created.commentTarget.scope ? { scope: created.commentTarget.scope } : {} ),
-            },
-            createdBy: String( ( created as any )?.byUserId ?? "" ),
-            channels: [ "inapp", "email" ], // optional; safe
+              actionKey: 'comment:added',
+              category: 'Comment',
+              refId: commentId,
+              module: 'Comment Module'
+            }
           } );
+          // ✅ Build notification via builder (no undefined optional props)
 
-          // Emit + persist (service stays the single persistence API)
-          await this.emitNotificationFromReq( req, notifyDto );
 
           ApiResponseBuilder.ok( res, "comment", created, "Comment added." );
 
@@ -472,6 +494,12 @@ export class CommentsEngineRouter {
       "/edit/:id",
       async ( req: Request, res: Response ): Promise<void> => {
         try {
+          const actor: NotificationActorDto | null = await this.getAuth( req );
+          if ( !actor ) {
+            ApiResponseBuilder.conflict( res, 'invalid auth user!' );
+            return;
+          }
+
           const id = String( req.params.id ?? "" ).trim();
 
           if ( !id ) {
@@ -536,24 +564,35 @@ export class CommentsEngineRouter {
 
 
           if ( comment ) {
-            const notifyDto = NotificationBuilderSource.commentUpdated( {
-              commentId: String( comment.commentId ),
-              audience: NotificationBuilderSource.audienceRole( [ "admin", "operator", "manager" ] ),
+            this.notificationHub.emit( {
+              eventKey: 'comment:edited',
+              actor,
+              audiences: [
+                {
+                  mode: 'User',
+                  userId: actor.userId,
+                },
+                {
+                  mode: 'Role',
+                  roleKey: 'admin'
+                },
+                {
+                  mode: 'Role',
+                  roleKey: 'operator'
+                },
+                {
+                  mode: 'Role',
+                  roleKey: 'manager'
+                },
+              ],
+              category: 'Comment',
               target: {
-                section: String( ( comment as any ).commentTarget?.section ?? "" ),
-                refId: String( ( comment as any ).commentTarget?.refId ?? "" ),
-                ...( ( comment as any ).commentTarget?.subSection
-                  ? { subSection: String( ( comment as any ).commentTarget.subSection ) }
-                  : {} ),
-                ...( ( comment as any ).commentTarget?.scope
-                  ? { scope: ( comment as any ).commentTarget.scope }
-                  : {} ),
-              },
-              updatedBy: String( ( comment as any )?.byUserId ?? "" ),
-              channels: [ "inapp", "email" ],
+                actionKey: 'comment:edited',
+                category: 'Comment',
+                refId: comment.commentId,
+                module: 'Comment Module'
+              }
             } );
-
-            await this.emitNotificationFromReq( req, notifyDto );
           }
 
 
@@ -584,6 +623,12 @@ export class CommentsEngineRouter {
     // ─────────────────────────────────────────────────────────────────────────
     this.router.delete( "/delete/:id", async ( req: Request, res: Response ): Promise<void> => {
       try {
+        const actor: NotificationActorDto | null = await this.getAuth( req );
+        if ( !actor ) {
+          ApiResponseBuilder.conflict( res, 'invalid auth user!' );
+          return;
+        }
+
         const id = String( req.params.id ?? "" ).trim();
         if ( !id ) {
           ApiResponseBuilder.validationError( res, "id is required." );
@@ -644,26 +689,35 @@ export class CommentsEngineRouter {
         // Build a correct filesRoot from the uploaded relative paths
         const filesRoot = this.resolveCommentFilesRootFromMoveList( moveList, comment.commentId );
 
-        const notifyDto = NotificationBuilderSource.commentDeleted( {
-          commentId: comment.commentId,
-          audience: NotificationBuilderSource.audienceRole( DEFAULT_ROLES ),
+        this.notificationHub.emit( {
+          eventKey: 'comment:deleted',
+          actor,
+          audiences: [
+            {
+              mode: 'User',
+              userId: actor.userId,
+            },
+            {
+              mode: 'Role',
+              roleKey: 'admin'
+            },
+            {
+              mode: 'Role',
+              roleKey: 'operator'
+            },
+            {
+              mode: 'Role',
+              roleKey: 'manager'
+            },
+          ],
+          category: 'Comment',
           target: {
-            section: String( ( comment as any ).commentTarget?.section ?? "" ),
-            refId: String( ( comment as any ).commentTarget?.refId ?? "" ),
-            ...( ( comment as any ).commentTarget?.subSection
-              ? { subSection: String( ( comment as any ).commentTarget.subSection ) }
-              : {} ),
-            ...( ( comment as any ).commentTarget?.scope
-              ? { scope: ( comment as any ).commentTarget.scope }
-              : {} ),
-          },
-          snapshot: comment as unknown as Record<string, unknown>,
-          filesRoot, // ✅ must be "uploads/...." folder root
-          deletedBy: String( ( comment as any )?.byUserId ?? "" ),
-          channels: [ "inapp", "email" ],
+            actionKey: 'comment:deleted',
+            category: 'Comment',
+            refId: comment.commentId,
+            module: 'Comment Module'
+          }
         } );
-
-        await this.emitNotificationFromReq( req, notifyDto );
 
 
         ApiResponseBuilder.ok(
@@ -1334,6 +1388,11 @@ export class CommentsEngineRouter {
     return newId;
   }
 
+  private async getAuth( req: Request ): Promise<NotificationActorDto | null> {
+    const authUser: NotificationActorDto | null = await ApiGuardExport.GetNormalisedAuthUser( req );
+    return authUser;
+  }
+
   // =============================================================================
   // Notifications (minimal + safe)
   // =============================================================================
@@ -1343,22 +1402,7 @@ export class CommentsEngineRouter {
    * - Keeps NotificationService unchanged.
    * - Avoids duplicating io.emit logic at every endpoint.
    */
-  private async emitNotificationFromReq(
-    req: Request,
-    dto: import( "../../../services/notification.service" ).CreateNotificationDTO,
-  ): Promise<void> {
-    const io = req.app.get( "io" ) as import( "socket.io" ).Server | undefined;
-    if ( !io ) return;
 
-    const notificationService = new NotificationService();
-
-    await notificationService.createNotification(
-      dto,
-      ( rooms, payload ) => {
-        rooms.forEach( ( r ) => io.to( r ).emit( "notification.new", payload ) );
-      },
-    );
-  }
 
   /**
    * Comment media root resolver for delete notifications.

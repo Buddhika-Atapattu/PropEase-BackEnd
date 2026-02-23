@@ -225,6 +225,7 @@ export class SocketAuthHelper {
    */
   private static toAuthUser( payload: JwtPayload ): AuthUser {
     const base: AuthUser = {
+      name: payload.name ?? payload.username, // Support both "name" and "username" claims
       username: payload.username,
       role: payload.role,
       userId: payload.userId,

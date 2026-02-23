@@ -40,7 +40,7 @@ import {
   TrackingLoggedUserModel,
 } from "../models/tracking.model";
 import { USER_MODEL_PROJECTION, UserModel, type User } from "../models/user.model";
-import { type DateRange, type PaginationMeta } from "../types/api-message";
+import { type DateRange, type PaginationMeta } from "../types/common";
 import { ApiResponseBuilder } from "../utils/api-combiner.builder";
 
 

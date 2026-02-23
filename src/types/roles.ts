@@ -1,5 +1,8 @@
 // src/types/roles.ts
-import { Role as UserRoles } from "../models/user.model";
+import { Role as UserRoles, DEFAULT_ROLES } from "../models/user.model";
+
+
+export const ROLE_VALUES: Role[] = DEFAULT_ROLES
 
 /**
  * All possible user roles in the system.

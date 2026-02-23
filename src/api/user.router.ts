@@ -14,6 +14,14 @@ import express, { Request, Response, Router } from "express";
 import fse from "fs-extra";
 import nodemailer from "nodemailer";
 import path from "path";
+import fsp from "fs/promises";
+import fs from "fs";
+import { Types, startSession, type ClientSession } from "mongoose";
+
+import { ApiGuardExport } from "../guard/api-router.guard";
+
+import type { AuthUser } from "../types/common";
+import type { FileMetaPacket } from "../types/common";
 import twilio, { Twilio } from "twilio";
 
 import { Config } from "../configs/config";
@@ -28,13 +36,29 @@ import { TokenMap } from "../models/token.model";
 import { USER_MODEL_PROJECTION, UserModel, type IUser, type User } from "../models/user.model";
 
 import { GuardTokenService } from "../services/guard-token.service";
-import NotificationService from "../services/notification.service";
 
-import type { PaginationMeta } from "../types/api-message";
+import type { PaginationMeta } from "../types/common";
 import { ApiResponseBuilder } from "../utils/api-combiner.builder";
-import FileUploader from "../utils/file-uploader.helper";
+import FileUploader from "../utils/files/file-uploader.helper";
+
+import { type DomainDeletePlan, RecycleBinDomainDeleteService } from '../services/recyclebin/recyclebin-domain-delete.service';
+
+import { FileMetaPacketBuilder } from '../utils/files/file-meta-packet.builder';
+import { NotificationHubEngineService } from '../services/notifications/notification-hub-engine.service';
+import type { NotificationActorDto } from "../types/notification/notification.types";
+
+
+
+
+
 
 export default class UserRoute {
+  // Notification hub
+  private readonly notificationHub: NotificationHubEngineService = new NotificationHubEngineService();
+
+  //Recyclebin
+  private readonly deleteSvc = new RecycleBinDomainDeleteService();
+
   // Guard service:
   private readonly guardTokenService: GuardTokenService = new GuardTokenService();
 
@@ -51,6 +75,8 @@ export default class UserRoute {
   );
   private readonly DEFAULT_URL: string = "uploads/users";
   private readonly RECYCLE_URL: string = "recyclebin/users";
+
+  private readonly USERS_UPLOAD_ROOT_REL = "uploads/users";
 
   private readonly router: Router;
   private readonly twilioClient: Twilio = twilio(
@@ -105,11 +131,6 @@ export default class UserRoute {
   /** Hash password with Argon2 (strong default params). */
   private async hashPassword( password: string ): Promise<string> {
     return Argon2.hash( password );
-  }
-
-  /** Guard for safe single path segments (avoid traversal/odd chars). */
-  private isSafeSegment( seg: string ): boolean {
-    return /^[A-Za-z0-9._-]+$/.test( seg );
   }
 
   /** Parse JSON safely with fallback – supports strings or plain objects. */
@@ -267,6 +288,146 @@ export default class UserRoute {
   }
 
 
+  // ===========================================================================
+  // Helpers (class-based only)
+  // ===========================================================================
+
+  private async getActor( req: Request ): Promise<AuthUser> {
+    const actor = await ApiGuardExport.GetAuthUser( req );
+    if ( !actor ) throw new Error( "Unauthorized: actor missing" );
+    return actor;
+  }
+
+  private safeStr( v: unknown ): string {
+    if ( typeof v === "string" ) return v.trim();
+    if ( Array.isArray( v ) && typeof v[ 0 ] === "string" ) return v[ 0 ].trim();
+    if ( typeof v === "number" ) return String( v );
+    return "";
+  }
+
+  private isSafeSegment( seg: string ): boolean {
+    // allow: letters, numbers, dash, underscore, dot
+    return /^[a-zA-Z0-9._-]+$/.test( seg );
+  }
+
+  /**
+   * Build FileMetaPacket[] for all user-owned files.
+   * Engine will use absDiskPath as the source and move into recyclebin.
+   */
+  private async collectUserFiles( username: string ): Promise<FileMetaPacket[]> {
+    const files: FileMetaPacket[] = [];
+
+    // -------------------------------------------------------------
+    // A) User image
+    // public/uploads/users/<username>/image.webp
+    // -------------------------------------------------------------
+    const imageRel = path.posix.join( this.USERS_UPLOAD_ROOT_REL, this.encodePosix( username ), "image.webp" );
+    const imageAbs = path.resolve( imageRel );
+
+    const imgPacket = await this.tryBuildFilePacket( imageRel, imageAbs, "image", "image.webp" );
+    if ( imgPacket ) files.push( imgPacket );
+
+    // -------------------------------------------------------------
+    // B) Documents folder
+    // public/uploads/users/<username>/documents/*
+    // -------------------------------------------------------------
+    const docsDirRel = path.posix.join( this.USERS_UPLOAD_ROOT_REL, this.encodePosix( username ), "documents" );
+    const docsDirAbs = path.resolve( docsDirRel );
+
+    const docPackets = await this.tryReadDirPackets( docsDirRel, docsDirAbs, "documents" );
+    files.push( ...docPackets );
+
+    return files;
+  }
+
+  private encodePosix( seg: string ): string {
+    // keep it stable for paths (no slashes)
+    return seg.replace( /\\/g, "_" ).replace( /\//g, "_" );
+  }
+
+  /**
+   * Build one FileMetaPacket for a single file if it exists.
+   * - This packet is "original location" packet (before engine moves it).
+   */
+  private async tryBuildFilePacket(
+    relativePath: string,
+    absDiskPath: string,
+    fieldName: string,
+    originalName: string
+  ): Promise<FileMetaPacket | null> {
+    if ( !absDiskPath || !fs.existsSync( absDiskPath ) ) return null;
+
+    const stat = await fsp.stat( absDiskPath ).catch( () => null );
+    if ( !stat || !stat.isFile() ) return null;
+
+    const ext = path.extname( originalName ).replace( ".", "" ).toLowerCase();
+    const mimeType = this.guessMimeType( ext );
+
+    // publicUrl is a URL; disk paths remain "public/..."
+    const publicUrl = this.buildPublicUrl( relativePath );
+
+    const packet: FileMetaPacket = {
+      originalName,
+      storedName: path.basename( absDiskPath ),
+
+      extension: ext || "bin",
+      mimeType,
+      sizeBytes: stat.size,
+
+      relativePath,
+      publicUrl,
+      absDiskPath,
+
+      fieldName,
+      uploadedAtIso: stat.mtime.toISOString(),
+    };
+
+    return packet;
+  }
+
+  /**
+   * Scan a directory and build FileMetaPacket[] for all files inside.
+   */
+  private async tryReadDirPackets(
+    dirRel: string,
+    dirAbs: string,
+    fieldName: string
+  ): Promise<FileMetaPacket[]> {
+    if ( !dirAbs || !fs.existsSync( dirAbs ) ) return [];
+
+    const items = await fsp.readdir( dirAbs ).catch( () => [] );
+    const out: FileMetaPacket[] = [];
+
+    for ( const fileName of items ) {
+      const abs = path.join( dirAbs, fileName );
+      const rel = path.posix.join( dirRel, fileName );
+
+      const packet = await this.tryBuildFilePacket( rel, abs, fieldName, fileName );
+      if ( packet ) out.push( packet );
+    }
+
+    return out;
+  }
+
+  private buildPublicUrl( relativePath: string ): string {
+    const normalized = relativePath.replace( /\\/g, "/" );
+    // if you serve /public as static root, url becomes /public/...
+    if ( normalized.startsWith( "public/" ) ) return "/" + normalized;
+    return "/public/" + normalized.replace( /^\/+/, "" );
+  }
+
+  private guessMimeType( ext: string ): string {
+    // keep it simple; extend if you want
+    if ( ext === "webp" ) return "image/webp";
+    if ( ext === "png" ) return "image/png";
+    if ( ext === "jpg" || ext === "jpeg" ) return "image/jpeg";
+    if ( ext === "pdf" ) return "application/pdf";
+    if ( ext === "docx" ) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    if ( ext === "xlsx" ) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    return "application/octet-stream";
+  }
+
+
   // ==========================================================
   // Create user (image upload → webp, email verify, OTP fields)
   // ==========================================================
@@ -292,6 +453,11 @@ export default class UserRoute {
       upload.fields( [ { name: "userimage", maxCount: 1 } ] ),
       async ( req: Request, res: Response ): Promise<void> => {
         try {
+          const actor: AuthUser | null = await ApiGuardExport.GetAuthUser( req );
+          if ( !actor ) {
+            ApiResponseBuilder.conflict( res, 'Auth user is invalid!' );
+            return;
+          }
           const files = req.files as Record<
             string,
             Express.Multer.File[] | undefined
@@ -489,38 +655,63 @@ export default class UserRoute {
 
           await newUserDoc.save();
 
-          // Broadcast to back-office roles (best-effort)
-          const notificationService = new NotificationService();
-          const io = req.app.get( "io" ) as import( "socket.io" ).Server;
+          const notificationActor: NotificationActorDto = {
+            userId: String( actor.userId ),
+            username: String( actor.username ),
+            role: actor.role,
+            branchId: actor.branchId ?? '',
+            teamCodes: actor.teamCodes ?? [],
+          };
 
-          await notificationService.createNotification(
-            {
-              title: "New User",
-              body: `User ${ newUserDoc.name || newUserDoc.username } has registered.`,
-              type: "create",
-              severity: "info",
-              audience: {
-                mode: "role",
-                roles: [ "admin", "manager", "operator" ],
-              },
-              channels: [ "inapp", "email" ],
-              metadata: {
-                refId: newUserDoc.username,
-                data: {
-                  email: newUserDoc.email,
-                  role: newUserDoc.role,
-                  createdAt: newUserDoc.createdAt,
-                  creator: newUserDoc.creator,
-                },
-              },
-            },
-            ( rooms, payload ) =>
-              rooms.forEach( ( room ) =>
-                io.to( room ).emit( "notification.new", payload )
-              )
-          );
+
+
+          // Broadcast to back-office roles (best-effort)
+
 
           const safeUser: User = newUserDoc.toSafeDTO();
+
+          this.notificationHub.emit( {
+            eventKey: 'user:account:created',
+            actor: notificationActor,
+            audiences: [
+              {
+                mode: 'User',
+                userId: safeUser.username
+              },
+              {
+                mode: 'Role',
+                roleKey: 'admin'
+              },
+              {
+                mode: 'Role',
+                roleKey: 'manager'
+              },
+              {
+                mode: 'Role',
+                roleKey: 'operator'
+              },
+            ],
+            tags: [
+              'user',
+              'newuser'
+            ],
+            target: {
+              category: 'User',
+              module: 'User',
+              refId: safeUser.username ?? safeUser._id,
+              actionKey: 'user:account.created',
+              params: { username: safeUser.username }
+            },
+            delivery: {
+              audit: true,
+              mq: true,
+              email: true,
+              sms: false,
+              push: false,
+              external: false,
+            },
+            category: 'User',
+          } );
 
           ApiResponseBuilder.ok(
             res,
@@ -565,6 +756,11 @@ export default class UserRoute {
         res: Response
       ): Promise<void> => {
         try {
+          const author: AuthUser | null = await ApiGuardExport.GetAuthUser( req );
+          if ( !author ) {
+            ApiResponseBuilder.conflict( res, 'Invalid author!' );
+            return;
+          }
           const username = String( req.params.username || "" ).trim();
           if ( !username || !this.isSafeSegment( username ) ) {
             ApiResponseBuilder.validationError( res, "Invalid username" );
@@ -751,41 +947,60 @@ export default class UserRoute {
             return;
           }
 
-          // Notify back-office (best-effort)
-          const notificationService = new NotificationService();
-          const io = req.app.get( "io" ) as import( "socket.io" ).Server;
 
-          await notificationService.createNotification(
-            {
-              title: "Update User",
-              body: `User ${ updatedUserDoc.name || updatedUserDoc.username } has been updated.`,
-              type: "update",
-              severity: "info",
-              audience: {
-                mode: "role",
-                roles: [ "admin", "manager", "operator" ],
-              },
-              channels: [ "inapp", "email" ],
-              metadata: {
-                refId: updatedUserDoc.username,
-                data: {
-                  email: updatedUserDoc.email,
-                  role: updatedUserDoc.role,
-                  updatedAt: new Date(),
-                  updatedBy:
-                    ( typeof body.updator === "string"
-                      ? body.updator.trim()
-                      : undefined ) || "system",
-                },
-              },
-            },
-            ( rooms, payload ) =>
-              rooms.forEach( ( room ) =>
-                io.to( room ).emit( "notification.new", payload )
-              )
-          );
 
           const safeUser: User = updatedUserDoc.toSafeDTO();
+
+          const notificationActor: NotificationActorDto = {
+            role: author.role,
+            userId: String( author.userId ),
+            username: author.username,
+            branchId: author.branchId ?? '',
+            teamCodes: author.teamCodes ?? [],
+          };
+
+          this.notificationHub.emit( {
+            eventKey: 'user:account.updated',
+            actor: notificationActor,
+            audiences: [
+              {
+                mode: 'User',
+                userId: safeUser.username
+              },
+              {
+                mode: 'Role',
+                roleKey: 'admin'
+              },
+              {
+                mode: 'Role',
+                roleKey: 'manager'
+              },
+              {
+                mode: 'Role',
+                roleKey: 'operator'
+              },
+            ],
+            tags: [
+              'user',
+              'updateuser'
+            ],
+            target: {
+              category: 'User',
+              module: 'User',
+              refId: safeUser.username ?? safeUser._id,
+              actionKey: 'user:account.updated',
+              params: { username: safeUser.username }
+            },
+            delivery: {
+              audit: true,
+              mq: true,
+              email: true,
+              sms: false,
+              push: false,
+              external: false,
+            },
+            category: 'User',
+          } );
 
           ApiResponseBuilder.ok(
             res,
@@ -1662,167 +1877,170 @@ export default class UserRoute {
 
   private deleteUserByUsername(): void {
     this.router.delete(
-      "/user-delete/:username/:deletedBy",
-      async (
-        req: Request<{ username: string; deletedBy: string; }>,
-        res: Response
-      ): Promise<void> => {
+      "/user-delete/:username",
+      async ( req: Request<{ username: string; }>, res: Response ): Promise<void> => {
         try {
-          const username = String(
-            req.params.username ||
-            req.body?.username ||
-            req.query?.username ||
-            ""
-          ).trim();
-          const deletedBy = String(
-            req.params.deletedBy ||
-            req.body?.deletedBy ||
-            req.query?.deletedBy ||
-            ""
-          ).trim();
+          // ===================================================================
+          // 0) Who is performing the action? (use your guard actor, not a param)
+          // ===================================================================
+          const actor = await this.getActor( req );
 
+          // ===================================================================
+          // 1) Validate input
+          // ===================================================================
+          const username = this.safeStr( req.params.username );
           if ( !username ) {
-            ApiResponseBuilder.validationError( res, "Username is required" );
-            return;
-          }
-
-          if ( !deletedBy ) {
-            ApiResponseBuilder.validationError(
-              res,
-              "Deletor's identity is required"
-            );
+            ApiResponseBuilder.error( res, 400, "Username is required" );
             return;
           }
 
           if ( !this.isSafeSegment( username ) ) {
-            ApiResponseBuilder.validationError( res, "Invalid username" );
+            ApiResponseBuilder.error( res, 400, "Invalid username" );
             return;
           }
 
-          const baseUrl = `${ req.protocol }://${ req.get( "host" ) }`;
-
-          const userDoc = await UserModel.findOne( { username }, USER_MODEL_PROJECTION ).lean();
-          const recycleUserDir = path.join( this.RECYCLE_PATH, username );
-          const userImagePath = path.join(
-            this.DEFAULT_PATH,
-            username,
-            "image.webp"
-          );
-          const snapshot = userDoc;
-          const userDocsPath = path.join(
-            this.DEFAULT_PATH,
-            username,
-            "documents"
-          );
-          const deletedCopyDir = path.join(
-            this.DEFAULT_PATH,
-            "deleted",
-            username
-          );
-          const deletedCopyImage = path.join( deletedCopyDir, "image.webp" );
-          const deletedImageURL = `${ baseUrl }/${ this.DEFAULT_URL }/deleted/${ encodeURIComponent(
-            username
-          ) }/image.webp`;
-
-          await fse.ensureDir( recycleUserDir );
-
-          // Save snapshot to recyclebin
-          if ( userDoc ) {
-            await fse.writeJson(
-              path.join( recycleUserDir, "data.json" ),
-              userDoc,
-              { spaces: 2 }
-            );
+          // ===================================================================
+          // 2) Load domain record (lean object for snapshot building)
+          //    - We load BEFORE delete because after delete you lose data.
+          // ===================================================================
+          const userDoc = await UserModel.findOne( { username } ).lean<User>();
+          if ( !userDoc ) {
+            ApiResponseBuilder.error( res, 404, "User not found" );
+            return;
           }
 
-          // Keep a "deleted preview" copy under /uploads/users/deleted/<username>/
-          if ( await fse.pathExists( userImagePath ) ) {
-            await fse.ensureDir( deletedCopyDir );
-            await fse.copy( userImagePath, deletedCopyImage, {
-              overwrite: true,
-            } );
-          }
+          // ===================================================================
+          // 3) Collect ALL physical files that belong to this user
+          //    - Engine will move these files into recyclebin.
+          //    - DO NOT move/copy/delete them manually here.
+          // ===================================================================
+          // const filePackets = await this.collectUserFiles( username );
+          const publicRelPath = `${ this.USERS_UPLOAD_ROOT_REL }/${ username }`;
+          const filePackets = await FileMetaPacketBuilder.scanDir( {
+            dirPathLike: publicRelPath,
+            bucket: 'image',
+            req,
+          } );
 
-          // Move image to recyclebin
-          if ( await fse.pathExists( userImagePath ) ) {
-            await fse.copy(
-              userImagePath,
-              path.join( recycleUserDir, "image.webp" ),
-              { overwrite: true }
-            );
-            await fse.remove( userImagePath );
-          }
 
-          // Move documents to recyclebin
-          if ( await fse.pathExists( userDocsPath ) ) {
-            await fse.copy(
-              userDocsPath,
-              path.join( recycleUserDir, "documents" ),
-              { overwrite: true }
-            );
-            await fse.remove( userDocsPath );
-          }
 
-          // Clean example relations (optional; adjust for your app)
-          await PropertyModel.updateMany(
-            { owner: username },
-            { $unset: { owner: 1 } }
-          );
-          await PropertyModel.updateMany(
-            { "addedBy.username": username },
-            { $unset: { addedBy: {} as any } }
-          );
+          // ===================================================================
+          // 4) Build snapshotData (JSON-safe)
+          //    - This is what you will use later to restore/recreate the user.
+          //    - Include whatever you need for restore.
+          // ===================================================================
+          const snapshotData: Record<string, unknown> = {
+            user: userDoc,
+            // optional restore hints:
+            restoreHints: {
+              username,
+              // you can add extra references here if needed later
+            },
+          };
 
-          // Notify back-office
-          if ( userDoc ) {
-            const notificationService = new NotificationService();
-            const io = req.app.get( "io" ) as import( "socket.io" ).Server;
+          // ===================================================================
+          // 5) Build DomainDeletePlan
+          //    - This is the ONLY “recycle record” you need to build.
+          // ===================================================================
+          const plan: DomainDeletePlan<User> = {
+            sourceKey: "user",           // appears in recyclebin under public/recyclebin/user/<refId>
+            refId: username,             // your domain identifier (string)
+            label: `User: ${ userDoc.name ?? username }`, // UI label
+            description: "Deleted from User Management",
 
-            await notificationService.createNotification(
+            snapshotData,                // what gets written to snapshot.json + DB snapshotData
+            files: filePackets,          // what gets moved to recyclebin/files/
+
+            module: "User Management",
+            entity: "User",
+            tags: [ "user" ],
+
+            // ===============================================================
+            // deleteDbRecord(session)
+            // - Must delete the domain record using the same session
+            // - Engine already finished durability before this is called
+            // ===============================================================
+            deleteDbRecord: async ( session: ClientSession ): Promise<void> => {
+              await UserModel.deleteOne( { username }, { session } );
+            },
+          };
+
+          // ===================================================================
+          // 6) Execute: Record to recyclebin FIRST, then delete DB
+          // ===================================================================
+          const result = await this.deleteSvc.deleteWithRecycleBin( actor, plan );
+
+          // ===================================================================
+          // 7) Genanrate Notificaation
+          // ===================================================================
+
+          const notificationActor: NotificationActorDto = {
+            role: actor.role,
+            userId: String( actor.userId ),
+            username: actor.username,
+            branchId: actor.branchId ?? '',
+            teamCodes: actor.teamCodes ?? [],
+          };
+
+          this.notificationHub.emit( {
+            eventKey: 'user:account.deleted',
+            actor: notificationActor,
+            audiences: [
               {
-                title: "Delete User",
-                body: `User ${ userDoc.name ?? username } has been deleted.`,
-                type: "delete",
-                severity: "warning",
-                audience: {
-                  mode: "role",
-                  roles: [ "admin", "manager", "operator" ],
-                },
-                channels: [ "inapp", "email" ],
-                metadata: {
-                  refId: username,
-                  data: {
-                    snapshot,
-                    image: deletedImageURL,
-                    userId: String( userDoc._id ?? "" ),
-                    deletedBy,
-                    deletedAt: new Date().toISOString(),
-                    recyclebinUrl: `${ this.RECYCLE_URL }/${ encodeURIComponent(
-                      username
-                    ) }/`,
-                  },
-                },
+                mode: 'User',
+                userId: actor.username
               },
-              ( rooms, payload ) =>
-                rooms.forEach( ( room ) =>
-                  io.to( room ).emit( "notification.new", payload )
-                )
-            );
-          }
+              {
+                mode: 'Role',
+                roleKey: 'admin'
+              },
+              {
+                mode: 'Role',
+                roleKey: 'manager'
+              },
+              {
+                mode: 'Role',
+                roleKey: 'operator'
+              },
+            ],
+            tags: [
+              'user',
+              'updateuser'
+            ],
+            target: {
+              category: 'User',
+              module: 'User',
+              refId: userDoc.username ?? userDoc._id,
+              actionKey: 'user:account.deleted',
+              params: { username: userDoc.username }
+            },
+            delivery: {
+              audit: true,
+              mq: true,
+              email: true,
+              sms: false,
+              push: false,
+              external: false,
+            },
+            category: 'User',
+          } );
 
-          // Remove from DB last
-          const deleted = await UserModel.findOneAndDelete( { username } ).lean();
-
-          if ( !deleted ) {
-            ApiResponseBuilder.notFound( res, "User not found to delete" );
-            return;
-          }
-
-          ApiResponseBuilder.noContent( res, "User deleted successfully" );
+          // ===================================================================
+          // 8) Respond
+          // ===================================================================
+          ApiResponseBuilder.ok(
+            res,
+            "other",
+            {
+              deleted: !!result.entry.entryId,
+              username,
+              recycleEntryId: result.entry.entryId,
+            },
+            "User deleted (moved to Recycle Bin)"
+          );
           return;
-        } catch ( error: any ) {
-          console.error( "[user-delete] error:", error?.message || error );
-          ApiResponseBuilder.internalError( res, error );
+        } catch ( err: unknown ) {
+          ApiResponseBuilder.error( res, 500, err instanceof Error ? err.message : "Internal error" );
           return;
         }
       }
@@ -1905,4 +2123,6 @@ export default class UserRoute {
       }
     );
   }
+
+
 }

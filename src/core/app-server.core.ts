@@ -4,17 +4,10 @@
 // - Orchestrates bootstraps (HTTP security, sockets, routes)
 // - Keeps heavy logic out of src/app.ts
 //
-// ✅ FIXES APPLIED
-// - Added missing Team routers (Member Activities + Milestones) into DI + RoutesBootstrap.
-// - Fixed wrong Milestones import path (milestones.router, not millestones.router).
-// - Removed duplicated/incorrect WorkItem router imports (WorkItemApi vs WorkItemRouter confusion).
-// - Ensured boot order: DB → HTTP security → Socket init → controllers requiring sockets → routes.
-// - Kept Electron-safe "public/" paths (no leading "/").
-// - Kept strict typing patterns and added clear explanations.
-//
-// IMPORTANT NOTE
-// - This file assumes your router classes expose `.route` (like your other routers).
-//   If a router exposes `.router` instead, swap accordingly when wiring RoutesBootstrap.
+// ✅ FIX (Part A)
+// - NotificationResolversBootstrap.init() MUST run AFTER DB connect succeeds.
+// - Removed init() call from constructor and moved it into boot() right after
+//   `await this.db.connect()`.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import "source-map-support/register";
@@ -53,8 +46,8 @@ import Tenant from "../api/tenant.router";
 import FileTransfer from "../api/fileTransfer.router";
 import Lease from "../api/lease.router";
 import Validator from "../api/validator.router";
-import Payments from "../api/payment.router";
 import UploadsRoutes from "../api/uploads.router";
+import { PaymentRouter } from "../api/payment/payment.router";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Team Management Routers
@@ -77,11 +70,10 @@ import { CommentsEngineRouter } from "../api/shared/comments/comments-engine.rou
 // ─────────────────────────────────────────────────────────────────────────────
 // Controllers / Services (socket dependent modules)
 // ─────────────────────────────────────────────────────────────────────────────
-import NotificationController from "../controller/notification.controller";
-import NotificationService from "../services/notification.service";
-import ReportController from "../controller/report.controller";
-import { AuthController } from "../controller/auth.controller";
-import { MfaController } from "../controller/mfa.controller";
+import NotificationHubRoute from "../api/notifications/notification-hub.router";
+import ReportController from "../controllers/report.controller";
+import { AuthController } from "../controllers/auth.controller";
+import { MfaController } from "../controllers/mfa.controller";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Observability / middlewares
@@ -89,7 +81,6 @@ import { MfaController } from "../controller/mfa.controller";
 import LoggerMiddleware from "../middleware/logger";
 import CorsDebug from "../middleware/corsDebug";
 import TrafficMonitor from "../middleware/trafficMonitor";
-import Guards from "../guard/fullAccess.guard";
 import { ApiResponseBuilder } from "../utils/api-combiner.builder";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -99,11 +90,16 @@ import { HttpSecurityBootstrap } from "../bootstrap/http-security.bootstrap";
 import { SocketBootstrap } from "../bootstrap/socket.bootstrap";
 import { RoutesBootstrap } from "../bootstrap/routes.bootstrap";
 
+// ✅ Part A: Notification recipient resolver wiring (BOOTSTRAP)
+import { NotificationResolversBootstrap } from "../bootstrap/notifications/notification-resolvers.bootstrap";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Error + host guard
 // ─────────────────────────────────────────────────────────────────────────────
 import { InternalErrorMonitor } from "../services/internal-error-monitor.service";
 import { HostGuardMiddleware } from "../middleware/host-guard.middleware";
+
+import RecycleBinRouter from "../api/recyclebin/recyclebin.router";
 
 // Socket types (for typing only)
 import type SocketServer from "./socket-server";
@@ -112,6 +108,17 @@ import type { SocketConnectionHandler } from "../socket/socket-connection.handle
 
 // Background jobs (optional)
 import { AutoDeleteUserService } from "../services/auto-delete.service";
+import { NotificationDeliveryBootstrap } from "../bootstrap/notifications/notification-delivery.bootstrap";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dev test runner (optional, for internal smoke testing without HTTP endpoints)
+// ─────────────────────────────────────────────────────────────────────────────
+// Note: This is NOT meant for production use. It runs directly in Node and is
+// intended for internal testing of KPI logic without going through HTTP layer.
+// DO NOT commit this in production branches.
+// ─────────────────────────────────────────────────────────────────────────────
+import { DevKpiRunner } from "../dev/kpi-dev-runner";
+
 
 const isProd: boolean = NODE_ENV === "production";
 const APP_TAG: string = "PropEase";
@@ -156,8 +163,9 @@ export class AppServer {
   private readonly fileTransfer: FileTransfer;
   private readonly lease: Lease;
   private readonly validator: Validator;
-  private readonly payments: Payments;
   private readonly uploadsRoutes: UploadsRoutes;
+  private readonly recycleBin: RecycleBinRouter;
+  private readonly payment: PaymentRouter;
 
   // Team routers
   private readonly teamManagement: TeamManagementRouter;
@@ -174,11 +182,11 @@ export class AppServer {
   private readonly commentsEngineRouter: CommentsEngineRouter;
 
   // Notifications / reports / auth / MFA
-  private readonly notificationService: NotificationService;
-  private notification!: NotificationController; // built AFTER socket handler exists
+  private readonly notificationRouter: NotificationHubRoute;
   private readonly reportController: ReportController;
   private readonly authController: AuthController;
   private readonly mfaController: MfaController;
+
 
   // Background jobs (optional)
   private autoDeleteUserService!: AutoDeleteUserService;
@@ -220,7 +228,7 @@ export class AppServer {
     this.errorMonitor = new InternalErrorMonitor(APP_TAG);
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Database
+    // Database (DO NOT init notification resolvers here)
     // ─────────────────────────────────────────────────────────────────────────
     this.db = new Database();
 
@@ -255,6 +263,16 @@ export class AppServer {
       ],
       optionsSuccessStatus: 204,
     };
+
+
+    //Launch dev KPI runner (optional, for internal smoke testing without HTTP endpoints)
+    if ( !isProd ) {
+      void DevKpiRunner.run().catch( ( err: unknown ) => {
+        console.error( "[Error:] [DevKpiRunner] Unexpected error:\n", err, "\n" );
+      } );
+    }
+
+
 
     /**
      * trust proxy:
@@ -304,8 +322,8 @@ export class AppServer {
     this.fileTransfer = new FileTransfer();
     this.lease = new Lease();
     this.validator = new Validator();
-    this.payments = new Payments();
     this.uploadsRoutes = new UploadsRoutes();
+    this.payment = new PaymentRouter();
 
     this.teamManagement = new TeamManagementRouter();
     this.teamTaskRouter = new TeamTaskRouter();
@@ -319,11 +337,12 @@ export class AppServer {
 
     this.commentsEngineRouter = new CommentsEngineRouter();
 
+    this.notificationRouter = new NotificationHubRoute();
+    this.recycleBin = new RecycleBinRouter();
+
     // ─────────────────────────────────────────────────────────────────────────
     // Controllers/services
     // ─────────────────────────────────────────────────────────────────────────
-    this.notificationService = new NotificationService();
-
     this.reportController = new ReportController({
       logDir: path.join( process.cwd(), "public", "trace", "security" ),
       appTag: APP_TAG,
@@ -334,8 +353,6 @@ export class AppServer {
 
     // ─────────────────────────────────────────────────────────────────────────
     // DB readiness guard
-    // - Applied BEFORE routes are registered to protect all endpoints.
-    // - Prevents “half-booted” server handling requests when DB is down.
     // ─────────────────────────────────────────────────────────────────────────
     this.databaseReadyGuard = (_req: Request, res: Response, next: NextFunction) => {
       if (!this.db.isConnected()) {
@@ -355,6 +372,8 @@ export class AppServer {
       console.error( "[Error:] [AppServer] Fatal boot error:\n", err, "\n" );
       process.exit(1);
     });
+
+    NotificationDeliveryBootstrap.init()
   }
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -363,6 +382,9 @@ export class AppServer {
   private async boot(): Promise<void> {
     // 1) DB connect
     await this.db.connect();
+
+    // ✅ Part A: wire notification recipient resolvers AFTER DB is ready
+    NotificationResolversBootstrap.init();
 
     // 2) Optional DB handshake (change streams support, etc.)
     const hello = await this.db.handshake( "prop-ease-api" );
@@ -399,12 +421,6 @@ export class AppServer {
     this.io = io;
     this.socketConnectionHandler = socketConnectionHandler;
 
-    // 5) Build components that require socket connection handler
-    this.notification = new NotificationController(
-      this.notificationService,
-      this.socketConnectionHandler,
-    );
-
     // Background jobs may rely on io
     this.autoDeleteUserService = new AutoDeleteUserService(this.io);
 
@@ -420,7 +436,7 @@ export class AppServer {
       db: this.db,
       io: this.io,
 
-      notification: this.notification,
+      notification: this.notificationRouter,
       reportController: this.reportController,
       authController: this.authController,
       mfaController: this.mfaController,
@@ -435,7 +451,7 @@ export class AppServer {
       fileTransfer: this.fileTransfer,
       lease: this.lease,
       validator: this.validator,
-      payments: this.payments,
+      payment: this.payment,
 
       teamManagement: this.teamManagement,
       teamTaskRouter: this.teamTaskRouter,
@@ -443,11 +459,12 @@ export class AppServer {
       workItemRouter: this.workItemRouter,
       workEventRouter: this.workEventRouter,
 
-      // ✅ NEW wiring (previously missing)
+      // ✅ NEW wiring
       memberActivitiesRouter: this.memberActivitiesRouter,
       milestonesRouter: this.milestonesRouter,
 
       commentsEngineRouter: this.commentsEngineRouter,
+      recyclebin: this.recycleBin,
     });
 
     routesBootstrap.registerAll();
@@ -456,8 +473,7 @@ export class AppServer {
     );
 
     // 9) DB change streams → notifications (only when DB supports it)
-    if (hello.changeStreams) {
-      this.notificationService.watchChanges(this.io);
+    if ( hello.changeStreams ) {
       if (!isProd) {
         // eslint-disable-next-line no-console
         console.log( "[Info:] [Notifications] Change streams enabled.\n" );

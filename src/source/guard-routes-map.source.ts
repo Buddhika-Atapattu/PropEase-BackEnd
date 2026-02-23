@@ -1,26 +1,27 @@
 // Path: src/source/guard-routes-map.source.ts
 // ============================================================================
-// Guard Routes Map Source (API Guard Source of Truth) — UPDATED FOR NEW ACCESS MAP
+// Guard Routes Map Source (API Guard Source of Truth) — MATCHES NEW ACCESS MAP
 // ----------------------------------------------------------------------------
-// ✅ This file MUST align with src/source/access-map.source.ts (PINNED)
-// ✅ Every GuardRouteDefinition.module/action MUST be valid AccessModuleKey/AccessActionKey
-// ✅ Regex patterns are query-safe (match "/path" and "/path?x=y" if req.originalUrl is used)
-// ✅ Includes NEW routers you listed: Comments, Member Activities, Milestones, TeamTasks changes, WorkItems
+// ✅ Aligns with src/source/access-map.source.ts (latest)
+// ✅ Every GuardRouteDefinition.module/action is valid AccessModuleKey/AccessActionKey
+// ✅ Regex patterns are query-safe (match "/path" and "/path?x=y")
+// ✅ Includes TeamTasks, WorkItems, WorkEvents, MemberActivities, Milestones, Comments,
+//    Notifications, RecycleBin, Leases, Properties, Tenants, Tracking/Audit, Places, FileTransfer
 //
-// IMPORTANT RBAC MAPPING RULES (because Access Map now has max 6 actions/module):
-// - When legacy had many actions, we map them to the closest allowed action id.
-// - For Comment pin/unpin/pin-toggle → all map to "CommentEngine" action "pin" (single permission).
-// - For legacy "create/update/delete" where module only has "manage" → map to "manage".
+// IMPORTANT:
+// - Some legacy routers do not have a dedicated module in the access map (e.g. FileTransfer).
+//   Those are mapped to the closest business module (TenantManagement / PropertyManagement).
+// - If you later add a dedicated module, only change the module/action mapping here.
+//
+// RULE YOU REQUESTED:
+// ✅ Every action MUST have description (description is REQUIRED, not optional).
 // ============================================================================
 
 import type { Request } from "express";
 import type { PermissionEntry } from "../models/user.model";
 import type { Role } from "../types/roles";
 
-import type {
-  AccessActionKey,
-  AccessModuleKey,
-} from "./access-map.source";
+import type { AccessActionKey, AccessModuleKey } from "./access-map.source";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -29,26 +30,14 @@ import type {
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "ANY";
 
 export interface GuardRouteDefinition {
-  /** Internal id for logging / debugging (e.g. "user:create") */
   id: string;
   method: HttpMethod;
-
-  /**
-   * Regex pattern to match the request path.
-   * IMPORTANT:
-   *  - Written to match req.originalUrl safely (allows "?query").
-   *  - If apiGuard uses req.path, these still match correctly.
-   */
   pattern: RegExp;
-
-  /** Permission module (must exist in AccessModuleKey) */
   module: AccessModuleKey;
-
-  /** Permission action (must exist in AccessActionKey) */
   action: AccessActionKey;
 
-  /** Optional human-readable reason */
-  description?: string;
+  /** REQUIRED: human-readable reason for this permission mapping */
+  description: string;
 }
 
 export interface GuardedUser {
@@ -74,7 +63,7 @@ declare global {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Class wrapper (keeps logic centralized + consistent pattern building)
+// Class wrapper (pattern builder)
 // ─────────────────────────────────────────────────────────────────────────────
 class GuardRoutesMapSource {
   public static withOptionalQuery(base: RegExp): RegExp {
@@ -103,10 +92,6 @@ export interface PublicEndpoint {
   reason: string;
 }
 
-/**
- * Endpoints that do NOT require tokens or permission checks.
- * Keep this list small and very explicit.
- */
 export const PUBLIC_ENDPOINTS: ReadonlyArray<PublicEndpoint> = [
   // =========================================================================
   // AUTH & MFA
@@ -133,13 +118,41 @@ export const PUBLIC_ENDPOINTS: ReadonlyArray<PublicEndpoint> = [
   },
 
   // MFA
-  { method: "POST", pattern: GuardRoutesMapSource.p(/^\/api\/mfa\/initiate$/), reason: "MFA initiate" },
-  { method: "POST", pattern: GuardRoutesMapSource.p(/^\/api\/mfa\/confirm$/), reason: "MFA confirm" },
-  { method: "POST", pattern: GuardRoutesMapSource.p(/^\/api\/mfa\/activate$/), reason: "MFA activate" },
-  { method: "POST", pattern: GuardRoutesMapSource.p(/^\/api\/mfa\/initial-verify$/), reason: "MFA initial verify" },
-  { method: "POST", pattern: GuardRoutesMapSource.p(/^\/api\/mfa\/user-verify$/), reason: "MFA user verify" },
-  { method: "GET", pattern: GuardRoutesMapSource.p(/^\/api\/mfa\/status\/[^/]+$/), reason: "MFA status" },
-  { method: "POST", pattern: GuardRoutesMapSource.p(/^\/api\/mfa\/deactive\/[^/]+$/), reason: "MFA deactive" },
+  {
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api\/mfa\/initiate$/ ),
+    reason: "MFA initiate",
+  },
+  {
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api\/mfa\/confirm$/ ),
+    reason: "MFA confirm",
+  },
+  {
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api\/mfa\/activate$/ ),
+    reason: "MFA activate",
+  },
+  {
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api\/mfa\/initial-verify$/ ),
+    reason: "MFA initial verify",
+  },
+  {
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api\/mfa\/user-verify$/ ),
+    reason: "MFA user verify",
+  },
+  {
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api\/mfa\/status\/[^/]+$/ ),
+    reason: "MFA status",
+  },
+  {
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api\/mfa\/deactive\/[^/]+$/ ),
+    reason: "MFA deactive",
+  },
 
   // =========================================================================
   // SHARED LOGIN ENTRYPOINT (mounted under /api-user)
@@ -160,7 +173,7 @@ export const PUBLIC_ENDPOINTS: ReadonlyArray<PublicEndpoint> = [
   },
 
   // =========================================================================
-  // SECURITY INCIDENT REPORTING
+  // SECURITY INCIDENT REPORTING (public intake)
   // =========================================================================
   {
     method: "POST",
@@ -170,19 +183,32 @@ export const PUBLIC_ENDPOINTS: ReadonlyArray<PublicEndpoint> = [
 
   // =========================================================================
   // COMMENTS ENGINE (Public READ endpoints)
-  // Mounted: /api-comments
-  // NEW ROUTES INCLUDED:
-  //   GET /load
-  //   GET /load-advanced
-  //   GET /count-advanced
-  //   GET /count-load
-  //   GET /get/:id
   // =========================================================================
-  { method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-comments\/load$/), reason: "Public read: load" },
-  { method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-comments\/load-advanced$/), reason: "Public read: load-advanced" },
-  { method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-comments\/count-advanced$/), reason: "Public read: count-advanced" },
-  { method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-comments\/count-load$/), reason: "Public read: count-load" },
-  { method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-comments\/get\/[^/]+$/), reason: "Public read: get by id" },
+  {
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-comments\/load$/ ),
+    reason: "Public read: load",
+  },
+  {
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-comments\/load-advanced$/ ),
+    reason: "Public read: load-advanced",
+  },
+  {
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-comments\/count-advanced$/ ),
+    reason: "Public read: count-advanced",
+  },
+  {
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-comments\/count-load$/ ),
+    reason: "Public read: count-load",
+  },
+  {
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-comments\/get\/[^/]+$/ ),
+    reason: "Public read: get by id",
+  },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -191,391 +217,1563 @@ export const PUBLIC_ENDPOINTS: ReadonlyArray<PublicEndpoint> = [
 
 export const GUARD_ROUTES: ReadonlyArray<GuardRouteDefinition> = [
   // =========================================================================
-  // USER MANAGEMENT (/api-user)
-  // AccessMap: UserManagement actions = view/create/update/disable/roles/export
+  // USER MANAGEMENT (/api-user) → AccessMap: UserManagement
   // =========================================================================
-  { id: "user:list-all", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-user\/users$/), module: "UserManagement", action: "view", description: "List users" },
-  { id: "user:count-all", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-user\/users-count$/), module: "UserManagement", action: "view", description: "Count users" },
-  { id: "user:list-paged", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-user\/users-with-pagination\/\d+\/\d+$/), module: "UserManagement", action: "view", description: "List users paginated" },
-
-  { id: "user:create", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-user\/create-user$/), module: "UserManagement", action: "create", description: "Create user" },
-  { id: "user:update", method: "PUT", pattern: GuardRoutesMapSource.p(/^\/api-user\/user-update\/[^/]+$/), module: "UserManagement", action: "update", description: "Update user by username" },
-
-  // Legacy hard delete maps to "disable" in new AccessMap (safer control)
-  { id: "user:delete-legacy", method: "DELETE", pattern: GuardRoutesMapSource.p(/^\/api-user\/user-delete\/[^/]+\/[^/]+$/), module: "UserManagement", action: "disable", description: "Legacy delete → treated as disable permission" },
-
-  { id: "user:docs-upload", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-user\/user-document-upload\/[^/]+$/), module: "UserManagement", action: "update", description: "Upload user documents" },
-  { id: "user:docs-list", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-user\/uploads\/[^/]+\/documents$/), module: "UserManagement", action: "view", description: "List user documents" },
-
-  { id: "user:get-by-username", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-user\/user-username\/[^/]+$/), module: "UserManagement", action: "view" },
-  { id: "user:get-by-id", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-user\/user-id\/[^/]+$/), module: "UserManagement", action: "view" },
-  { id: "user:get-by-email", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-user\/user-email\/[^/]+$/), module: "UserManagement", action: "view" },
-  { id: "user:get-by-phone", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-user\/user-phone$/), module: "UserManagement", action: "view" },
-
-  { id: "user:email-verify", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-user\/emailverifycation\/[^/]+$/), module: "UserManagement", action: "update" },
-  { id: "user:token-generate", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-user\/generate-token$/), module: "UserManagement", action: "update" },
-  { id: "user:get-by-token", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-user\/user-token\/[^/]+$/), module: "UserManagement", action: "view" },
-
-  { id: "user:rich-user-data", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-user\/user-data\/[^/]+$/), module: "UserManagement", action: "view" },
-  { id: "user:get-section-key", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-user\/user-section-key\/[^/]+\/[^/]+$/), module: "UserManagement", action: "view" },
-
-  // =========================================================================
-  // NOTIFICATION CENTER (/api-notification)
-  // AccessMap: NotificationCenter actions = view/markRead/delete/restore/broadcast/configure
-  // =========================================================================
-  { id: "notify:create", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-notification\/create$/), module: "NotificationCenter", action: "broadcast", description: "Create/send notification" },
-  { id: "notify:mark-read-one", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-notification\/[^/]+\/read$/), module: "NotificationCenter", action: "markRead" },
-  { id: "notify:mark-read-many", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-notification\/read-many$/), module: "NotificationCenter", action: "markRead" },
-  { id: "notify:mark-read-all", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-notification\/read-all$/), module: "NotificationCenter", action: "markRead" },
-
-  { id: "notify:restore", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-notification\/restore$/), module: "NotificationCenter", action: "restore" },
-  { id: "notify:permanent-delete", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-notification\/permanent-delete$/), module: "NotificationCenter", action: "delete" },
-
-  { id: "notify:list-mine", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-notification\/?$/), module: "NotificationCenter", action: "view" },
-
-  // =========================================================================
-  // AUDIT / TRACKING (/api-tracking)
-  // AccessMap: AuditLogs actions = view/filter/investigate/alerts/export/retain
-  // =========================================================================
-  { id: "audit:track-login", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-tracking\/track-logged-user-login$/), module: "AuditLogs", action: "investigate" },
-  { id: "audit:logged-user-count", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tracking\/get-logged-user-tracking-count\/[^/]+$/), module: "AuditLogs", action: "view" },
-  { id: "audit:logged-user-list", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tracking\/get-logged-user-tracking\/[^/]+$/), module: "AuditLogs", action: "view" },
-  { id: "audit:all-users-counts", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tracking\/get-all-users-login-counts$/), module: "AuditLogs", action: "filter" },
-  { id: "audit:file-activity", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tracking\/user-file-management-activity\/[^/]+\/\d+\/\d+$/), module: "AuditLogs", action: "view" },
-  { id: "audit:track-activity", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-tracking\/track-activity$/), module: "AuditLogs", action: "investigate" },
-  { id: "audit:activities-by-user", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tracking\/activities\/[^/]+\/\d+\/\d+$/), module: "AuditLogs", action: "view" },
-  { id: "audit:recent-feed", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tracking\/recent$/), module: "AuditLogs", action: "view" },
-
-  // =========================================================================
-  // FILE TRANSFER (/api-file-transfer)
-  // AccessMap does not have FileTransfer module; map to TenantManagement.manage
-  // =========================================================================
-  { id: "file-transfer:tenant-mobile-upload", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-file-transfer\/get-tenant-mobile-file-upload\/[^/]+$/), module: "TenantManagement", action: "manage" },
-  { id: "file-transfer:get-by-tenant-reason", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-file-transfer\/get-reason-file-uploads-by-tenant-username\/[^/]+$/), module: "TenantManagement", action: "view" },
-  { id: "file-transfer:convert-to-pdf", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-file-transfer\/convert-to-pdf$/), module: "TenantManagement", action: "manage" },
-
-  // =========================================================================
-  // LEASE MANAGEMENT (/api-lease)
-  // AccessMap: LeaseManagement actions = view/manage/workflow/approve/audit/export
-  // =========================================================================
-  { id: "lease:register", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-lease\/register\/[^/]+$/), module: "LeaseManagement", action: "manage" },
-  { id: "lease:update-agreement", method: "PUT", pattern: GuardRoutesMapSource.p(/^\/api-lease\/update-lease-agreement\/[^/]+$/), module: "LeaseManagement", action: "workflow" },
-  { id: "lease:preview", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-lease\/preview-lease-agreement\/[^/]+$/), module: "LeaseManagement", action: "view" },
-  { id: "lease:agreement-pdf", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-lease\/lease-agreement-pdf\/[^/]+\/[^/]+\/[^/]+$/), module: "LeaseManagement", action: "view" },
-  { id: "lease:view-one", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-lease\/lease-agreement\/[^/]+$/), module: "LeaseManagement", action: "view" },
-  { id: "lease:list-by-user", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-lease\/lease-agreements\/[^/]+$/), module: "LeaseManagement", action: "view" },
-  { id: "lease:update-status", method: "PUT", pattern: GuardRoutesMapSource.p(/^\/api-lease\/lease-status-updated\/[^/]+$/), module: "LeaseManagement", action: "workflow" },
-  { id: "lease:list-all", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-lease\/all-leases$/), module: "LeaseManagement", action: "view" },
-  { id: "lease:count-all", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-lease\/get-lease-count$/), module: "LeaseManagement", action: "view" },
-
-  { id: "lease:props-without-lease", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-lease\/get-properties-that-does-not-have-lease$/), module: "PropertyManagement", action: "view" },
-  { id: "lease:props-without-lease-count", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-lease\/get-all-properties-count-without-leases$/), module: "PropertyManagement", action: "view" },
-
-  { id: "lease:get-tenant-by-username", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-lease\/get-tenant-by-username\/[^/]+$/), module: "UserManagement", action: "view" },
-
-  // =========================================================================
-  // PAYMENTS (/api-payments)
-  // AccessMap: PaymentBilling actions = view/invoice/record/approve/refund/export
-  // =========================================================================
-  { id: "payments:dashboard-summary", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-payments\/dashboard\/summary$/), module: "PaymentBilling", action: "view" },
-
-  // =========================================================================
-  // PLACES (/api-places) → PropertyManagement.view
-  // =========================================================================
-  { id: "places:autocomplete", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-places\/autocomplete$/), module: "PropertyManagement", action: "view" },
-
-  // =========================================================================
-  // PROPERTY MANAGEMENT (/api-property)
-  // AccessMap: PropertyManagement actions = view/manage/assign/publish/audit/export
-  // =========================================================================
-  { id: "property:create-legacy", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-property\/insert-property\/[^/]+$/), module: "PropertyManagement", action: "manage" },
-  { id: "property:list-paged", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-property\/get-all-properties-with-pagination\/\d+\/\d+\/?$/), module: "PropertyManagement", action: "view" },
-  { id: "property:get-one", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-property\/get-single-property-by-id\/[^/]+$/), module: "PropertyManagement", action: "view" },
-  { id: "property:get-section", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-property\/get-single-property-section-by-id\/[^/]+$/), module: "PropertyManagement", action: "view" },
-  { id: "property:delete-legacy", method: "DELETE", pattern: GuardRoutesMapSource.p(/^\/api-property\/delete-property\/[^/]+\/[^/]+$/), module: "PropertyManagement", action: "manage" },
-  { id: "property:update-legacy", method: "PUT", pattern: GuardRoutesMapSource.p(/^\/api-property\/update-property\/[^/]+$/), module: "PropertyManagement", action: "manage" },
-  { id: "property:list-all", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-property\/get-all-properties\/?$/), module: "PropertyManagement", action: "view" },
-  { id: "property:count-all", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-property\/get-all-properties-count\/?$/), module: "PropertyManagement", action: "view" },
-
-  // =========================================================================
-  // TEAM MANAGEMENT — TEAMS (/api-team-management)
-  // AccessMap: TeamManagement.Teams actions = view/manage/members/captain/monitor/export
-  // =========================================================================
-  { id: "team:create", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/create$/), module: "TeamManagement.Teams", action: "manage" },
-  { id: "team:get-by-name", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/teamName\/[^/]+$/), module: "TeamManagement.Teams", action: "view" },
-  { id: "team:list-all", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/all$/), module: "TeamManagement.Teams", action: "view" },
-
-  { id: "team:upload-logo", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/upload\/logo\/[^/]+$/), module: "TeamManagement.Teams", action: "manage" },
-
-  // stats → monitor
-  { id: "team:stats-total", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/stats\/teams-total$/), module: "TeamManagement.Teams", action: "monitor" },
-  { id: "team:stats-total-domain", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/stats\/teams-total\/domain\/[^/]+$/), module: "TeamManagement.Teams", action: "monitor" },
-
-  // users analytics → view
-  { id: "team:users-no-team", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/users\/no-team$/), module: "TeamManagement.Teams", action: "view" },
-  { id: "team:users-no-team-count", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/users\/no-team\/count$/), module: "TeamManagement.Teams", action: "view" },
-  { id: "team:users-in-teams", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/users\/in-teams$/), module: "TeamManagement.Teams", action: "view" },
-  { id: "team:users-in-teams-count", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/users\/in-teams\/count$/), module: "TeamManagement.Teams", action: "view" },
-
-  { id: "team:users-no-team-domain", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/users\/no-team\/domain\/[^/]+$/), module: "TeamManagement.Teams", action: "view" },
-  { id: "team:users-no-team-domain-count", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/users\/no-team\/domain\/[^/]+\/count$/), module: "TeamManagement.Teams", action: "view" },
-  { id: "team:users-in-teams-domain", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/users\/in-teams\/domain\/[^/]+$/), module: "TeamManagement.Teams", action: "view" },
-  { id: "team:users-in-teams-domain-count", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/users\/in-teams\/domain\/[^/]+\/count$/), module: "TeamManagement.Teams", action: "view" },
-
-  { id: "team:users-all", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/users\/all\/?$/), module: "TeamManagement.Teams", action: "view" },
-
-  // update/delete → manage
-  { id: "team:update", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/update\/[^/]+$/), module: "TeamManagement.Teams", action: "manage" },
-  { id: "team:delete", method: "DELETE", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/delete\/[^/]+$/), module: "TeamManagement.Teams", action: "manage" },
-
-  // NOTE: Keep catch-all teamCode LAST
-  { id: "team:get-by-code", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/[^/]+$/), module: "TeamManagement.Teams", action: "view" },
-
-  // =========================================================================
-  // TEAM TASK (TEAM MANAGEMENT) — mounted: /api-team-management/task
-  // AccessMap: TeamManagement.TeamTasks actions = view/create/update/assign/workflow/evidence
-  // =========================================================================
-
-  // READ
-  { id: "team-task:get", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/get\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "view" },
-  { id: "team-task:list", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/list\/?$/), module: "TeamManagement.TeamTasks", action: "view" },
-  { id: "team-task:count", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/count\/?$/), module: "TeamManagement.TeamTasks", action: "view" },
-  { id: "team-task:key-values", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/key-values\/?$/), module: "TeamManagement.TeamTasks", action: "view" },
-
-  // CRUD
-  { id: "team-task:create", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/create\/?$/), module: "TeamManagement.TeamTasks", action: "create" },
-  { id: "team-task:update", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/update\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "update" },
-  { id: "team-task:delete", method: "DELETE", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/delete\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "update" },
-
-  // Evidence remove (DELETE /evidence/:taskMongoId/:evidenceMongoId) → evidence
-  { id: "team-task:evidence-delete", method: "DELETE", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/evidence\/[^/]+\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "evidence" },
-
-  // Status / Priority → workflow
-  { id: "team-task:status", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/status\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "workflow" },
-  { id: "team-task:priority", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/priority\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "workflow" },
-
-  // Labels → workflow
-  { id: "team-task:labels-set", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/labels\/set\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "workflow" },
-  { id: "team-task:labels-add", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/labels\/add\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "workflow" },
-  { id: "team-task:labels-remove", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/labels\/remove\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "workflow" },
-
-  // Members/Captain → assign
-  { id: "team-task:members-set", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/members\/set\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "assign" },
-  { id: "team-task:members-add", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/members\/add\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "assign" },
-  { id: "team-task:members-remove", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/members\/remove\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "assign" },
-  { id: "team-task:captain", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/captain\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "assign" },
-
-  // location/address/notes → update
-  { id: "team-task:location", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/location\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "update" },
-  { id: "team-task:address", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/address\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "update" },
-  { id: "team-task:notes", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/notes\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "update" },
-
-  // audit/timing/sla → workflow (because it's governance/time rules)
-  { id: "team-task:audit-get", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/audit\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "workflow" },
-  { id: "team-task:audit-set", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/audit\/set\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "workflow" },
-  { id: "team-task:audit-patch", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/audit\/patch\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "workflow" },
-  { id: "team-task:audit-clear", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/audit\/clear\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "workflow" },
-
-  { id: "team-task:timing-get", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/timing\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "workflow" },
-  { id: "team-task:timing-set", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/timing\/set\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "workflow" },
-  { id: "team-task:timing-patch", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/timing\/patch\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "workflow" },
-  { id: "team-task:timing-clear", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/timing\/clear\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "workflow" },
-
-  { id: "team-task:sla", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/sla\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "workflow" },
-
-  // users endpoints → view
-  { id: "team-task:usernames", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/users\/usernames\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "view" },
-  { id: "team-task:users", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/task\/users\/[^/]+\/?$/), module: "TeamManagement.TeamTasks", action: "view" },
+  {
+    id: "user:list-all",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/users$/ ),
+    module: "UserManagement",
+    action: "view",
+    description: "UserManagement.view → List all users",
+  },
+  {
+    id: "user:count-all",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/users-count$/ ),
+    module: "UserManagement",
+    action: "view",
+    description: "UserManagement.view → Count all users",
+  },
+  {
+    id: "user:list-paged",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/users-with-pagination\/\d+\/\d+$/ ),
+    module: "UserManagement",
+    action: "view",
+    description: "UserManagement.view → List users with pagination",
+  },
+  {
+    id: "user:create",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/create-user$/ ),
+    module: "UserManagement",
+    action: "create",
+    description: "UserManagement.create → Create a new user account",
+  },
+  {
+    id: "user:update",
+    method: "PUT",
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/user-update\/[^/]+$/ ),
+    module: "UserManagement",
+    action: "update",
+    description: "UserManagement.update → Update an existing user by username",
+  },
+  {
+    id: "user:delete",
+    method: "DELETE",
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/user-delete\/[^/]+\/[^/]+$/ ),
+    module: "UserManagement",
+    action: "delete",
+    description: "UserManagement.delete → Legacy delete route mapped to delete permission",
+  },
+  {
+    id: "user:docs-upload",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/user-document-upload\/[^/]+$/ ),
+    module: "UserManagement",
+    action: "update",
+    description: "UserManagement.update → Upload user documents (profile / ID / etc.)",
+  },
+  {
+    id: "user:docs-list",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/uploads\/[^/]+\/documents$/ ),
+    module: "UserManagement",
+    action: "view",
+    description: "UserManagement.view → List user documents",
+  },
+  {
+    id: "user:get-by-username",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/user-username\/[^/]+$/ ),
+    module: "UserManagement",
+    action: "view",
+    description: "UserManagement.view → Get user by username",
+  },
+  {
+    id: "user:get-by-id",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/user-id\/[^/]+$/ ),
+    module: "UserManagement",
+    action: "view",
+    description: "UserManagement.view → Get user by id",
+  },
+  {
+    id: "user:get-by-email",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/user-email\/[^/]+$/ ),
+    module: "UserManagement",
+    action: "view",
+    description: "UserManagement.view → Get user by email",
+  },
+  {
+    id: "user:get-by-phone",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/user-phone$/ ),
+    module: "UserManagement",
+    action: "view",
+    description: "UserManagement.view → Get user by phone",
+  },
+  {
+    id: "user:email-verify",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/emailverifycation\/[^/]+$/ ),
+    module: "UserManagement",
+    action: "update",
+    description: "UserManagement.update → Verify email (legacy endpoint)",
+  },
+  {
+    id: "user:token-generate",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/generate-token$/ ),
+    module: "UserManagement",
+    action: "update",
+    description: "UserManagement.update → Generate user token (legacy)",
+  },
+  {
+    id: "user:get-by-token",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/user-token\/[^/]+$/ ),
+    module: "UserManagement",
+    action: "view",
+    description: "UserManagement.view → Get user by token",
+  },
+  {
+    id: "user:rich-user-data",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/user-data\/[^/]+$/ ),
+    module: "UserManagement",
+    action: "view",
+    description: "UserManagement.view → Get rich user data bundle",
+  },
+  {
+    id: "user:get-section-key",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/user-section-key\/[^/]+\/[^/]+$/ ),
+    module: "UserManagement",
+    action: "view",
+    description: "UserManagement.view → Resolve a user section key (legacy helper)",
+  },
 
   // =========================================================================
-  // WORK ITEMS (TEAM MANAGEMENT) — mounted: /api-work-item
-  // NEW ROUTES LISTED:
-  //   GET /list
-  //   GET /count
-  //   GET /:workItemId
-  //   POST /create
-  //   PATCH /:workItemId
-  //   DELETE /:workItemId
-  //   PATCH /:workItemId/status
-  //   PATCH /:workItemId/priority
-  //   PATCH /:workItemId/due-at
-  //   PATCH /:workItemId/assigned-members
-  //   POST /:workItemId/activity
-  //
-  // AccessMap: TeamManagement.WorkItems actions = view/manage/assign/workflow/approve/export
+  // NOTIFICATION CENTER (/api-notification) → AccessMap: NotificationCenter
   // =========================================================================
-  { id: "work-item:list", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-work-item\/list\/?$/), module: "TeamManagement.WorkItems", action: "view" },
-  { id: "work-item:count", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-work-item\/count\/?$/), module: "TeamManagement.WorkItems", action: "view" },
-  { id: "work-item:get", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-work-item\/[^/]+\/?$/), module: "TeamManagement.WorkItems", action: "view" },
-
-  { id: "work-item:create", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-work-item\/create\/?$/), module: "TeamManagement.WorkItems", action: "manage" },
-  { id: "work-item:update", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-work-item\/[^/]+\/?$/), module: "TeamManagement.WorkItems", action: "manage" },
-  { id: "work-item:delete", method: "DELETE", pattern: GuardRoutesMapSource.p(/^\/api-work-item\/[^/]+\/?$/), module: "TeamManagement.WorkItems", action: "manage" },
-
-  { id: "work-item:status", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-work-item\/[^/]+\/status\/?$/), module: "TeamManagement.WorkItems", action: "workflow" },
-  { id: "work-item:priority", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-work-item\/[^/]+\/priority\/?$/), module: "TeamManagement.WorkItems", action: "workflow" },
-  { id: "work-item:due-at", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-work-item\/[^/]+\/due-at\/?$/), module: "TeamManagement.WorkItems", action: "workflow" },
-
-  // assigned-members → assign
-  { id: "work-item:assigned-members", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-work-item\/[^/]+\/assigned-members\/?$/), module: "TeamManagement.WorkItems", action: "assign" },
-
-  // activity create under work item → MemberActivities.create
-  { id: "work-item:activity", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-work-item\/[^/]+\/activity\/?$/), module: "TeamManagement.MemberActivities", action: "create" },
-
-  // =========================================================================
-  // WORK EVENTS (/api-work-event) — keep existing mappings but align actions
-  // AccessMap: TeamManagement.WorkEvents actions = view/manage/assign/workflow/evidence/export
-  // =========================================================================
-  { id: "work-event:list-all", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-work-event\/all\/?$/), module: "TeamManagement.WorkEvents", action: "view" },
-  { id: "work-event:list-by-workitem", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-work-event\/by-workitem\/[^/]+$/), module: "TeamManagement.WorkEvents", action: "view" },
-  { id: "work-event:list-by-team", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-work-event\/by-team\/[^/]+$/), module: "TeamManagement.WorkEvents", action: "view" },
-  { id: "work-event:stats-by-workitem", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-work-event\/stats\/workitem\/[^/]+$/), module: "TeamManagement.WorkEvents", action: "view" },
-
-  // =========================================================================
-  // MEMBER ACTIVITIES (TEAM MANAGEMENT)
-  // You listed these routes (assumed mount): /api-team-management/member-activities
-  // If your actual mount differs, change only the base prefix in regex.
-  //
-  // Routes:
-  //  GET /list
-  //  GET /count
-  //  GET /:activityId
-  //  POST /create
-  //  PATCH /:activityId
-  //  DELETE /:activityId
-  //  POST  /:activityId/evidence/append
-  //  PATCH /:activityId/evidence/replace
-  //  PATCH /:activityId/evidence/remove
-  //  POST  /:activityId/blockers/append
-  //  PATCH /:activityId/blockers/update
-  //  PATCH /:activityId/blockers/resolve
-  //  PATCH /:activityId/blockers/remove
-  //
-  // AccessMap: TeamManagement.MemberActivities actions = view/create/update/blockers/evidence/export
-  // =========================================================================
-  { id: "member-act:list", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/member-activities\/list\/?$/), module: "TeamManagement.MemberActivities", action: "view" },
-  { id: "member-act:count", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/member-activities\/count\/?$/), module: "TeamManagement.MemberActivities", action: "view" },
-  { id: "member-act:get", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/member-activities\/[^/]+\/?$/), module: "TeamManagement.MemberActivities", action: "view" },
-
-  { id: "member-act:create", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/member-activities\/create\/?$/), module: "TeamManagement.MemberActivities", action: "create" },
-  { id: "member-act:update", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/member-activities\/[^/]+\/?$/), module: "TeamManagement.MemberActivities", action: "update" },
-  { id: "member-act:delete", method: "DELETE", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/member-activities\/[^/]+\/?$/), module: "TeamManagement.MemberActivities", action: "update" },
-
-  // Evidence
-  { id: "member-act:evi-append", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/member-activities\/[^/]+\/evidence\/append\/?$/), module: "TeamManagement.MemberActivities", action: "evidence" },
-  { id: "member-act:evi-replace", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/member-activities\/[^/]+\/evidence\/replace\/?$/), module: "TeamManagement.MemberActivities", action: "evidence" },
-  { id: "member-act:evi-remove", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/member-activities\/[^/]+\/evidence\/remove\/?$/), module: "TeamManagement.MemberActivities", action: "evidence" },
-
-  // Blockers
-  { id: "member-act:blocker-append", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/member-activities\/[^/]+\/blockers\/append\/?$/), module: "TeamManagement.MemberActivities", action: "blockers" },
-  { id: "member-act:blocker-update", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/member-activities\/[^/]+\/blockers\/update\/?$/), module: "TeamManagement.MemberActivities", action: "blockers" },
-  { id: "member-act:blocker-resolve", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/member-activities\/[^/]+\/blockers\/resolve\/?$/), module: "TeamManagement.MemberActivities", action: "blockers" },
-  { id: "member-act:blocker-remove", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/member-activities\/[^/]+\/blockers\/remove\/?$/), module: "TeamManagement.MemberActivities", action: "blockers" },
-
-  // =========================================================================
-  // MILESTONES (TEAM MANAGEMENT)
-  // You listed these routes (assumed mount): /api-team-management/milestones
-  //
-  // Routes:
-  //  GET /list
-  //  GET /count
-  //  GET /:id
-  //  POST /create
-  //  PATCH /:id
-  //  DELETE /:id
-  //  PATCH /:id/evidence/append
-  //  PATCH /:id/evidence/remove
-  //  PATCH /:id/evidence/replace
-  //  PATCH /:id/tags/append
-  //  PATCH /:id/tags/remove
-  //  PATCH /:id/tags/replace
-  //
-  // AccessMap: TeamManagement.Milestones actions = view/create/update/workflow/tags/evidence
-  // =========================================================================
-  { id: "ms:list", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/milestones\/list\/?$/), module: "TeamManagement.Milestones", action: "view" },
-  { id: "ms:count", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/milestones\/count\/?$/), module: "TeamManagement.Milestones", action: "view" },
-  { id: "ms:get", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/milestones\/[^/]+\/?$/), module: "TeamManagement.Milestones", action: "view" },
-
-  { id: "ms:create", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/milestones\/create\/?$/), module: "TeamManagement.Milestones", action: "create" },
-  { id: "ms:update", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/milestones\/[^/]+\/?$/), module: "TeamManagement.Milestones", action: "update" },
-  { id: "ms:delete", method: "DELETE", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/milestones\/[^/]+\/?$/), module: "TeamManagement.Milestones", action: "update" },
-
-  // Evidence
-  { id: "ms:evi-append", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/milestones\/[^/]+\/evidence\/append\/?$/), module: "TeamManagement.Milestones", action: "evidence" },
-  { id: "ms:evi-remove", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/milestones\/[^/]+\/evidence\/remove\/?$/), module: "TeamManagement.Milestones", action: "evidence" },
-  { id: "ms:evi-replace", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/milestones\/[^/]+\/evidence\/replace\/?$/), module: "TeamManagement.Milestones", action: "evidence" },
-
-  // Tags
-  { id: "ms:tags-append", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/milestones\/[^/]+\/tags\/append\/?$/), module: "TeamManagement.Milestones", action: "tags" },
-  { id: "ms:tags-remove", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/milestones\/[^/]+\/tags\/remove\/?$/), module: "TeamManagement.Milestones", action: "tags" },
-  { id: "ms:tags-replace", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/milestones\/[^/]+\/tags\/replace\/?$/), module: "TeamManagement.Milestones", action: "tags" },
+  {
+    id: "notify:create",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-notification\/create$/ ),
+    module: "NotificationCenter",
+    action: "create",
+    description: "NotificationCenter.create → Create a notification (server-side create)",
+  },
+  {
+    id: "notify:update",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-notification\/update\/[^/]+$/ ),
+    module: "NotificationCenter",
+    action: "update",
+    description: "NotificationCenter.update → Update an existing notification",
+  },
+  {
+    id: "notify:delete",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-notification\/permanent-delete$/ ),
+    module: "NotificationCenter",
+    action: "delete",
+    description: "NotificationCenter.delete → Permanently delete notification(s)",
+  },
+  {
+    id: "notify:mark-read-one",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-notification\/[^/]+\/read$/ ),
+    module: "NotificationCenter",
+    action: "markRead",
+    description: "NotificationCenter.markRead → Mark a single notification as read",
+  },
+  {
+    id: "notify:mark-read-many",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-notification\/read-many$/ ),
+    module: "NotificationCenter",
+    action: "markRead",
+    description: "NotificationCenter.markRead → Mark many notifications as read",
+  },
+  {
+    id: "notify:mark-read-all",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-notification\/read-all$/ ),
+    module: "NotificationCenter",
+    action: "markRead",
+    description: "NotificationCenter.markRead → Mark all notifications as read",
+  },
+  {
+    id: "notify:restore",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-notification\/restore$/ ),
+    module: "NotificationCenter",
+    action: "update",
+    description: "NotificationCenter.update → Restore notification(s) (legacy semantics)",
+  },
+  {
+    id: "notify:broadcast",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-notification\/broadcast$/ ),
+    module: "NotificationCenter",
+    action: "broadcast",
+    description: "NotificationCenter.broadcast → Broadcast notification to audiences",
+  },
+  {
+    id: "notify:configure",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-notification\/configure$/ ),
+    module: "NotificationCenter",
+    action: "configure",
+    description: "NotificationCenter.configure → Configure notification delivery/settings",
+  },
+  {
+    id: "notify:list-mine",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-notification\/?$/ ),
+    module: "NotificationCenter",
+    action: "view",
+    description: "NotificationCenter.view → List current user's notifications",
+  },
 
   // =========================================================================
-  // TENANTS (/api-tenant)
-  // AccessMap: TenantManagement actions = view/manage/assign/notify/audit/export
+  // AUDIT / TRACKING (/api-tracking) → AccessMap: AuditLogs
   // =========================================================================
-  { id: "tenant:create", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-tenant\/insertTenant$/), module: "TenantManagement", action: "manage" },
-  { id: "tenant:list-all", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tenant\/get-all-tenants$/), module: "TenantManagement", action: "view" },
-  { id: "tenant:count-all", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tenant\/get-all-tenants-count$/), module: "TenantManagement", action: "view" },
-  { id: "tenant:list-paged", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tenant\/get-all-tenants-with-pagination$/), module: "TenantManagement", action: "view" },
-  { id: "tenant:list-none", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tenant\/get-all-none-tenants-with-pagination$/), module: "TenantManagement", action: "view" },
-  { id: "tenant:count-none", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tenant\/get-all-none-tenants-count$/), module: "TenantManagement", action: "view" },
-  { id: "tenant:delete", method: "DELETE", pattern: GuardRoutesMapSource.p(/^\/api-tenant\/delete-tenant\/[^/]+\/[^/]+$/), module: "TenantManagement", action: "manage" },
+  {
+    id: "audit:track-login",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-tracking\/track-logged-user-login$/ ),
+    module: "AuditLogs",
+    action: "create",
+    description: "AuditLogs.create → Track logged-user login event",
+  },
+  {
+    id: "audit:logged-user-count",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tracking\/get-logged-user-tracking-count\/[^/]+$/ ),
+    module: "AuditLogs",
+    action: "view",
+    description: "AuditLogs.view → Count login tracking rows for a user",
+  },
+  {
+    id: "audit:logged-user-list",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tracking\/get-logged-user-tracking\/[^/]+$/ ),
+    module: "AuditLogs",
+    action: "view",
+    description: "AuditLogs.view → List login tracking rows for a user",
+  },
+  {
+    id: "audit:all-users-counts",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tracking\/get-all-users-login-counts$/ ),
+    module: "AuditLogs",
+    action: "filter",
+    description: "AuditLogs.filter → Get aggregated login counts across all users",
+  },
+  {
+    id: "audit:file-activity",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tracking\/user-file-management-activity\/[^/]+\/\d+\/\d+$/ ),
+    module: "AuditLogs",
+    action: "view",
+    description: "AuditLogs.view → Read file management activity (paged)",
+  },
+  {
+    id: "audit:track-activity",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-tracking\/track-activity$/ ),
+    module: "AuditLogs",
+    action: "create",
+    description: "AuditLogs.create → Track generic user activity event",
+  },
+  {
+    id: "audit:activities-by-user",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tracking\/activities\/[^/]+\/\d+\/\d+$/ ),
+    module: "AuditLogs",
+    action: "view",
+    description: "AuditLogs.view → List recent activities for a user (paged)",
+  },
+  {
+    id: "audit:recent-feed",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tracking\/recent$/ ),
+    module: "AuditLogs",
+    action: "view",
+    description: "AuditLogs.view → Recent audit feed (system-wide)",
+  },
 
   // =========================================================================
-  // COMPLAINTS (mounted under /api-tenant/... in your legacy)
-  // AccessMap: ComplaintsManagement actions = view/manage/assign/workflow/audit/export
+  // FILE TRANSFER (/api-file-transfer) → map to TenantManagement (closest)
   // =========================================================================
-  { id: "complaint:create", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-tenant\/create-complaint$/), module: "ComplaintsManagement", action: "manage" },
-  { id: "complaint:get", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tenant\/complaint\/[^/]+$/), module: "ComplaintsManagement", action: "view" },
-  { id: "complaint:list-by-tenant", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tenant\/complaints\/tenant\/[^/]+$/), module: "ComplaintsManagement", action: "view" },
-  { id: "complaint:count-by-tenant", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tenant\/complaints-count\/tenant\/[^/]+$/), module: "ComplaintsManagement", action: "view" },
-  { id: "complaint:list-all", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tenant\/complaints\/all$/), module: "ComplaintsManagement", action: "view" },
-  { id: "complaint:count-all", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tenant\/complaints-count\/all$/), module: "ComplaintsManagement", action: "view" },
-  { id: "complaint:by-section", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tenant\/complaints-by-section\/all\/[^/]+$/), module: "ComplaintsManagement", action: "view" },
-  { id: "complaint:post-comments", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-tenant\/complaints\/post-comments$/), module: "ComplaintsManagement", action: "workflow" },
-  { id: "complaint:list-comments", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tenant\/complaints\/[^/]+\/comments$/), module: "ComplaintsManagement", action: "view" },
-  { id: "complaint:by-status", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tenant\/complaints\/all\/status\/[^/]+$/), module: "ComplaintsManagement", action: "view" },
-  { id: "complaint:count-by-status", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-tenant\/complaints\/all\/count\/status\/[^/]+$/), module: "ComplaintsManagement", action: "view" },
+  {
+    id: "file-transfer:tenant-mobile-upload",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-file-transfer\/get-tenant-mobile-file-upload\/[^/]+$/ ),
+    module: "TenantManagement",
+    action: "update",
+    description: "TenantManagement.update → Issue tenant mobile upload token/endpoint (legacy FileTransfer)",
+  },
+  {
+    id: "file-transfer:get-by-tenant-reason",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-file-transfer\/get-reason-file-uploads-by-tenant-username\/[^/]+$/ ),
+    module: "TenantManagement",
+    action: "view",
+    description: "TenantManagement.view → List file uploads by tenant username + reason (legacy FileTransfer)",
+  },
+  {
+    id: "file-transfer:convert-to-pdf",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-file-transfer\/convert-to-pdf$/ ),
+    module: "TenantManagement",
+    action: "update",
+    description: "TenantManagement.update → Convert uploads to PDF (legacy FileTransfer)",
+  },
 
   // =========================================================================
-  // KPI MONITORING (/api-kpis, /api-team-management/kpi)
-  // AccessMap: KpiMonitoring actions = view/ingest/rebuild/configure/alerts/export
+  // LEASE MANAGEMENT (/api-lease) → AccessMap: LeaseManagement
   // =========================================================================
-  { id: "kpi:deal-fact", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-kpis\/facts\/deals$/), module: "KpiMonitoring", action: "ingest" },
-  { id: "kpi:satisfaction-fact", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-kpis\/facts\/satisfaction$/), module: "KpiMonitoring", action: "ingest" },
-  { id: "kpi:maintenance-event", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-kpis\/facts\/maintenance\/events$/), module: "KpiMonitoring", action: "ingest" },
-  { id: "kpi:team-task-fact", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-kpis\/facts\/team\/tasks$/), module: "KpiMonitoring", action: "ingest" },
-  { id: "kpi:team-task-evidence", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-kpis\/facts\/team\/task-evidence$/), module: "KpiMonitoring", action: "ingest" },
-  { id: "kpi:team-task-event", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-kpis\/facts\/team\/task-events$/), module: "KpiMonitoring", action: "ingest" },
-  { id: "kpi:realtime-health", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-kpis\/realtime\/health$/), module: "KpiMonitoring", action: "view" },
-
-  { id: "team-kpi:member-profile", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/kpi\/member-profile$/), module: "KpiMonitoring", action: "view" },
-  { id: "team-kpi:task-completion-rate", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/kpi\/task-completion-rate$/), module: "KpiMonitoring", action: "view" },
-  { id: "team-kpi:task-completion-rate-by-team", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/kpi\/task-completion-rate\/by-team$/), module: "KpiMonitoring", action: "view" },
-  { id: "team-kpi:customer-satisfaction", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/kpi\/customer-satisfaction$/), module: "KpiMonitoring", action: "view" },
-  { id: "team-kpi:top-overdue-holders", method: "GET", pattern: GuardRoutesMapSource.p(/^\/api-team-management\/kpi\/top-overdue-holders$/), module: "KpiMonitoring", action: "view" },
+  {
+    id: "lease:register",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-lease\/register\/[^/]+$/ ),
+    module: "LeaseManagement",
+    action: "create",
+    description: "LeaseManagement.create → Register a new lease agreement",
+  },
+  {
+    id: "lease:update-agreement",
+    method: "PUT",
+    pattern: GuardRoutesMapSource.p( /^\/api-lease\/update-lease-agreement\/[^/]+$/ ),
+    module: "LeaseManagement",
+    action: "update",
+    description: "LeaseManagement.update → Update lease agreement data",
+  },
+  {
+    id: "lease:delete-agreement-doc",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-lease\/delete-lease-document\/[^/]+$/ ),
+    module: "LeaseManagement",
+    action: "delete",
+    description: "LeaseManagement.delete → Delete a lease document (legacy endpoint)",
+  },
+  {
+    id: "lease:preview",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-lease\/preview-lease-agreement\/[^/]+$/ ),
+    module: "LeaseManagement",
+    action: "view",
+    description: "LeaseManagement.view → Preview lease agreement (HTML/PDF preview)",
+  },
+  {
+    id: "lease:agreement-pdf",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-lease\/lease-agreement-pdf\/[^/]+\/[^/]+\/[^/]+$/ ),
+    module: "LeaseManagement",
+    action: "view",
+    description: "LeaseManagement.view → Generate/download lease agreement PDF",
+  },
+  {
+    id: "lease:view-one",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-lease\/lease-agreement\/[^/]+$/ ),
+    module: "LeaseManagement",
+    action: "view",
+    description: "LeaseManagement.view → View a single lease agreement",
+  },
+  {
+    id: "lease:list-by-user",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-lease\/lease-agreements\/[^/]+$/ ),
+    module: "LeaseManagement",
+    action: "view",
+    description: "LeaseManagement.view → List lease agreements by user/tenant identifier",
+  },
+  {
+    id: "lease:update-status",
+    method: "PUT",
+    pattern: GuardRoutesMapSource.p( /^\/api-lease\/lease-status-updated\/[^/]+$/ ),
+    module: "LeaseManagement",
+    action: "update",
+    description: "LeaseManagement.update → Update lease status/workflow state",
+  },
+  {
+    id: "lease:list-all",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-lease\/all-leases$/ ),
+    module: "LeaseManagement",
+    action: "view",
+    description: "LeaseManagement.view → List all leases (admin/ops)",
+  },
+  {
+    id: "lease:count-all",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-lease\/get-lease-count$/ ),
+    module: "LeaseManagement",
+    action: "view",
+    description: "LeaseManagement.view → Count all leases",
+  },
+  {
+    id: "lease:props-without-lease",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-lease\/get-properties-that-does-not-have-lease$/ ),
+    module: "PropertyManagement",
+    action: "view",
+    description: "PropertyManagement.view → List properties without leases (lease helper query)",
+  },
+  {
+    id: "lease:props-without-lease-count",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-lease\/get-all-properties-count-without-leases$/ ),
+    module: "PropertyManagement",
+    action: "view",
+    description: "PropertyManagement.view → Count properties without leases (lease helper query)",
+  },
+  {
+    id: "lease:get-tenant-by-username",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-lease\/get-tenant-by-username\/[^/]+$/ ),
+    module: "UserManagement",
+    action: "view",
+    description: "UserManagement.view → Resolve tenant user by username (lease flow helper)",
+  },
 
   // =========================================================================
-  // COMMENTS ENGINE (PROTECTED WRITE + PIN OPS) — mounted: /api-comments
-  // NEW ROUTES:
-  //   POST /add
-  //   PATCH /edit/:id
-  //   DELETE /delete/:id
-  //   PATCH /pin/:id
-  //   PATCH /unpin/:id
-  //   PATCH /pin-toggle/:id
-  //
-  // AccessMap: CommentEngine actions = view/create/editOwn/delOwn/moderate/pin
-  // NOTE: unpin + pin-toggle are mapped to action "pin" (single permission).
+  // PAYMENTS (/api-payments) → AccessMap: PaymentBilling
   // =========================================================================
-  { id: "comments:add", method: "POST", pattern: GuardRoutesMapSource.p(/^\/api-comments\/add\/?$/), module: "CommentEngine", action: "create" },
-  { id: "comments:edit", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-comments\/edit\/[^/]+\/?$/), module: "CommentEngine", action: "editOwn" },
-  { id: "comments:delete", method: "DELETE", pattern: GuardRoutesMapSource.p(/^\/api-comments\/delete\/[^/]+\/?$/), module: "CommentEngine", action: "delOwn" },
+  {
+    // POST /api-payment/create
+    id: "payment:create",
+    method: "POST",
+    pattern: /^\/api-payments\/create(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "create",
+    description: "Create payment + persist invoice snapshot + generate invoice PDF.",
+  },
+  {
+    // GET /api-payment/invoice/:paymentId
+    id: "payment:invoice",
+    method: "GET",
+    pattern: /^\/api-payments\/invoice\/[^\/\?]+(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "invoice",
+    description: "Resolve invoice PDF by paymentId (returns relPath + url).",
+  },
+  // =========================================================================
+  // PLACES (/api-places) → AccessMap: PropertyManagement.view
+  // =========================================================================
+  {
+    id: "places:autocomplete",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-places\/autocomplete$/ ),
+    module: "PropertyManagement",
+    action: "view",
+    description: "PropertyManagement.view → Places autocomplete (address/location helper)",
+  },
 
-  { id: "comments:pin", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-comments\/pin\/[^/]+\/?$/), module: "CommentEngine", action: "pin" },
-  { id: "comments:unpin", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-comments\/unpin\/[^/]+\/?$/), module: "CommentEngine", action: "pin" },
-  { id: "comments:pin-toggle", method: "PATCH", pattern: GuardRoutesMapSource.p(/^\/api-comments\/pin-toggle\/[^/]+\/?$/), module: "CommentEngine", action: "pin" },
+  // =========================================================================
+  // PROPERTY MANAGEMENT (/api-property) → AccessMap: PropertyManagement
+  // =========================================================================
+  {
+    id: "property:create-legacy",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-property\/insert-property\/[^/]+$/ ),
+    module: "PropertyManagement",
+    action: "create",
+    description: "PropertyManagement.create → Create a property (legacy insert endpoint)",
+  },
+  {
+    id: "property:list-paged",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-property\/get-all-properties-with-pagination\/\d+\/\d+\/?$/ ),
+    module: "PropertyManagement",
+    action: "view",
+    description: "PropertyManagement.view → List properties with pagination",
+  },
+  {
+    id: "property:get-one",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-property\/get-single-property-by-id\/[^/]+$/ ),
+    module: "PropertyManagement",
+    action: "view",
+    description: "PropertyManagement.view → Get a single property by id",
+  },
+  {
+    id: "property:get-section",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-property\/get-single-property-section-by-id\/[^/]+$/ ),
+    module: "PropertyManagement",
+    action: "view",
+    description: "PropertyManagement.view → Get a specific property section by id",
+  },
+  {
+    id: "property:delete-legacy",
+    method: "DELETE",
+    pattern: GuardRoutesMapSource.p( /^\/api-property\/delete-property\/[^/]+\/[^/]+$/ ),
+    module: "PropertyManagement",
+    action: "delete",
+    description: "PropertyManagement.delete → Delete a property (legacy delete endpoint)",
+  },
+  {
+    id: "property:update-legacy",
+    method: "PUT",
+    pattern: GuardRoutesMapSource.p( /^\/api-property\/update-property\/[^/]+$/ ),
+    module: "PropertyManagement",
+    action: "update",
+    description: "PropertyManagement.update → Update a property (legacy update endpoint)",
+  },
+  {
+    id: "property:list-all",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-property\/get-all-properties\/?$/ ),
+    module: "PropertyManagement",
+    action: "view",
+    description: "PropertyManagement.view → List all properties",
+  },
+  {
+    id: "property:count-all",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-property\/get-all-properties-count\/?$/ ),
+    module: "PropertyManagement",
+    action: "view",
+    description: "PropertyManagement.view → Count all properties",
+  },
+
+  // =========================================================================
+  // TENANTS (/api-tenant) → AccessMap: TenantManagement
+  // =========================================================================
+  {
+    id: "tenant:create",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-tenant\/insertTenant$/ ),
+    module: "TenantManagement",
+    action: "create",
+    description: "TenantManagement.create → Create a tenant",
+  },
+  {
+    id: "tenant:list-all",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tenant\/get-all-tenants$/ ),
+    module: "TenantManagement",
+    action: "view",
+    description: "TenantManagement.view → List all tenants",
+  },
+  {
+    id: "tenant:count-all",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tenant\/get-all-tenants-count$/ ),
+    module: "TenantManagement",
+    action: "view",
+    description: "TenantManagement.view → Count all tenants",
+  },
+  {
+    id: "tenant:list-paged",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tenant\/get-all-tenants-with-pagination$/ ),
+    module: "TenantManagement",
+    action: "view",
+    description: "TenantManagement.view → List tenants with pagination (legacy)",
+  },
+  {
+    id: "tenant:list-none",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tenant\/get-all-none-tenants-with-pagination$/ ),
+    module: "TenantManagement",
+    action: "view",
+    description: "TenantManagement.view → List non-tenants with pagination (legacy)",
+  },
+  {
+    id: "tenant:count-none",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tenant\/get-all-none-tenants-count$/ ),
+    module: "TenantManagement",
+    action: "view",
+    description: "TenantManagement.view → Count non-tenants (legacy)",
+  },
+  {
+    id: "tenant:delete",
+    method: "DELETE",
+    pattern: GuardRoutesMapSource.p( /^\/api-tenant\/delete-tenant\/[^/]+\/[^/]+$/ ),
+    module: "TenantManagement",
+    action: "delete",
+    description: "TenantManagement.delete → Delete a tenant (legacy delete endpoint)",
+  },
+
+  // =========================================================================
+  // COMPLAINTS (legacy mounted under /api-tenant/...) → AccessMap: ComplaintsManagement
+  // =========================================================================
+  {
+    id: "complaint:create",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-tenant\/create-complaint$/ ),
+    module: "ComplaintsManagement",
+    action: "create",
+    description: "ComplaintsManagement.create → Create a complaint",
+  },
+  {
+    id: "complaint:get",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tenant\/complaint\/[^/]+$/ ),
+    module: "ComplaintsManagement",
+    action: "view",
+    description: "ComplaintsManagement.view → Get complaint by id",
+  },
+  {
+    id: "complaint:list-by-tenant",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tenant\/complaints\/tenant\/[^/]+$/ ),
+    module: "ComplaintsManagement",
+    action: "view",
+    description: "ComplaintsManagement.view → List complaints by tenant",
+  },
+  {
+    id: "complaint:count-by-tenant",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tenant\/complaints-count\/tenant\/[^/]+$/ ),
+    module: "ComplaintsManagement",
+    action: "view",
+    description: "ComplaintsManagement.view → Count complaints by tenant",
+  },
+  {
+    id: "complaint:list-all",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tenant\/complaints\/all$/ ),
+    module: "ComplaintsManagement",
+    action: "view",
+    description: "ComplaintsManagement.view → List all complaints",
+  },
+  {
+    id: "complaint:count-all",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tenant\/complaints-count\/all$/ ),
+    module: "ComplaintsManagement",
+    action: "view",
+    description: "ComplaintsManagement.view → Count all complaints",
+  },
+  {
+    id: "complaint:by-section",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tenant\/complaints-by-section\/all\/[^/]+$/ ),
+    module: "ComplaintsManagement",
+    action: "view",
+    description: "ComplaintsManagement.view → List complaints by section",
+  },
+  {
+    id: "complaint:post-comments",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-tenant\/complaints\/post-comments$/ ),
+    module: "ComplaintsManagement",
+    action: "workflow",
+    description: "ComplaintsManagement.workflow → Post comments to a complaint thread",
+  },
+  {
+    id: "complaint:list-comments",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tenant\/complaints\/[^/]+\/comments$/ ),
+    module: "ComplaintsManagement",
+    action: "view",
+    description: "ComplaintsManagement.view → List comments for a complaint",
+  },
+  {
+    id: "complaint:by-status",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tenant\/complaints\/all\/status\/[^/]+$/ ),
+    module: "ComplaintsManagement",
+    action: "view",
+    description: "ComplaintsManagement.view → List complaints by status",
+  },
+  {
+    id: "complaint:count-by-status",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-tenant\/complaints\/all\/count\/status\/[^/]+$/ ),
+    module: "ComplaintsManagement",
+    action: "view",
+    description: "ComplaintsManagement.view → Count complaints by status",
+  },
+
+  // =========================================================================
+  // TEAM MANAGEMENT — TEAMS (/api-team-management) → AccessMap: TeamManagement.Teams
+  // =========================================================================
+  {
+    id: "team:create",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/create$/ ),
+    module: "TeamManagement.Teams",
+    action: "create",
+    description: "TeamManagement.Teams.create → Create a team",
+  },
+  {
+    id: "team:get-by-name",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/teamName\/[^/]+$/ ),
+    module: "TeamManagement.Teams",
+    action: "view",
+    description: "TeamManagement.Teams.view → Get team by name",
+  },
+  {
+    id: "team:list-all",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/all$/ ),
+    module: "TeamManagement.Teams",
+    action: "view",
+    description: "TeamManagement.Teams.view → List all teams",
+  },
+  {
+    id: "team:upload-logo",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/upload\/logo\/[^/]+$/ ),
+    module: "TeamManagement.Teams",
+    action: "update",
+    description: "TeamManagement.Teams.update → Upload/update team logo",
+  },
+  {
+    id: "team:stats-total",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/stats\/teams-total$/ ),
+    module: "TeamManagement.Teams",
+    action: "monitor",
+    description: "TeamManagement.Teams.monitor → Total teams stats",
+  },
+  {
+    id: "team:stats-total-domain",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/stats\/teams-total\/domain\/[^/]+$/ ),
+    module: "TeamManagement.Teams",
+    action: "monitor",
+    description: "TeamManagement.Teams.monitor → Total teams stats by domain",
+  },
+  {
+    id: "team:users-no-team",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/users\/no-team$/ ),
+    module: "TeamManagement.Teams",
+    action: "view",
+    description: "TeamManagement.Teams.view → Users with no team",
+  },
+  {
+    id: "team:users-no-team-count",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/users\/no-team\/count$/ ),
+    module: "TeamManagement.Teams",
+    action: "view",
+    description: "TeamManagement.Teams.view → Count users with no team",
+  },
+  {
+    id: "team:users-in-teams",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/users\/in-teams$/ ),
+    module: "TeamManagement.Teams",
+    action: "view",
+    description: "TeamManagement.Teams.view → Users in teams",
+  },
+  {
+    id: "team:users-in-teams-count",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/users\/in-teams\/count$/ ),
+    module: "TeamManagement.Teams",
+    action: "view",
+    description: "TeamManagement.Teams.view → Count users in teams",
+  },
+  {
+    id: "team:users-no-team-domain",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/users\/no-team\/domain\/[^/]+$/ ),
+    module: "TeamManagement.Teams",
+    action: "view",
+    description: "TeamManagement.Teams.view → Users with no team filtered by domain",
+  },
+  {
+    id: "team:users-no-team-domain-count",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/users\/no-team\/domain\/[^/]+\/count$/ ),
+    module: "TeamManagement.Teams",
+    action: "view",
+    description: "TeamManagement.Teams.view → Count users with no team by domain",
+  },
+  {
+    id: "team:users-in-teams-domain",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/users\/in-teams\/domain\/[^/]+$/ ),
+    module: "TeamManagement.Teams",
+    action: "view",
+    description: "TeamManagement.Teams.view → Users in teams filtered by domain",
+  },
+  {
+    id: "team:users-in-teams-domain-count",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/users\/in-teams\/domain\/[^/]+\/count$/ ),
+    module: "TeamManagement.Teams",
+    action: "view",
+    description: "TeamManagement.Teams.view → Count users in teams by domain",
+  },
+  {
+    id: "team:users-all",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/users\/all\/?$/ ),
+    module: "TeamManagement.Teams",
+    action: "view",
+    description: "TeamManagement.Teams.view → List all users (team analytics helper)",
+  },
+  {
+    id: "team:update",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/update\/[^/]+$/ ),
+    module: "TeamManagement.Teams",
+    action: "update",
+    description: "TeamManagement.Teams.update → Update team by teamCode",
+  },
+  {
+    id: "team:delete",
+    method: "DELETE",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/delete\/[^/]+$/ ),
+    module: "TeamManagement.Teams",
+    action: "delete",
+    description: "TeamManagement.Teams.delete → Delete team by teamCode",
+  },
+  {
+    id: "team:get-by-code",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/[^/]+$/ ),
+    module: "TeamManagement.Teams",
+    action: "view",
+    description: "TeamManagement.Teams.view → Get team by teamCode (catch-all, must be last)",
+  },
+
+  // =========================================================================
+  // TEAM TASKS (/api-team-management/task) → AccessMap: TeamManagement.TeamTasks
+  // =========================================================================
+  {
+    id: "team-task:get",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/get\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "view",
+    description: "TeamManagement.TeamTasks.view → Get a task by mongo id",
+  },
+  {
+    id: "team-task:list",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/list\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "view",
+    description: "TeamManagement.TeamTasks.view → List tasks (advanced filters in body)",
+  },
+  {
+    id: "team-task:count",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/count\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "view",
+    description: "TeamManagement.TeamTasks.view → Count tasks (advanced filters in body)",
+  },
+  {
+    id: "team-task:key-values",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/key-values\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "view",
+    description: "TeamManagement.TeamTasks.view → Load key-values for task filters/selects",
+  },
+  {
+    id: "team-task:create",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/create\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "create",
+    description: "TeamManagement.TeamTasks.create → Create a task",
+  },
+  {
+    id: "team-task:update",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/update\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "update",
+    description: "TeamManagement.TeamTasks.update → Update task fields (general patch)",
+  },
+  {
+    id: "team-task:delete",
+    method: "DELETE",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/delete\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "delete",
+    description: "TeamManagement.TeamTasks.delete → Delete a task",
+  },
+  {
+    id: "team-task:evidence-delete",
+    method: "DELETE",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/evidence\/[^/]+\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "evidence",
+    description: "TeamManagement.TeamTasks.evidence → Remove a task evidence item",
+  },
+  {
+    id: "team-task:status",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/status\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "workflow",
+    description: "TeamManagement.TeamTasks.workflow → Set task status (workflow transition)",
+  },
+  {
+    id: "team-task:priority",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/priority\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "workflow",
+    description: "TeamManagement.TeamTasks.workflow → Set task priority (workflow governance)",
+  },
+  {
+    id: "team-task:labels-set",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/labels\/set\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "workflow",
+    description: "TeamManagement.TeamTasks.workflow → Replace labels list on a task",
+  },
+  {
+    id: "team-task:labels-add",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/labels\/add\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "workflow",
+    description: "TeamManagement.TeamTasks.workflow → Add labels to a task",
+  },
+  {
+    id: "team-task:labels-remove",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/labels\/remove\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "workflow",
+    description: "TeamManagement.TeamTasks.workflow → Remove labels from a task",
+  },
+  {
+    id: "team-task:members-set",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/members\/set\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "assign",
+    description: "TeamManagement.TeamTasks.assign → Replace assigned members on a task",
+  },
+  {
+    id: "team-task:members-add",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/members\/add\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "assign",
+    description: "TeamManagement.TeamTasks.assign → Add assigned members to a task",
+  },
+  {
+    id: "team-task:members-remove",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/members\/remove\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "assign",
+    description: "TeamManagement.TeamTasks.assign → Remove assigned members from a task",
+  },
+  {
+    id: "team-task:captain",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/captain\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "assign",
+    description: "TeamManagement.TeamTasks.assign → Set/replace task captain",
+  },
+  {
+    id: "team-task:location",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/location\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "update",
+    description: "TeamManagement.TeamTasks.update → Update task geo-location fields",
+  },
+  {
+    id: "team-task:address",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/address\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "update",
+    description: "TeamManagement.TeamTasks.update → Update task address fields",
+  },
+  {
+    id: "team-task:notes",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/notes\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "update",
+    description: "TeamManagement.TeamTasks.update → Update task notes content",
+  },
+  {
+    id: "team-task:audit-get",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/audit\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "audit",
+    description: "TeamManagement.TeamTasks.audit → Read task audit policy/settings",
+  },
+  {
+    id: "team-task:audit-set",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/audit\/set\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "audit",
+    description: "TeamManagement.TeamTasks.audit → Set task audit policy/settings",
+  },
+  {
+    id: "team-task:audit-patch",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/audit\/patch\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "audit",
+    description: "TeamManagement.TeamTasks.audit → Patch task audit policy/settings",
+  },
+  {
+    id: "team-task:audit-clear",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/audit\/clear\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "audit",
+    description: "TeamManagement.TeamTasks.audit → Clear task audit policy/settings",
+  },
+  {
+    id: "team-task:timing-get",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/timing\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "workflow",
+    description: "TeamManagement.TeamTasks.workflow → Read task timing rules/settings",
+  },
+  {
+    id: "team-task:timing-set",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/timing\/set\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "workflow",
+    description: "TeamManagement.TeamTasks.workflow → Set task timing rules/settings",
+  },
+  {
+    id: "team-task:timing-patch",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/timing\/patch\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "workflow",
+    description: "TeamManagement.TeamTasks.workflow → Patch task timing rules/settings",
+  },
+  {
+    id: "team-task:timing-clear",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/timing\/clear\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "workflow",
+    description: "TeamManagement.TeamTasks.workflow → Clear task timing rules/settings",
+  },
+  {
+    id: "team-task:sla",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/sla\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "workflow",
+    description: "TeamManagement.TeamTasks.workflow → Set SLA policy for the task",
+  },
+  {
+    id: "team-task:usernames",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/users\/usernames\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "view",
+    description: "TeamManagement.TeamTasks.view → Get usernames under a task context",
+  },
+  {
+    id: "team-task:users",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/users\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "view",
+    description: "TeamManagement.TeamTasks.view → Get user objects under a task context",
+  },
+
+  // =========================================================================
+  // WORK ITEMS (/api-work-item) → AccessMap: TeamManagement.WorkItems
+  // =========================================================================
+  {
+    id: "work-item:list",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-work-item\/list\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "view",
+    description: "TeamManagement.WorkItems.view → List work items",
+  },
+  {
+    id: "work-item:count",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-work-item\/count\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "view",
+    description: "TeamManagement.WorkItems.view → Count work items",
+  },
+  {
+    id: "work-item:get",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-work-item\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "view",
+    description: "TeamManagement.WorkItems.view → Get work item by id",
+  },
+  {
+    id: "work-item:create",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-work-item\/create\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "create",
+    description: "TeamManagement.WorkItems.create → Create a work item",
+  },
+  {
+    id: "work-item:update",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-work-item\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "update",
+    description: "TeamManagement.WorkItems.update → Update a work item",
+  },
+  {
+    id: "work-item:delete",
+    method: "DELETE",
+    pattern: GuardRoutesMapSource.p( /^\/api-work-item\/[^/]+\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "delete",
+    description: "TeamManagement.WorkItems.delete → Delete a work item",
+  },
+  {
+    id: "work-item:status",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-work-item\/[^/]+\/status\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "workflow",
+    description: "TeamManagement.WorkItems.workflow → Set work item status",
+  },
+  {
+    id: "work-item:priority",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-work-item\/[^/]+\/priority\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "workflow",
+    description: "TeamManagement.WorkItems.workflow → Set work item priority",
+  },
+  {
+    id: "work-item:due-at",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-work-item\/[^/]+\/due-at\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "workflow",
+    description: "TeamManagement.WorkItems.workflow → Set/update work item due date/time",
+  },
+  {
+    id: "work-item:assigned-members",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-work-item\/[^/]+\/assigned-members\/?$/ ),
+    module: "TeamManagement.WorkItems",
+    action: "assign",
+    description: "TeamManagement.WorkItems.assign → Set/replace assigned members for work item",
+  },
+  {
+    id: "work-item:activity",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-work-item\/[^/]+\/activity\/?$/ ),
+    module: "TeamManagement.MemberActivities",
+    action: "create",
+    description: "TeamManagement.MemberActivities.create → Create a member activity under a work item",
+  },
+
+  // =========================================================================
+  // WORK EVENTS (/api-work-event) → AccessMap: TeamManagement.WorkEvents
+  // =========================================================================
+  {
+    id: "work-event:list-all",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-work-event\/all\/?$/ ),
+    module: "TeamManagement.WorkEvents",
+    action: "view",
+    description: "TeamManagement.WorkEvents.view → List all work events",
+  },
+  {
+    id: "work-event:list-by-workitem",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-work-event\/by-workitem\/[^/]+$/ ),
+    module: "TeamManagement.WorkEvents",
+    action: "view",
+    description: "TeamManagement.WorkEvents.view → List work events by workItem",
+  },
+  {
+    id: "work-event:list-by-team",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-work-event\/by-team\/[^/]+$/ ),
+    module: "TeamManagement.WorkEvents",
+    action: "view",
+    description: "TeamManagement.WorkEvents.view → List work events by team",
+  },
+  {
+    id: "work-event:stats-by-workitem",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-work-event\/stats\/workitem\/[^/]+$/ ),
+    module: "TeamManagement.WorkEvents",
+    action: "view",
+    description: "TeamManagement.WorkEvents.view → Work event statistics by workItem",
+  },
+
+  // =========================================================================
+  // MEMBER ACTIVITIES (/api-team-management/member-activities) → AccessMap: TeamManagement.MemberActivities
+  // =========================================================================
+  {
+    id: "member-act:list",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/member-activities\/list\/?$/ ),
+    module: "TeamManagement.MemberActivities",
+    action: "view",
+    description: "TeamManagement.MemberActivities.view → List member activities",
+  },
+  {
+    id: "member-act:count",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/member-activities\/count\/?$/ ),
+    module: "TeamManagement.MemberActivities",
+    action: "view",
+    description: "TeamManagement.MemberActivities.view → Count member activities",
+  },
+  {
+    id: "member-act:get",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/member-activities\/[^/]+\/?$/ ),
+    module: "TeamManagement.MemberActivities",
+    action: "view",
+    description: "TeamManagement.MemberActivities.view → Get member activity by id",
+  },
+  {
+    id: "member-act:create",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/member-activities\/create\/?$/ ),
+    module: "TeamManagement.MemberActivities",
+    action: "create",
+    description: "TeamManagement.MemberActivities.create → Create a member activity",
+  },
+  {
+    id: "member-act:update",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/member-activities\/[^/]+\/?$/ ),
+    module: "TeamManagement.MemberActivities",
+    action: "update",
+    description: "TeamManagement.MemberActivities.update → Update a member activity",
+  },
+  {
+    id: "member-act:delete",
+    method: "DELETE",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/member-activities\/[^/]+\/?$/ ),
+    module: "TeamManagement.MemberActivities",
+    action: "delete",
+    description: "TeamManagement.MemberActivities.delete → Delete a member activity",
+  },
+  {
+    id: "member-act:evi-append",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/member-activities\/[^/]+\/evidence\/append\/?$/ ),
+    module: "TeamManagement.MemberActivities",
+    action: "evidence",
+    description: "TeamManagement.MemberActivities.evidence → Append evidence to activity",
+  },
+  {
+    id: "member-act:evi-replace",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/member-activities\/[^/]+\/evidence\/replace\/?$/ ),
+    module: "TeamManagement.MemberActivities",
+    action: "evidence",
+    description: "TeamManagement.MemberActivities.evidence → Replace evidence list on activity",
+  },
+  {
+    id: "member-act:evi-remove",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/member-activities\/[^/]+\/evidence\/remove\/?$/ ),
+    module: "TeamManagement.MemberActivities",
+    action: "evidence",
+    description: "TeamManagement.MemberActivities.evidence → Remove evidence from activity",
+  },
+  {
+    id: "member-act:blocker-append",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/member-activities\/[^/]+\/blockers\/append\/?$/ ),
+    module: "TeamManagement.MemberActivities",
+    action: "blockers",
+    description: "TeamManagement.MemberActivities.blockers → Append blocker to activity",
+  },
+  {
+    id: "member-act:blocker-update",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/member-activities\/[^/]+\/blockers\/update\/?$/ ),
+    module: "TeamManagement.MemberActivities",
+    action: "blockers",
+    description: "TeamManagement.MemberActivities.blockers → Update blocker on activity",
+  },
+  {
+    id: "member-act:blocker-resolve",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/member-activities\/[^/]+\/blockers\/resolve\/?$/ ),
+    module: "TeamManagement.MemberActivities",
+    action: "blockers",
+    description: "TeamManagement.MemberActivities.blockers → Resolve blocker on activity",
+  },
+  {
+    id: "member-act:blocker-remove",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/member-activities\/[^/]+\/blockers\/remove\/?$/ ),
+    module: "TeamManagement.MemberActivities",
+    action: "blockers",
+    description: "TeamManagement.MemberActivities.blockers → Remove blocker from activity",
+  },
+
+  // =========================================================================
+  // MILESTONES (/api-team-management/milestones) → AccessMap: TeamManagement.Milestones
+  // =========================================================================
+  {
+    id: "ms:list",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/milestones\/list\/?$/ ),
+    module: "TeamManagement.Milestones",
+    action: "view",
+    description: "TeamManagement.Milestones.view → List milestones",
+  },
+  {
+    id: "ms:count",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/milestones\/count\/?$/ ),
+    module: "TeamManagement.Milestones",
+    action: "view",
+    description: "TeamManagement.Milestones.view → Count milestones",
+  },
+  {
+    id: "ms:get",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/milestones\/[^/]+\/?$/ ),
+    module: "TeamManagement.Milestones",
+    action: "view",
+    description: "TeamManagement.Milestones.view → Get milestone by id",
+  },
+  {
+    id: "ms:create",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/milestones\/create\/?$/ ),
+    module: "TeamManagement.Milestones",
+    action: "create",
+    description: "TeamManagement.Milestones.create → Create a milestone",
+  },
+  {
+    id: "ms:update",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/milestones\/[^/]+\/?$/ ),
+    module: "TeamManagement.Milestones",
+    action: "update",
+    description: "TeamManagement.Milestones.update → Update milestone",
+  },
+  {
+    id: "ms:delete",
+    method: "DELETE",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/milestones\/[^/]+\/?$/ ),
+    module: "TeamManagement.Milestones",
+    action: "delete",
+    description: "TeamManagement.Milestones.delete → Delete milestone",
+  },
+  {
+    id: "ms:evi-append",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/milestones\/[^/]+\/evidence\/append\/?$/ ),
+    module: "TeamManagement.Milestones",
+    action: "evidence",
+    description: "TeamManagement.Milestones.evidence → Append evidence to milestone",
+  },
+  {
+    id: "ms:evi-remove",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/milestones\/[^/]+\/evidence\/remove\/?$/ ),
+    module: "TeamManagement.Milestones",
+    action: "evidence",
+    description: "TeamManagement.Milestones.evidence → Remove evidence from milestone",
+  },
+  {
+    id: "ms:evi-replace",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/milestones\/[^/]+\/evidence\/replace\/?$/ ),
+    module: "TeamManagement.Milestones",
+    action: "evidence",
+    description: "TeamManagement.Milestones.evidence → Replace evidence list on milestone",
+  },
+  {
+    id: "ms:tags-append",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/milestones\/[^/]+\/tags\/append\/?$/ ),
+    module: "TeamManagement.Milestones",
+    action: "tags",
+    description: "TeamManagement.Milestones.tags → Append tags to milestone",
+  },
+  {
+    id: "ms:tags-remove",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/milestones\/[^/]+\/tags\/remove\/?$/ ),
+    module: "TeamManagement.Milestones",
+    action: "tags",
+    description: "TeamManagement.Milestones.tags → Remove tags from milestone",
+  },
+  {
+    id: "ms:tags-replace",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/milestones\/[^/]+\/tags\/replace\/?$/ ),
+    module: "TeamManagement.Milestones",
+    action: "tags",
+    description: "TeamManagement.Milestones.tags → Replace tags list on milestone",
+  },
+
+  // =========================================================================
+  // KPI MONITORING (/api-kpis + /api-team-management/kpi) → AccessMap: KpiMonitoring
+  // =========================================================================
+  {
+    id: "team-kpi:keys",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/kpi\/keys$/ ),
+    module: "KpiMonitoring",
+    action: "view",
+    description: "KpiMonitoring.view → Team KPI: list supported KPI keys for UI discovery",
+  },
+  {
+    id: "team-kpi:metric",
+    method: "GET",
+    // Matches: /api-team-management/kpi/metric/<key>
+    // - <key> is a single path segment (no slashes)
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/kpi\/metric\/[^/]+$/ ),
+    module: "KpiMonitoring",
+    action: "view",
+    description: "KpiMonitoring.view → Team KPI: compute single metric by key (REST snapshot)",
+  },
+  {
+    id: "team-kpi:batch",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/kpi\/batch$/ ),
+    module: "KpiMonitoring",
+    action: "view",
+    description: "KpiMonitoring.view → Team KPI: compute multiple metrics by keys (dashboard batch)",
+  },
+  {
+    id: "team-kpi:member-profile",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/kpi\/member-profile$/ ),
+    module: "KpiMonitoring",
+    action: "view",
+    description: "KpiMonitoring.view → Team KPI: member profile analytics",
+  },
+
+  // =========================================================================
+  // COMMENTS ENGINE (PROTECTED WRITE + PIN OPS) → AccessMap: CommentEngine
+  // =========================================================================
+  {
+    id: "comments:add",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-comments\/add\/?$/ ),
+    module: "CommentEngine",
+    action: "create",
+    description: "CommentEngine.create → Add a new comment (write)",
+  },
+  {
+    id: "comments:edit",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-comments\/edit\/[^/]+\/?$/ ),
+    module: "CommentEngine",
+    action: "update",
+    description: "CommentEngine.update → Edit/update an existing comment",
+  },
+  {
+    id: "comments:delete",
+    method: "DELETE",
+    pattern: GuardRoutesMapSource.p( /^\/api-comments\/delete\/[^/]+\/?$/ ),
+    module: "CommentEngine",
+    action: "delete",
+    description: "CommentEngine.delete → Delete a comment",
+  },
+  {
+    id: "comments:pin",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-comments\/pin\/[^/]+\/?$/ ),
+    module: "CommentEngine",
+    action: "pin",
+    description: "CommentEngine.pin → Pin a comment",
+  },
+  {
+    id: "comments:unpin",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-comments\/unpin\/[^/]+\/?$/ ),
+    module: "CommentEngine",
+    action: "pin",
+    description: "CommentEngine.pin → Unpin a comment (mapped to pin permission)",
+  },
+  {
+    id: "comments:pin-toggle",
+    method: "PATCH",
+    pattern: GuardRoutesMapSource.p( /^\/api-comments\/pin-toggle\/[^/]+\/?$/ ),
+    module: "CommentEngine",
+    action: "pin",
+    description: "CommentEngine.pin → Toggle pin state (mapped to pin permission)",
+  },
+
+  // =========================================================================
+  // RECYCLE BIN (/api-recyclebin) → AccessMap: RecycleBin
+  // =========================================================================
+  {
+    id: "recyclebin:list",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-recyclebin\/list\/?$/ ),
+    module: "RecycleBin",
+    action: "list",
+    description: "RecycleBin.list → List recycle bin entries (minimal listing)",
+  },
+  {
+    id: "recyclebin:count",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-recyclebin\/count\/?$/ ),
+    module: "RecycleBin",
+    action: "count",
+    description: "RecycleBin.count → Count recycle bin entries",
+  },
+  {
+    id: "recyclebin:view-snapshot",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-recyclebin\/[^/]+\/snapshot\/?$/ ),
+    module: "RecycleBin",
+    action: "view_snapshot",
+    description: "RecycleBin.view_snapshot → View snapshot (sensitive content read)",
+  },
+  {
+    id: "recyclebin:restore-prepare",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-recyclebin\/[^/]+\/restore\/prepare\/?$/ ),
+    module: "RecycleBin",
+    action: "restore",
+    description: "RecycleBin.restore → Prepare restore (pre-flight validation/lock)",
+  },
+  {
+    id: "recyclebin:restore-mark",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-recyclebin\/[^/]+\/restore\/mark\/?$/ ),
+    module: "RecycleBin",
+    action: "restore",
+    description: "RecycleBin.restore → Mark/commit restore for an entry",
+  },
+  {
+    id: "recyclebin:purge",
+    method: "DELETE",
+    pattern: GuardRoutesMapSource.p( /^\/api-recyclebin\/[^/]+\/purge\/?$/ ),
+    module: "RecycleBin",
+    action: "purge",
+    description: "RecycleBin.purge → Permanently purge an entry (irreversible)",
+  },
 ];
 
 /**

@@ -1,310 +1,215 @@
-//Path: src/api/tenants.router.ts
+// Path: src/api/tenants.router.ts
 // ============================================================================
-// Tenants API (PropEase)
-// - Insert new tenant
-// - Get all tenants
-// - Delete tenant  (safe recyclebin move with DB export)
-// - Create complaint (multipart: JSON + attachments[0..9])
-// - Get complaint by ID
-// - Get all complaints for a tenant
-// - Get all complaints (admin view)
-// - Post comment on complaint (multipart: JSON + attachments[0..9])
+// Tenants API (PropEase) — UPGRADED (FileUploader + correct RecycleBin leasing)
 // ----------------------------------------------------------------------------
-// Design notes:
-// • We never delete files outright during destructive ops; we move to /public/recyclebin
-// • We export DB rows to JSON in recyclebin for audit/recovery
-// • For uploads we use Multer memoryStorage, validate, then persist to final disk paths
-// • All routes return JSON and follow the res.status(...).json(...); return; pattern
-// • All helpers are class methods; no free functions
-// • Electron-friendly: file responses may include relPath under "public/..."
+// Key upgrades
+// ✅ Uses FileUploader helper for complaint uploads (max 20 files, 20MB each)
+// ✅ Delete tenant records tenant + leases DB snapshot AND moves BOTH tenant + lease folders
+// ✅ Lease files are NOT forced under tenant folder (restore-safe via restoreHints.leaseRootsById)
+// ✅ Keeps everything class-based, no free helper functions
+// ✅ Uses ApiResponseBuilder and avoids passing undefined in optionals
 // ============================================================================
 
-import { randomUUID } from 'crypto';
-import express, {
-  NextFunction,
-  Request,
-  RequestHandler,
-  Response, Router
-} from 'express';
-import fs from 'fs';
-import * as fse from 'fs-extra';
-import { FilterQuery } from "mongoose";
-import type { FileFilterCallback } from 'multer';
-import multer from 'multer';
-import path from 'path';
+import express, { type Request, type Response, type Router, type RequestHandler } from "express";
+import fs from "fs";
+import path from "path";
+import { type ClientSession, type FilterQuery } from "mongoose";
 
 import {
   COMPLAINT_CATEGORIES,
   ComplaintModel,
-  IComplaint
-} from '../models/complaint.model';
-import { LeaseModel, type LeasePayload } from '../models/lease.model';
-import { ITenant, TenantModel } from '../models/tenant.model';
-import { USER_MODEL_PROJECTION, UserModel, type User } from '../models/user.model';
-import NotificationService from '../services/notification.service';
-import type { PaginationMeta } from '../types/api-message';
-import { ApiResponseBuilder } from '../utils/api-combiner.builder';
+  type IComplaint,
+} from "../models/complaint.model";
+import { LeaseModel, LeasePayload } from "../models/lease.model";
+import { TenantModel, type ITenant } from "../models/tenant.model";
+import { USER_MODEL_PROJECTION, UserModel, type User } from "../models/user.model";
 
+import { ApiGuardExport } from "../guard/api-router.guard";
+import { ApiResponseBuilder } from "../utils/api-combiner.builder";
 
+import type { AuthUser } from "../types/common";
+import type { FileMetaPacket, PaginationMeta } from "../types/common";
 
+import { FileMetaPacketBuilder } from "../utils/files/file-meta-packet.builder";
+import FileUploader, { type UploadResultPacket } from "../utils/files/file-uploader.helper";
 
+import { RecycleBinDomainDeleteService, type DomainDeletePlan } from "../services/recyclebin/recyclebin-domain-delete.service";
 
-/**
- * Tenant API class — mount with:  app.use('/api/tenants', new Tenant().route);
- */
+import { NotificationHubEngineService } from "../services/notifications/notification-hub-engine.service";
+import type { NotificationActorDto } from "../types/notification/notification.types";
+
 export default class Tenant {
   // ---------------------------------------------------------------------------
-  // Express router exposed via .route
+  // Engines
+  // ---------------------------------------------------------------------------
+  private readonly notificationHub: NotificationHubEngineService = new NotificationHubEngineService();
+  private readonly deleteSvc: RecycleBinDomainDeleteService = new RecycleBinDomainDeleteService();
+
+  // ---------------------------------------------------------------------------
+  // Express
   // ---------------------------------------------------------------------------
   private readonly router: Router = express.Router();
 
-  // ---------------------------------------------------------------------------
-  // Base directories (served statically by main app)
-  //   <project>/public
-  //   <project>/public/uploads
-  //   <project>/public/recyclebin
-  // ---------------------------------------------------------------------------
-  private readonly PUBLIC_ROOT = path.resolve( __dirname, '../../public' );
-  private readonly UPLOADS_ROOT = path.join( this.PUBLIC_ROOT, 'uploads' );
-  private readonly RECYCLEBIN_ROOT = path.join( this.PUBLIC_ROOT, 'recyclebin' );
-
-  private readonly TENANT_RECYCLE_ROOT = path.join( this.RECYCLEBIN_ROOT, 'tenants' );
-
-  // Recycled leases live under: /public/recyclebin/tenants/leases/<username>/<stamp>-<leaseID>/
-  private readonly TENANT_RECYCLE_LEASES_ROOT = path.join( this.TENANT_RECYCLE_ROOT, 'leases' );
-
-  // Lease uploads live under: /public/uploads/leases/<leaseID>/
-  private readonly LEASE_UPLOAD_ROOT = path.join( this.UPLOADS_ROOT, 'leases' );
-
-  // ---------------------------------------------------------------------------
-  // Attachment type allowlists
-  // ---------------------------------------------------------------------------
-  private readonly allowedImageTypes: string[] = [
-    'image/jpeg', 'image/jpg', 'image/png', 'image/gif',
-    'image/bmp', 'image/tiff', 'image/webp', 'image/svg+xml',
-    'image/avif', 'image/heic',
-  ];
-
-  private readonly allowedDocTypes: string[] = [
-    'application/pdf',
-    'application/msword',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'application/vnd.ms-excel',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'text/csv',
-    'text/plain',
-  ];
-
-  // ---------------------------------------------------------------------------
-  // Constructor binds routes
-  // ---------------------------------------------------------------------------
-  public constructor () {
-    this.insertTenant();                                                              // POST   /insertTenant
-    this.getAllTenants();                                                             // GET    /get-all-tenants
-    this.getAllTenantsCount();                                                        // GET    /get-all-tenants-count
-    this.getAllTenantsWithPagination();                                               // GET    /get-all-tenants-with-pagination
-    this.getAllNoneTenantWithPagination();                                            // GET    /get-all-none-tenants-with-pagination
-    this.getAllNoneTenantCount();                                                     // GET    /get-all-none-tenant-count
-    this.deleteTenant();                                                              // DELETE /delete-tenant/:username/:deletor
-    this.createComplaint();                                                           // POST   /create-complaint
-    this.getComplaintById();                                                          // GET    /complaint/:complaintID
-    this.getAllComplaintsByTenantUsername();                                          // GET    /complaints/tenant/:username?start=&limit=&search=
-    this.getAllComplaintsCountByTenantUsername();                                     // GET    /complaints-count/tenant/:username
-    this.getAllComplaints();                                                          // GET    /complaints/all
-    this.getAllComplaintsByStatus();                                                  // GET    /complaints/all/status/:status
-    this.getAllComplaintsCountByStatus();                                             // GET    /complaints/all/count/status/:status
-    this.getAllComplaintsCount();                                                     // GET    /complaints-count/all
-    this.getAllComplaintsBySection();                                                 // GET    /complaints-by-section/all/:section
-  }
-
-
-  /** Expose router for mounting. */
   public get route(): Router {
     return this.router;
   }
 
+  // ---------------------------------------------------------------------------
+  // Public roots (Electron-safe)
+  // ---------------------------------------------------------------------------
+  private readonly PUBLIC_ROOT = path.resolve( __dirname, "../../public" );
+
+  // NOTE:
+  // - FileUploader stores under: /public/uploads/...
+  // - RecycleBinEngine stores under: /public/recyclebin/...
+  private readonly TENANT_UPLOAD_ROOT_REL = "uploads/tenants";
+  private readonly LEASES_UPLOAD_ROOT_REL = "uploads/leases";
+
+  // ---------------------------------------------------------------------------
+  // Upload policy (requested)
+  // ---------------------------------------------------------------------------
+  private readonly MAX_FILE_MB = 20;
+  private readonly MAX_FILES_TOTAL = 20; // for complaint attachments
+
+  // ---------------------------------------------------------------------------
+  // Allowed types
+  // ---------------------------------------------------------------------------
+  private readonly allowFileTypes: ReadonlySet<string> = new Set( [
+    // images
+    "image/jpeg",
+    "image/jpg",
+    "image/png",
+    "image/gif",
+    "image/bmp",
+    "image/tiff",
+    "image/webp",
+    "image/svg+xml",
+    "image/avif",
+    "image/heic",
+    // docs
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/csv",
+    "text/plain",
+  ] );
+
+  public constructor () {
+    this.insertTenant();
+    this.getAllTenants();
+    this.getAllTenantsCount();
+    this.getAllTenantsWithPagination();
+    this.getAllNoneTenantWithPagination();
+    this.getAllNoneTenantCount();
+
+    this.deleteTenant();
+
+    this.createComplaint();
+    this.getComplaintById();
+    this.getAllComplaintsByTenantUsername();
+    this.getAllComplaintsCountByTenantUsername();
+    this.getAllComplaints();
+    this.getAllComplaintsByStatus();
+    this.getAllComplaintsCountByStatus();
+    this.getAllComplaintsCount();
+    this.getAllComplaintsBySection();
+  }
 
   // ===========================================================================
-  // Helpers (paths, fs, validation, naming)
+  // Small helpers (class-only)
   // ===========================================================================
 
-  /** Safe join under a known root; prevents path traversal. */
-  private safeJoin( root: string, ...segments: string[] ): string {
-    const target = path.resolve( root, ...segments );
-    const normalizedRoot = path.resolve( root );
-    if ( !target.startsWith( normalizedRoot ) ) {
-      throw new Error( 'Unsafe path resolution detected' );
+  private isStr( v: unknown ): v is string {
+    return typeof v === "string";
+  }
+
+  private s( v: unknown ): string {
+    return this.isStr( v ) ? v.trim() : "";
+  }
+
+  private safeInt( v: unknown, fallback: number, min: number, max: number ): number {
+    const n = Number( String( v ?? "" ).trim() );
+    if ( !Number.isFinite( n ) ) return fallback;
+    const x = Math.floor( n );
+    if ( x < min ) return min;
+    if ( x > max ) return max;
+    return x;
+  }
+
+  private ensureStartsWithPublic( rel: string ): string {
+    const r = String( rel ?? "" ).replace( /\\/g, "/" ).replace( /^\/+/, "" );
+    return r.startsWith( "public/" ) ? r : `public/${ r }`;
+  }
+
+  private async safeRmAbs( absPath: string ): Promise<void> {
+    // Safe delete only inside /public
+    const root = path.resolve( this.PUBLIC_ROOT );
+    const target = path.resolve( absPath );
+
+    if ( !target.startsWith( root ) ) {
+      // do NOT delete outside public
+      return;
     }
-    return target;
-  }
 
-
-  /** mkdir -p */
-  private async ensureDir( dir: string ): Promise<void> {
-    await fs.promises.mkdir( dir, { recursive: true } );
-  }
-
-  /** Move path with rename(); fallback to copy+remove when cross-device. */
-  private async movePath( src: string, dest: string ): Promise<void> {
-    try {
-      await this.ensureDir( path.dirname( dest ) );
-      await fs.promises.rename( src, dest );
-    } catch {
-      await this.ensureDir( path.dirname( dest ) );
-      await this.copyRecursive( src, dest );
-      await this.rmRecursive( src );
-    }
-  }
-
-  /** Recursive copy (dir or file). */
-  private async copyRecursive( src: string, dest: string ): Promise<void> {
-    const stat = await fs.promises.stat( src );
-    if ( stat.isDirectory() ) {
-      await this.ensureDir( dest );
-      const entries = await fs.promises.readdir( src );
-      for ( const entry of entries ) {
-        await this.copyRecursive( path.join( src, entry ), path.join( dest, entry ) );
-      }
-    } else {
-      await this.ensureDir( path.dirname( dest ) );
-      await fs.promises.copyFile( src, dest );
-    }
-  }
-
-  /** Recursive remove. */
-  private async rmRecursive( target: string ): Promise<void> {
     await fs.promises.rm( target, { recursive: true, force: true } );
   }
 
-  /** YYYYMMDD-HHMMSS stamp (used in recyclebin folder names). */
-  private makeStamp( date = new Date() ): string {
-    const pad = ( n: number ) => n.toString().padStart( 2, '0' );
-    return `${ date.getFullYear() }${ pad( date.getMonth() + 1 ) }${ pad( date.getDate() ) }-${ pad( date.getHours() ) }${ pad( date.getMinutes() ) }${ pad( date.getSeconds() ) }`;
-  }
-
-  /** Attachment type validator (images or docs). */
-  private isAllowedAttachmentType( mime: string ): boolean {
-    return this.allowedImageTypes.includes( mime ) || this.allowedDocTypes.includes( mime );
-  }
-
-  /** Validate complaint category against shared enum list. */
   private isValidCategory( cat: string ): boolean {
     return ( COMPLAINT_CATEGORIES as readonly string[] ).includes( cat );
   }
 
-  /** Validate complaint priority. */
   private isValidPriority( p: string ): boolean {
-    return [ 'low', 'medium', 'high', 'urgent' ].includes( p );
+    return [ "low", "medium", "high", "urgent" ].includes( p );
   }
 
-  /** Server-side complaint code generator. */
   private generateCode(): string {
     const ts = Date.now().toString( 36 ).toUpperCase();
     const rnd = Math.random().toString( 36 ).substring( 2, 8 ).toUpperCase();
     return `PROPEASE-CPL-${ ts }-${ rnd }`;
   }
 
-  /** mime → extension fallback (used when originalname has no ext). */
-  private mimeToExt( mime: string ): string {
-    const map: Record<string, string> = {
-      'image/jpeg': '.jpg',
-      'image/jpg': '.jpg',
-      'image/png': '.png',
-      'image/gif': '.gif',
-      'image/bmp': '.bmp',
-      'image/tiff': '.tiff',
-      'image/webp': '.webp',
-      'image/svg+xml': '.svg',
-      'image/avif': '.avif',
-      'image/heic': '.heic',
-      'application/pdf': '.pdf',
-      'application/msword': '.doc',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
-      'application/vnd.ms-excel': '.xls',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
-      'text/csv': '.csv',
-      'text/plain': '.txt',
+  private buildNotificationActor( author: AuthUser ): NotificationActorDto {
+    const base: NotificationActorDto = {
+      userId: String( author.userId ),
+      username: String( author.username ),
+      role: author.role,
+      branchId: author.branchId ?? "",
+      teamCodes: author.teamCodes ?? [],
     };
-    return map[ mime ] || '';
-  }
-
-
-
-  // ===========================================================================
-  // Multer builder: shared for /create-complaint and /complaints/post-comments
-  // - memoryStorage, files <=10MB, max 10, field name "attachments"
-  // - JSON-ify Multer errors into 400 responses
-  // ===========================================================================
-  private buildComplaintUploader(): RequestHandler {
-    const upload = multer( {
-      storage: multer.memoryStorage(),
-      limits: {
-        fileSize: 10 * 1024 * 1024, // 10MB/file
-        files: 10,                   // max 10 files
-        fields: 20,                  // defensive
-      },
-      fileFilter: ( _req, file, cb: FileFilterCallback ) => {
-        if ( this.isAllowedAttachmentType( file.mimetype ) ) {
-          cb( null, true );
-        } else {
-          // Use MulterError so TypeScript is happy and the code is consistent
-          cb( new multer.MulterError( 'LIMIT_UNEXPECTED_FILE', `Unsupported mimetype: ${ file.mimetype }` ) );
-        }
-      },
-    } ).fields( [ { name: 'attachments', maxCount: 10 } ] );
-
-    return ( req: Request, res: Response, next: NextFunction ) => {
-      upload( req, res, ( err: any ) => {
-        if ( !err ) { next(); return; }
-
-        if ( err instanceof multer.MulterError ) {
-          let message = 'Upload error';
-          if ( err.code === 'LIMIT_FILE_SIZE' ) message = 'One or more files exceed the 10MB size limit.';
-          else if ( err.code === 'LIMIT_FILE_COUNT' ) message = 'Too many files. Maximum 10 attachments allowed.';
-          else if ( err.code === 'LIMIT_UNEXPECTED_FILE' ) message = 'Unexpected or unsupported file received.';
-          ApiResponseBuilder.badRequest( res, message );
-          return;
-        }
-        ApiResponseBuilder.conflict( res, err?.message || 'Upload failed' );
-        return;
-      } );
-    };
+    return base;
   }
 
   // ===========================================================================
   // POST /insertTenant
+  // (kept mostly as-is, no file uploads here)
   // ===========================================================================
   private insertTenant(): void {
-    // Parse only text fields (no file uploads for this route)
-    const noFiles = multer().none();
-
-    this.router.post( '/insertTenant', noFiles, async ( req: Request, res: Response ) => {
+    this.router.post( "/insertTenant", express.urlencoded( { extended: true } ), async ( req: Request, res: Response ) => {
       try {
-        // Extract required fields
-        const username = ( req.body.username || '' ).trim();
-        const name = ( req.body.name || '' ).trim();
-        const image = ( req.body.image || '' ).trim();
-        const phoneNumber = ( req.body.phoneNumber || '' ).trim();
-        const email = ( req.body.email || '' ).trim();
-        const gender = ( req.body.gender || '' ).trim();
-        const addedBy = ( req.body.addedBy || '' ).trim();
-
-        // Validate
-        if ( !username ) { ApiResponseBuilder.validationError( res, 'Username is required!' ); return; }
-        if ( !name ) { ApiResponseBuilder.validationError( res, 'Name required!' ); return; }
-        if ( !image ) { ApiResponseBuilder.validationError( res, 'Image required!' ); return; }
-        if ( !phoneNumber ) { ApiResponseBuilder.validationError( res, 'Phone number required!' ); return; }
-        if ( !email ) { ApiResponseBuilder.validationError( res, 'Email required!' ); return; }
-        if ( !gender ) { ApiResponseBuilder.validationError( res, 'Gender required!' ); return; }
-        if ( !addedBy ) { ApiResponseBuilder.validationError( res, 'Added by required!' ); return; }
-
-        // Clear any previous recyclebin bucket for this user (fresh start)
-        const recycleBinForTenant = this.safeJoin( this.TENANT_RECYCLE_ROOT, username );
-        if ( fs.existsSync( recycleBinForTenant ) ) {
-          await this.rmRecursive( recycleBinForTenant );
+        const author: AuthUser | null = await ApiGuardExport.GetAuthUser( req );
+        if ( !author ) {
+          ApiResponseBuilder.conflict( res, "Invalid author!" );
+          return;
         }
 
-        // Persist DB row
+        const username = this.s( req.body?.username );
+        const name = this.s( req.body?.name );
+        const image = this.s( req.body?.image );
+        const phoneNumber = this.s( req.body?.phoneNumber );
+        const email = this.s( req.body?.email );
+        const gender = this.s( req.body?.gender );
+        const addedBy = this.s( req.body?.addedBy );
+
+        if ( !username ) { ApiResponseBuilder.validationError( res, "Username is required!" ); return; }
+        if ( !name ) { ApiResponseBuilder.validationError( res, "Name required!" ); return; }
+        if ( !image ) { ApiResponseBuilder.validationError( res, "Image required!" ); return; }
+        if ( !phoneNumber ) { ApiResponseBuilder.validationError( res, "Phone number required!" ); return; }
+        if ( !email ) { ApiResponseBuilder.validationError( res, "Email required!" ); return; }
+        if ( !gender ) { ApiResponseBuilder.validationError( res, "Gender required!" ); return; }
+        if ( !addedBy ) { ApiResponseBuilder.validationError( res, "Added by required!" ); return; }
+
         const tenantDoc: ITenant = new TenantModel( {
           username,
           image,
@@ -314,698 +219,500 @@ export default class Tenant {
           gender,
           addedBy,
         } );
+
         await ( tenantDoc as any ).save?.();
 
-        // Broadcast notification (non-fatal if socket missing)
+        // notify (best-effort)
         try {
-          const notificationService = new NotificationService();
-          const io = req.app.get( 'io' ) as import( 'socket.io' ).Server;
-          await notificationService.createNotification(
-            {
-              title: 'New Tenant',
-              body: `A new tenant named ${ tenantDoc.name } has been added.`,
-              type: 'create',
-              severity: 'info',
-              audience: { mode: 'role', roles: [ 'admin', 'agent', 'manager', 'operator' ], usernames: [ tenantDoc.username ] },
-              channels: [ 'inapp', 'email' ],
-              metadata: {
-                refId: tenantDoc.username,
-                data: {
-                  tenant: {
-                    username,
-                    image,
-                    name,
-                    contactNumber: phoneNumber,
-                    email,
-                    gender,
-                    addedBy,
-                  },
-                  addedDate: new Date().toISOString(),
-                  addedBy: tenantDoc.addedBy,
-                },
-              },
-            },
-            ( rooms, payload ) => rooms.forEach( room => io?.to( room ).emit( 'notification.new', payload ) ),
-          );
-        } catch { /* non-fatal */ }
+          const actor = this.buildNotificationActor( author );
 
-        ApiResponseBuilder.ok( res, 'tenant', tenantDoc, 'Tenant added successfully' );
+          this.notificationHub.emit( {
+            eventKey: "tenant.create",
+            actor,
+            audiences: [
+              { mode: "User", userId: tenantDoc.username },
+              { mode: "Role", roleKey: "admin" },
+              { mode: "Role", roleKey: "manager" },
+              { mode: "Role", roleKey: "operator" },
+            ],
+            tags: [ "tenant", "create" ],
+            target: {
+              category: "Tenant",
+              module: "Tenant",
+              refId: tenantDoc.username ?? ( tenantDoc as any )._id,
+              actionKey: 'tenant:account.created',
+              params: { tenantID: tenantDoc.username }
+            },
+            category: "Tenant",
+          } );
+        } catch ( e: unknown ) {
+          console.warn( "[Warning:] [TenantsRouter] tenant.create notification failed.\n", e );
+        }
+
+        ApiResponseBuilder.ok( res, "tenant", tenantDoc, "Tenant added successfully" );
         return;
-      } catch ( error ) {
-        console.error( 'insertTenant error:', error );
+      } catch ( error: unknown ) {
+        console.error( "[Error:] insertTenant error:\n", error );
         ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
   }
 
-
   // ===========================================================================
-  // GET /get-all-tenants
+  // GET basics (left intact/minimal)
   // ===========================================================================
   private getAllTenants(): void {
-    this.router.get( '/get-all-tenants', async ( _req: Request, res: Response ) => {
+    this.router.get( "/get-all-tenants", async ( _req: Request, res: Response ) => {
       try {
-        const tenants = await TenantModel.find<ITenant>().lean() as unknown as ITenant[];
+        const tenants = ( await TenantModel.find<ITenant>().lean().exec() ) as unknown as ITenant[];
         if ( !tenants || tenants.length === 0 ) {
-          ApiResponseBuilder.notFound( res, 'No tenants found' );
+          ApiResponseBuilder.notFound( res, "No tenants found" );
           return;
         }
-
-        ApiResponseBuilder.ok( res, 'tenants', tenants, 'Tenants fetched successfully' );
+        ApiResponseBuilder.ok( res, "tenants", tenants, "Tenants fetched successfully" );
         return;
-      } catch ( error ) {
-        console.error( 'get-all-tenants error:', error );
+      } catch ( error: unknown ) {
+        console.error( "[Error:] get-all-tenants error:\n", error );
         ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
   }
 
-  // ===========================================================================
-  // GET /get-all-tenants-count
-  // ===========================================================================
   private getAllTenantsCount(): void {
-    this.router.get( '/get-all-tenants-count', async ( _req: Request, res: Response ) => {
+    this.router.get( "/get-all-tenants-count", async ( _req: Request, res: Response ) => {
       try {
         const total = await TenantModel.countDocuments();
-
-        ApiResponseBuilder.ok(
-          res,
-          'other',
-          {},
-          'All tenant users count retrieved successfully!',
-          { pagination: { total } } );
+        ApiResponseBuilder.ok( res, "other", {}, "All tenant users count retrieved successfully!", { pagination: { total } } );
         return;
-      } catch ( error ) {
-        console.error( 'get-all-tenants error:', error );
+      } catch ( error: unknown ) {
+        console.error( "[Error:] get-all-tenants-count error:\n", error );
         ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
   }
 
-  // ===========================================================================
-  // GET /get-all-tenants-with-pagination
-  // ===========================================================================
   private getAllTenantsWithPagination(): void {
-    this.router.get( '/get-all-tenants-with-pagination', async ( req: Request, res: Response ) => {
+    this.router.get( "/get-all-tenants-with-pagination", async ( req: Request, res: Response ) => {
       try {
-        // ──────────────────────────────────────────────
-        // 1) Pagination parameters
-        // ──────────────────────────────────────────────
-        let limit: number = parseInt( ( req.query.limit as string ) || "20", 10 );
-        if ( isNaN( limit ) || limit < 1 ) limit = 20;
-        if ( limit > 100 ) limit = 100;
+        const limit = this.safeInt( req.query.limit, 20, 1, 100 );
+        const start = typeof req.query.start !== "undefined" ? this.safeInt( req.query.start, 0, 0, Number.MAX_SAFE_INTEGER ) : 0;
+        const rawSearch = this.s( req.query.search );
 
-        let page: number;
-        let skip: number;
-
-        if ( typeof req.query.start !== "undefined" ) {
-          // Frontend sends start = skip (0-based offset)
-          const startRaw: number = parseInt( req.query.start as string, 10 );
-          const start: number = isNaN( startRaw ) ? 0 : Math.max( startRaw, 0 );
-
-          skip = start;
-          page = Math.floor( skip / limit ) + 1; // derive human page (1-based)
-        } else {
-          // Fallback: page-based API
-          const pageRaw: number = parseInt(
-            ( req.query.page as string ) || "1",
-            10
-          );
-          page = isNaN( pageRaw ) ? 1 : Math.max( pageRaw, 1 );
-          skip = ( page - 1 ) * limit;
-        }
-
-        // ──────────────────────────────────────────────
-        // 2) Search filter
-        // ──────────────────────────────────────────────
-        const rawSearch: string = this.s( req.query.search );
         const filter: FilterQuery<ITenant> = {};
-
-        if ( rawSearch && rawSearch.trim() !== "" ) {
-          const rx = new RegExp( rawSearch.trim(), "i" );
-
-          filter.$or = [
-            { username: { $regex: rx } },
-            { name: { $regex: rx } },
-            { addedBy: { $regex: rx } },
-          ];
+        if ( rawSearch ) {
+          const rx = new RegExp( rawSearch, "i" );
+          filter.$or = [ { username: { $regex: rx } }, { name: { $regex: rx } }, { addedBy: { $regex: rx } } ];
         }
 
-        // ──────────────────────────────────────────────
-        // 3) Sorting
-        // ──────────────────────────────────────────────
-        const sortBy: string = ( req.query.sortBy as string ) || "createdAt";
-        const sortOrder: string = ( req.query.sortOrder as string ) || "desc";
-
-        const sort: Record<string, 1 | -1> = {
-          [ sortBy ]: sortOrder === "asc" ? 1 : -1,
-        };
-
-        // ──────────────────────────────────────────────
-        // 4) DB query
-        // ──────────────────────────────────────────────
         const [ tenants, total ] = await Promise.all( [
-          TenantModel
-            .find( filter )
-            .sort( sort )
-            .skip( skip )
-            .limit( limit )
-            .lean<ITenant>()
-            .exec() as unknown as ITenant[],
+          TenantModel.find( filter ).sort( { createdAt: -1 } ).skip( start ).limit( limit ).lean<ITenant>().exec() as unknown as ITenant[],
           TenantModel.countDocuments( filter ),
         ] );
 
-        // 1) Total pages (0 if no records)
-        const totalPages: number = total > 0 ? Math.ceil( total / limit ) : 0;
+        const totalPages = total > 0 ? Math.ceil( total / limit ) : 0;
+        const index = total > 0 ? Math.floor( start / limit ) : 0;
+        const end = total > 0 ? Math.min( start + tenants.length - 1, total - 1 ) : 0;
 
-        // 2) Zero-based page index (used internally)
-        const index: number = page > 0 ? page - 1 : 0;
-
-        // 3) If there are no results, normalize start/end to 0
-        const hasResults: boolean = total > 0;
-
-        // 4) Start = first record index for this page (0-based)
-        const start: number = hasResults ? skip : 0;
-
-        // 5) End = last record index for this page (0-based, inclusive)
-        const end: number = hasResults
-
-          ? Math.min( skip + tenants.length - 1, total - 1 )
-          : 0;
-
-        // 6) Construct pagination meta
         const pagination: PaginationMeta = {
-          index,                     // 0,1,2…
-          limit,                     // page size
-          total,                     // total records in DB
-          start,                     // 0-based first record index
-          end,                       // 0-based last record index
-          // Correct logic: based on CURRENT page
-          hasNext: page < totalPages,
-          hasPrevious: page > 1 && totalPages > 0
+          index,
+          limit,
+          total,
+          start: total > 0 ? start : 0,
+          end: total > 0 ? end : 0,
+          hasNext: index + 1 < totalPages,
+          hasPrevious: index > 0 && totalPages > 0,
         };
 
-        if ( rawSearch && rawSearch.trim() !== '' ) {
-          pagination.search = rawSearch.trim();  // always string here
+        if ( rawSearch ) pagination.search = rawSearch;
+
+        ApiResponseBuilder.ok( res, "tenants", tenants, "All tenant users retrieved successfully!", { pagination } );
+        return;
+      } catch ( error: unknown ) {
+        console.error( "[Error:] get-all-tenants-with-pagination error:\n", error );
+        ApiResponseBuilder.internalError( res, error );
+        return;
+      }
+    } );
+  }
+
+  private getAllNoneTenantWithPagination(): void {
+    this.router.get( "/get-all-none-tenants-with-pagination", async ( req: Request, res: Response ) => {
+      try {
+        const limit = this.safeInt( req.query.limit, 20, 1, 100 );
+        const start = typeof req.query.start !== "undefined" ? this.safeInt( req.query.start, 0, 0, Number.MAX_SAFE_INTEGER ) : 0;
+        const rawSearch = this.s( req.query.search );
+
+        const tenantDocs = await TenantModel.find( {}, { username: 1, _id: 0 } ).lean().exec();
+        const tenantUsernames: string[] = tenantDocs
+          .map( ( d: any ) => ( typeof d?.username === "string" ? d.username.trim() : "" ) )
+          .filter( ( u: string ) => u.length > 0 );
+
+        const filter: FilterQuery<User> = {};
+        if ( tenantUsernames.length > 0 ) {
+          filter.username = { $nin: tenantUsernames };
         }
 
-        // ──────────────────────────────────────────────
-        // 5) Response
-        // ──────────────────────────────────────────────
-        ApiResponseBuilder.ok( res, 'tenants', tenants, 'All tenant users retrieved successfully!', { pagination } );
+        if ( rawSearch ) {
+          const rx = new RegExp( rawSearch, "i" );
+          filter.$or = [ { username: { $regex: rx } }, { name: { $regex: rx } }, { addedBy: { $regex: rx } } ];
+        }
+
+        const [ users, total ] = await Promise.all( [
+          UserModel.find( filter, USER_MODEL_PROJECTION ).sort( { createdAt: -1 } ).skip( start ).limit( limit ).lean<User>().exec() as unknown as User[],
+          UserModel.countDocuments( filter ),
+        ] );
+
+        const totalPages = total > 0 ? Math.ceil( total / limit ) : 0;
+        const index = total > 0 ? Math.floor( start / limit ) : 0;
+        const end = total > 0 ? Math.min( start + users.length - 1, total - 1 ) : 0;
+
+        const pagination: PaginationMeta = {
+          index,
+          limit,
+          total,
+          start: total > 0 ? start : 0,
+          end: total > 0 ? end : 0,
+          hasNext: index + 1 < totalPages,
+          hasPrevious: index > 0 && totalPages > 0,
+        };
+
+        if ( rawSearch ) pagination.search = rawSearch;
+
+        ApiResponseBuilder.ok( res, "users", users, "All non-tenant users retrieved successfully!", { pagination } );
         return;
-      } catch ( error ) {
-        console.error( error );
+      } catch ( error: unknown ) {
+        console.error( "[Error:] get-all-none-tenants-with-pagination error:\n", error );
         ApiResponseBuilder.internalError( res, error );
+        return;
+      }
+    } );
+  }
+
+  private getAllNoneTenantCount(): void {
+    this.router.get( "/get-all-none-tenants-count", async ( _req: Request, res: Response ) => {
+      try {
+        const tenantDocs = await TenantModel.find( {}, { username: 1, _id: 0 } ).lean().exec();
+        const tenantUsernames: string[] = tenantDocs
+          .map( ( d: any ) => ( typeof d?.username === "string" ? d.username.trim() : "" ) )
+          .filter( ( u: string ) => u.length > 0 );
+
+        const filter: FilterQuery<User> = {};
+        if ( tenantUsernames.length > 0 ) filter.username = { $nin: tenantUsernames };
+
+        const total = await UserModel.countDocuments( filter );
+
+        ApiResponseBuilder.ok( res, "other", {}, "All non-tenant users count retrieved successfully!", { pagination: { total } } );
+        return;
+      } catch ( error: unknown ) {
+        console.error( "[Error:] get-all-none-tenants-count error:\n", error );
+        ApiResponseBuilder.internalError( res, error );
+        return;
       }
     } );
   }
 
   // ===========================================================================
-  // GET /get-all-none-tenants-with-pagination
-  // ===========================================================================
-  private getAllNoneTenantWithPagination(): void {
-
-    this.router.get(
-      '/get-all-none-tenants-with-pagination',
-      async ( req: Request, res: Response ): Promise<void> => {
-
-        try {
-
-          // ──────────────────────────────────────────────
-          // 1) Pagination parameters
-          //    - limit: per-page size (1..100)
-          //    - skip:  zero-based offset
-          //    - page:  human-readable 1-based page index
-          // ──────────────────────────────────────────────
-          let limit: number = parseInt( ( req.query.limit as string ) || '20', 10 );
-
-          if ( Number.isNaN( limit ) || limit < 1 ) {
-            limit = 20;
-          }
-
-          if ( limit > 100 ) {
-            limit = 100;
-          }
-
-          let page: number;
-          let skip: number;
-
-          if ( typeof req.query.start !== 'undefined' ) {
-
-            // Frontend sends "start" as 0-based offset
-            const startRaw: number = parseInt( req.query.start as string, 10 );
-            const start: number = Number.isNaN( startRaw )
-              ? 0
-              : Math.max( startRaw, 0 );
-
-            skip = start;
-            page = Math.floor( skip / limit ) + 1; // derive human 1-based page index
-
-          } else {
-
-            // Fallback: classic page-based API
-            const pageRaw: number = parseInt(
-              ( req.query.page as string ) || '1',
-              10,
-            );
-
-            page = Number.isNaN( pageRaw )
-              ? 1
-              : Math.max( pageRaw, 1 );
-
-            skip = ( page - 1 ) * limit;
-
-          }
-
-
-          // ──────────────────────────────────────────────
-          // 2) Build NON-TENANT base filter
-          //    - We first collect all tenant usernames
-          //    - Then filter UserModel by { username: { $nin: tenantUsernames } }
-          // ──────────────────────────────────────────────
-
-          // Get all tenant usernames only (no need for whole doc)
-          const tenantDocs = await TenantModel
-            .find( {}, { username: 1, _id: 0 } )
-            .lean()
-            .exec();
-
-          const tenantUsernames: string[] = tenantDocs
-            .map( ( doc: any ) => doc.username )
-            .filter(
-              ( u: unknown ): u is string =>
-                typeof u === 'string' && u.trim().length > 0,
-            );
-
-          const filter: FilterQuery<User> = {};
-
-          // Exclude all users that are already tenants
-          if ( tenantUsernames.length > 0 ) {
-            filter.username = { $nin: tenantUsernames };
-          }
-
-
-          // ──────────────────────────────────────────────
-          // 3) Search filter (optional)
-          //    - Search is ANDed with non-tenant filter
-          // ──────────────────────────────────────────────
-
-          const rawSearch: string = this.s( req.query.search ); // assuming this.s safely stringifies
-
-          if ( rawSearch && rawSearch.trim() !== '' ) {
-
-            const rx = new RegExp( rawSearch.trim(), 'i' );
-
-            // Combine with base filter: username/$nin AND (username|name|addedBy matches search)
-            filter.$or = [
-              { username: { $regex: rx } },
-              { name: { $regex: rx } },
-              { addedBy: { $regex: rx } },
-            ];
-
-          }
-
-
-          // ──────────────────────────────────────────────
-          // 4) Sorting
-          // ──────────────────────────────────────────────
-
-          const sortBy: string = ( req.query.sortBy as string ) || 'createdAt';
-          const sortOrder: string = ( req.query.sortOrder as string ) || 'desc';
-
-          const sort: Record<string, 1 | -1> = {
-            [ sortBy ]: sortOrder === 'asc'
-              ? 1
-              : -1,
-          };
-
-
-          // ──────────────────────────────────────────────
-          // 5) DB query
-          //    IMPORTANT: this should query UserModel (non-tenants),
-          //    not TenantModel.
-          // ──────────────────────────────────────────────
-
-          const [ users, total ] = await Promise.all( [
-            UserModel
-              .find( filter, USER_MODEL_PROJECTION )
-              .sort( sort )
-              .skip( skip )
-              .limit( limit )
-              .lean<User>()
-              .exec() as unknown as User[],
-            UserModel.countDocuments( filter ),
-          ] );
-
-
-
-          // 1) Total pages (0 if no records)
-          const totalPages: number = total > 0 ? Math.ceil( total / limit ) : 0;
-
-          // 2) Zero-based page index (used internally)
-          const index: number = page > 0 ? page - 1 : 0;
-
-          // 3) If there are no results, normalize start/end to 0
-          const hasResults: boolean = total > 0;
-
-          // 4) Start = first record index for this page (0-based)
-          const start: number = hasResults ? skip : 0;
-
-          // 5) End = last record index for this page (0-based, inclusive)
-          const end: number = hasResults
-
-            ? Math.min( skip + users.length - 1, total - 1 )
-            : 0;
-
-          // 6) Construct pagination meta
-          const pagination: PaginationMeta = {
-            index,                     // 0,1,2…
-            limit,                     // page size
-            total,                     // total records in DB
-            start,                     // 0-based first record index
-            end,                       // 0-based last record index
-            // Correct logic: based on CURRENT page
-            hasNext: page < totalPages,
-            hasPrevious: page > 1 && totalPages > 0
-          };
-
-          if ( rawSearch && rawSearch.trim() !== '' ) {
-            pagination.search = rawSearch.trim();  // always string here
-          }
-
-
-          // ──────────────────────────────────────────────
-          // 6) Response
-          // ──────────────────────────────────────────────
-          ApiResponseBuilder.ok(
-            res,
-            'users',
-            users,
-            'All non-tenant users retrieved successfully!',
-            { pagination }
-          );
-          return;
-
-        } catch ( error ) {
-
-          console.error( error );
-
-          ApiResponseBuilder.internalError( res, error );
-
-        }
-
-      },
-    );
-
-  }
-
-  // ===========================================================================
-  // GET /get-all-none-tenants-count
-  // ===========================================================================
-  private getAllNoneTenantCount() {
-
-    this.router.get(
-      '/get-all-none-tenants-count',
-      async ( req: Request, res: Response ): Promise<void> => {
-
-        try {
-          // ──────────────────────────────────────────────
-          // 1) Build NON-TENANT base filter
-          //    - We first collect all tenant usernames
-          //    - Then filter UserModel by { username: { $nin: tenantUsernames } }
-          // ──────────────────────────────────────────────
-
-          // Get all tenant usernames only (no need for whole doc)
-          const tenantDocs = await TenantModel
-            .find( {}, { username: 1, _id: 0 } )
-            .lean()
-            .exec();
-
-          const tenantUsernames: string[] = tenantDocs
-            .map( ( doc: any ) => doc.username )
-            .filter(
-              ( u: unknown ): u is string =>
-                typeof u === 'string' && u.trim().length > 0,
-            );
-
-          const filter: FilterQuery<User> = {};
-
-          // Exclude all users that are already tenants
-          if ( tenantUsernames.length > 0 ) {
-            filter.username = { $nin: tenantUsernames };
-          }
-
-
-          // ──────────────────────────────────────────────
-          // 2) DB query
-          //    IMPORTANT: this should query UserModel (non-tenants),
-          //    not TenantModel.
-          // ──────────────────────────────────────────────
-
-          const [ total ] = await Promise.all( [
-            UserModel.countDocuments( filter ),
-          ] );
-
-
-          // ──────────────────────────────────────────────
-          // 3) Response
-          // ──────────────────────────────────────────────
-          ApiResponseBuilder.ok(
-            res,
-            'other',
-            {},
-            'All non-tenant users count retrieved successfully!',
-            { pagination: { total } }
-          );
-          return;
-
-        } catch ( error ) {
-
-          console.error( error );
-
-          ApiResponseBuilder.internalError( res, error );
-
-        }
-
-      },
-    );
-
-  }
-
-
-  // ===========================================================================
   // DELETE /delete-tenant/:username/:deletor
-  // - Export tenant+leases JSON to recyclebin
-  // - Move lease asset folders to recyclebin
-  // - Delete DB rows (leases, then tenant)
+  // - Records tenant + ALL leases snapshot
+  // - Scans & moves BOTH:
+  //    public/uploads/tenants/<username>/*
+  //    public/uploads/leases/<leaseId>/*
+  // - Stores restore hints that preserve original lease roots (restore-safe)
   // ===========================================================================
+  // inside your router class
+
   private deleteTenant(): void {
+    // ✅ strongly recommend: import Request as ExpressRequest to avoid DOM Request conflicts
+    // import type { Request as ExpressRequest, Response } from "express";
+
     this.router.delete(
-      '/delete-tenant/:username/:deletor',
-      async ( req: Request<{ username: string; deletor: string; }>, res: Response ) => {
+      "/delete-tenant/:username/:deletor",
+      async (
+        req: Request<{ username: string; deletor: string; }>,
+        res: Response
+      ): Promise<void> => {
         try {
-          // Params
-          const username = ( req.params.username || '' ).trim();
-          const deletor = ( req.params.deletor || '' ).trim();
-          if ( !username ) { ApiResponseBuilder.validationError( res, 'Username is required' ); return; }
-          if ( !deletor ) { ApiResponseBuilder.validationError( res, 'Deletor is required' ); return; }
-
-          // Validate tenant + deletor
-          const tenantDoc = await TenantModel.findOne( { username } );
-          if ( !tenantDoc ) { ApiResponseBuilder.notFound( res, 'Tenant not found' ); return; }
-          const deletorDoc = await UserModel.findOne( { username: deletor }, USER_MODEL_PROJECTION );
-          if ( !deletorDoc ) { ApiResponseBuilder.notFound( res, 'Deletor is required' ); return; }
-
-          // Load leases
-          const leases = await LeaseModel.find( { 'tenantInformation.tenantUsername': username } )
-            .lean<LeasePayload>()
-            .exec() as unknown as LeasePayload[];
-          const snapshot = { tenant: tenantDoc, leases };
-
-          // Prepare recyclebin
-          const tenantRecycleRoot = this.safeJoin( this.TENANT_RECYCLE_ROOT, username );
-          await this.ensureDir( tenantRecycleRoot );
-
-          // Append tenant export json
-          const tenantDataJson = this.safeJoin( tenantRecycleRoot, 'data.json' );
-          const todayISO = new Date().toISOString();
-          const tenantExport = { date: todayISO, tenant: tenantDoc };
-
-          if ( fs.existsSync( tenantDataJson ) ) {
-            const existing = JSON.parse( await fs.promises.readFile( tenantDataJson, 'utf-8' ) );
-            const arr = Array.isArray( existing ) ? existing : [ existing ];
-            arr.push( tenantExport );
-            await fs.promises.writeFile( tenantDataJson, JSON.stringify( arr, null, 2 ) );
-          } else {
-            await fs.promises.writeFile( tenantDataJson, JSON.stringify( [ tenantExport ], null, 2 ) );
+          // 0) auth
+          const author: AuthUser | null = await ApiGuardExport.GetAuthUser( req );
+          if ( !author ) {
+            ApiResponseBuilder.conflict( res, "Invalid author!" );
+            return;
           }
 
-          // Export leases JSON and move lease folders to recyclebin
-          if ( leases.length > 0 ) {
-            const tenantLeasesRecycleRoot = this.safeJoin( this.TENANT_RECYCLE_LEASES_ROOT, username );
-            await this.ensureDir( tenantLeasesRecycleRoot );
+          // 1) params
+          const username = this.s( req.params.username );
+          const deletor =
+            this.s( req.params.deletor ) || String( author.username ?? "" ).trim();
 
-            const leasesDBPath = this.safeJoin( tenantLeasesRecycleRoot, 'leasesDB.json' );
-            if ( fs.existsSync( leasesDBPath ) ) {
-              const existing = JSON.parse( await fs.promises.readFile( leasesDBPath, 'utf-8' ) );
-              const merged = Array.isArray( existing ) ? existing.concat( leases ) : leases;
-              await fs.promises.writeFile( leasesDBPath, JSON.stringify( merged, null, 2 ) );
-            } else {
-              await fs.promises.writeFile( leasesDBPath, JSON.stringify( leases, null, 2 ) );
-            }
-
-            // Move each lease folder
-            const stamp = this.makeStamp();
-            for ( const lease of leases ) {
-              const leaseID = ( lease as any ).leaseID;
-              const srcLeaseRoot = this.safeJoin( this.LEASE_UPLOAD_ROOT, leaseID );
-              const destLeaseRoot = this.safeJoin( this.TENANT_RECYCLE_LEASES_ROOT, username, `${ stamp }-${ leaseID }` );
-
-              if ( fs.existsSync( srcLeaseRoot ) ) {
-                try {
-                  await this.movePath( srcLeaseRoot, destLeaseRoot );
-                } catch ( e ) {
-                  console.warn( `Failed to move lease folder ${ leaseID }`, e );
-                }
-              } else {
-                console.warn( `Lease files source not found (skipped): ${ srcLeaseRoot }` );
-              }
-            }
-
-            // Remove lease rows after exporting
-            await LeaseModel.deleteMany( { 'tenantInformation.tenantUsername': username } );
+          if ( !username ) {
+            ApiResponseBuilder.validationError( res, "Username is required" );
+            return;
+          }
+          if ( !deletor ) {
+            ApiResponseBuilder.validationError( res, "Deletor is required" );
+            return;
           }
 
-          // Notify deletion summary
+          // 2) validate tenant + deletor
+          const tenantDoc = await TenantModel.findOne( { username } ).lean().exec();
+          if ( !tenantDoc ) {
+            ApiResponseBuilder.notFound( res, "Tenant not found" );
+            return;
+          }
+
+          const deletorDoc = await UserModel.findOne(
+            { username: deletor },
+            USER_MODEL_PROJECTION
+          )
+            .lean()
+            .exec();
+
+          if ( !deletorDoc ) {
+            ApiResponseBuilder.notFound( res, "Deletor user not found" );
+            return;
+          }
+
+          // 3) load leases BEFORE deletion
+          type LeaseWithId = LeasePayload & { leaseID?: string; };
+          const leases = await LeaseModel.find( {
+            "tenantInformation.tenantUsername": username,
+          } )
+            .lean<LeaseWithId[]>() // ✅ row type, NOT array type
+            .exec();
+
+          const leaseIds: string[] = leases
+            .map( ( l: LeaseWithId ) => this.s( l.leaseID ) )
+            .filter( ( x: string ): x is string => x.length > 0 );
+
+          // 4) scan files (tenant root + each lease root)
+          const allFilePackets: FileMetaPacket[] = [];
+          const leaseRootsById: Record<string, string> = {};
+
+          // ✅ With the new guard: you may pass "uploads/..." or "public/uploads/..."
+          // Prefer canonical "uploads/..." (no public prefix)
+          const tenantRootPathLike = `${ this.TENANT_UPLOAD_ROOT_REL }/${ username }`;
+          const tenantPackets = await FileMetaPacketBuilder.scanTree( {
+            rootPathLike: tenantRootPathLike,
+            bucket: `tenant:${ username }`,
+            req,
+          } );
+          allFilePackets.push( ...tenantPackets );
+
+          for ( const leaseId of leaseIds ) {
+            const leaseRootPathLike = `${ this.LEASES_UPLOAD_ROOT_REL }/${ leaseId }`;
+            leaseRootsById[ leaseId ] = leaseRootPathLike;
+
+            const leasePackets = await FileMetaPacketBuilder.scanTree( {
+              rootPathLike: leaseRootPathLike,
+              bucket: `lease:${ leaseId }`,
+              req,
+            } );
+
+            allFilePackets.push( ...leasePackets );
+          }
+
+          // 5) snapshot (JSON-safe)
+          // DomainDeletePlan expects Record<string, unknown>.
+          // We keep this JSON-safe to avoid non-serializable data.
+          const snapshotData: Record<string, unknown> = {
+            tenant: this.toJsonSafe( tenantDoc ),
+            leases: this.toJsonSafe( leases ),
+            deletedBy: {
+              username: this.s( ( deletorDoc as { username?: unknown; } | null )?.username ) || deletor,
+              role: this.s( ( deletorDoc as { role?: unknown; } | null )?.role ) || "unknown",
+            },
+            restoreHints: {
+              tenantUsername: username,
+              tenantUploadsRoot: tenantRootPathLike,
+              leasesUploadsRoot: this.LEASES_UPLOAD_ROOT_REL,
+              leaseIds,
+              leaseRootsById,
+            },
+          };
+
+          // 6) recyclebin delete plan (DB delete inside session)
+          const plan: DomainDeletePlan<unknown> = {
+            sourceKey: "tenant",
+            refId: username,
+            label: `Tenant: ${ this.s( ( tenantDoc as { name?: unknown; } | null )?.name ) || username }`,
+            description: "Tenant deleted (cascade leases)",
+            snapshotData,
+            files: allFilePackets,
+            module: "Tenant Management",
+            entity: "Tenant",
+            tags: [ "tenant", "lease", "cascade" ],
+
+            deleteDbRecord: async ( session: ClientSession ): Promise<void> => {
+              await LeaseModel.deleteMany(
+                { "tenantInformation.tenantUsername": username },
+                { session }
+              ).exec();
+
+              await TenantModel.deleteOne( { username }, { session } ).exec();
+            },
+          };
+
+          await this.deleteSvc.deleteWithRecycleBin( author, plan );
+
+          // 7) notify (best-effort)
           try {
-            const organisedMetadata: any = {
-              deletor: deletorDoc,
-              deletedAt: todayISO,
-              tenantRecycleRoot,
-              leasesRecycleRoot: this.safeJoin( this.TENANT_RECYCLE_LEASES_ROOT, username ),
-            };
-            const notificationService = new NotificationService();
-            const io = req.app.get( 'io' ) as import( 'socket.io' ).Server;
-            await notificationService.createNotification(
-              {
-                title: 'Delete Tenant',
-                body: `Tenant ${ username } has been deleted.`,
-                type: 'delete',
-                severity: 'warning',
-                audience: { mode: 'role', roles: [ 'admin', 'agent', 'manager', 'operator' ] },
-                channels: [ 'inapp', 'email' ],
-                metadata: { refId: username, data: { snapshot, image: ( tenantDoc as any ).image, tenant: tenantDoc, data: organisedMetadata } },
+            const actor = this.buildNotificationActor( author );
+
+            this.notificationHub.emit( {
+              eventKey: "tenant.delete",
+              actor,
+              audiences: [
+                { mode: "Role", roleKey: "admin" },
+                { mode: "Role", roleKey: "manager" },
+                { mode: "Role", roleKey: "operator" },
+              ],
+              tags: [ "tenant", "delete", "cascade" ],
+              target: {
+                category: "Tenant",
+                module: "Tenant",
+                refId: username,
+                actionKey: "tenant:account.deleted",
               },
-              ( rooms, payload ) => rooms.forEach( room => io?.to( room ).emit( 'notification.new', payload ) ),
-            );
-          } catch { /* non-fatal */ }
+              category: "Tenant",
+            } );
+          } catch ( e: unknown ) {
+            console.warn( "[Warning:] [TenantsRouter] tenant.delete notification failed.\n", e );
+          }
 
-          // Finally delete the tenant row
-          await TenantModel.findOneAndDelete( { username } );
-
-
-          ApiResponseBuilder.noContent( res, 'Tenant and related lease records moved to recyclebin and removed from DB.' );
+          ApiResponseBuilder.noContent(
+            res,
+            "Tenant + related leases recorded to recyclebin and deleted from DB."
+          );
           return;
-        } catch ( error ) {
-          console.error( 'delete-tenant error:', error );
-          const message = error instanceof Error ? error.message : 'Unexpected error occurred during tenant deletion.';
+        } catch ( error: unknown ) {
+          console.error( "[Error:] delete-tenant error:\n", error );
+          const message =
+            error instanceof Error
+              ? error.message
+              : "Unexpected error occurred during tenant deletion.";
           ApiResponseBuilder.internalError( res, message );
           return;
         }
-      },
+      }
     );
   }
 
+  /**
+   * Convert unknown values to JSON-safe structures (Record/Array/primitives).
+   * This keeps DomainDeletePlan.snapshotData truly JSON-safe.
+   */
+  private toJsonSafe( value: unknown ): unknown {
+    try {
+      return JSON.parse( JSON.stringify( value ) ) as unknown;
+    } catch {
+      // If something is not serializable, return a minimal safe fallback
+      return { _snapshotError: "Non-serializable snapshot value" };
+    }
+  }
   // ===========================================================================
   // POST /create-complaint
-  // FE sends:
-  //   data            : JSON string
-  //   attachmentCount : stringified number
-  //   attachments     : up to 10 files (<=10MB each), images/docs allowed
-  // Files stored at:
-  //   /public/uploads/tenants/<tenantId>/complaints/<code>/attachments
+  // Uploads via FileUploader (diskStorage):
+  // - attachments: up to 20 files, max 20MB each
+  // Stores at:
+  //   /public/uploads/tenants/<tenantId>/complaints/<code>/attachments/*
   // ===========================================================================
   private createComplaint(): void {
-    const attachmentsUploader = this.buildComplaintUploader();
+    this.router.post( "/create-complaint", async ( req: Request, res: Response ) => {
+      // If upload succeeds but validation fails later, we clean up the created upload folder.
+      let uploadedBaseRelativeDir: string | null = null;
 
-    this.router.post( '/create-complaint', attachmentsUploader, async ( req: Request, res: Response ) => {
       try {
-        // 1) Parse and validate body
-        const raw = ( req.body?.data ?? '' ).toString().trim();
+        const author: AuthUser | null = await ApiGuardExport.GetAuthUser( req );
+        if ( !author ) {
+          ApiResponseBuilder.conflict( res, "Invalid author!" );
+          return;
+        }
+
+        // 1) Parse JSON payload
+        const raw = this.s( req.body?.data );
         if ( !raw ) {
-          ApiResponseBuilder.validationError( res, 'Missing data payload!' );
+          ApiResponseBuilder.validationError( res, "Missing data payload!" );
           return;
         }
 
-        let payload: any;
+        let payload: Record<string, unknown>;
         try {
-          payload = JSON.parse( raw );
+          payload = JSON.parse( raw ) as Record<string, unknown>;
         } catch {
-          ApiResponseBuilder.conflict( res, 'Invalid JSON in data payload' );
+          ApiResponseBuilder.conflict( res, "Invalid JSON in data payload" );
           return;
         }
 
-        const attachmentCountStr = ( req.body?.attachmentCount ?? '' ).toString().trim();
-        if ( !attachmentCountStr || isNaN( Number( attachmentCountStr ) ) ) {
-          ApiResponseBuilder.validationError( res, 'attachmentCount must be a valid number' );
-          return;
-        }
-        const expectedCount = Number( attachmentCountStr );
+        // 2) attachmentCount validation (still supported)
+        const expectedCount = this.safeInt( req.body?.attachmentCount, 0, 0, this.MAX_FILES_TOTAL );
 
-        // 2) Extract & validate required fields
-        const tenantId = ( payload.tenantId ?? '' ).toString().trim();
-        const propertyId = ( payload.propertyId ?? '' ).toString().trim();
-        const title = ( payload.title ?? '' ).toString().trim();
-        const description = ( payload.description ?? '' ).toString().trim();
-        const category = ( payload.category ?? '' ).toString().trim();
-        const priority = ( payload.priority ?? 'medium' ).toString().trim().toLowerCase();
-        const status = ( payload.status ?? 'new' ).toString().trim().toLowerCase();
-        const assigneeId = ( payload.assigneeId ?? '' ).toString().trim();
-        const dueAtISO = ( payload.dueAt ?? '' ).toString().trim();
-        const leaseId = ( payload.leaseId ?? '' ).toString().trim();
+        // 3) Extract required fields
+        const tenantId = this.s( payload[ "tenantId" ] );
+        const propertyId = this.s( payload[ "propertyId" ] );
+        const title = this.s( payload[ "title" ] );
+        const description = this.s( payload[ "description" ] );
+        const category = this.s( payload[ "category" ] );
+        const priority = this.s( payload[ "priority" ] ?? "medium" ).toLowerCase();
+        const status = this.s( payload[ "status" ] ?? "new" ).toLowerCase();
+        const assigneeId = this.s( payload[ "assigneeId" ] );
+        const dueAtISO = this.s( payload[ "dueAt" ] );
+        const leaseId = this.s( payload[ "leaseId" ] );
 
-        if ( !tenantId ) {
-          ApiResponseBuilder.validationError( res, 'tenantId is required' );
-          return;
-        }
+        if ( !tenantId ) { ApiResponseBuilder.validationError( res, "tenantId is required" ); return; }
+        if ( !propertyId ) { ApiResponseBuilder.validationError( res, "propertyId is required" ); return; }
+        if ( !title ) { ApiResponseBuilder.validationError( res, "title is required" ); return; }
+        if ( !leaseId ) { ApiResponseBuilder.validationError( res, "leaseId is required" ); return; }
+        if ( !description ) { ApiResponseBuilder.validationError( res, "description is required" ); return; }
+        if ( !this.isValidCategory( category ) ) { ApiResponseBuilder.validationError( res, "Invalid category" ); return; }
+        if ( !this.isValidPriority( priority ) ) { ApiResponseBuilder.validationError( res, "Invalid priority" ); return; }
 
-        if ( !propertyId ) {
-          ApiResponseBuilder.validationError( res, 'propertyId is required' );
-          return;
-        }
-
-        if ( !title ) {
-          ApiResponseBuilder.validationError( res, 'title is required' );
+        // tenant must exist in user list
+        const userTenantDoc = await UserModel.findOne( { username: tenantId } ).lean<User>().exec();
+        if ( !userTenantDoc ) {
+          ApiResponseBuilder.notFound( res, "Tenant not found in user list" );
           return;
         }
 
-        if ( !leaseId ) {
-          ApiResponseBuilder.validationError( res, 'leaseId is required' );
+        // 4) Code
+        const code = this.s( payload[ "code" ] ) || this.generateCode();
+
+        // 5) Upload (FileUploader runs multer internally if middleware wasn't run)
+        //    NOTE: subPath is inside "uploads/" automatically by FileUploader.
+        const uploadSubPath = `tenants/${ tenantId }/complaints/${ code }`;
+
+        const uploadResult: UploadResultPacket = await FileUploader.handleMultiFieldUpload(
+          uploadSubPath,
+          [ { name: "attachments", maxCount: this.MAX_FILES_TOTAL } ],
+          req,
+          {
+            allowedMimeTypesByField: { attachments: this.allowFileTypes },
+            maxFileSizeMb: this.MAX_FILE_MB,
+            maxFiles: this.MAX_FILES_TOTAL,
+          },
+        );
+
+        uploadedBaseRelativeDir = uploadResult.baseRelativeDir; // "uploads/<subPath>"
+
+        const uploadedAttachments: FileMetaPacket[] = uploadResult.byField[ "attachments" ] ?? [];
+
+        // If FE sends attachmentCount, enforce strict match
+        if ( expectedCount !== uploadedAttachments.length && uploadedBaseRelativeDir ) {
+          // Cleanup uploaded folder to avoid orphan files
+          const abs = path.resolve( this.PUBLIC_ROOT, uploadedBaseRelativeDir );
+          await this.safeRmAbs( abs );
+
+          ApiResponseBuilder.validationError(
+            res,
+            `attachmentCount mismatch: expected ${ expectedCount }, received ${ uploadedAttachments.length }`,
+          );
           return;
         }
 
-        if ( !description ) {
-          ApiResponseBuilder.validationError( res, 'description is required' );
-          return;
-        }
-
-        if ( !this.isValidCategory( category ) ) {
-          ApiResponseBuilder.validationError( res, 'Invalid category' );
-          return;
-        }
-
-        if ( !this.isValidPriority( priority ) ) {
-          ApiResponseBuilder.validationError( res, 'Invalid priority' );
-          return;
-        }
-
-
-        // 3) Create complaint doc (authoritative code)
-        const code = ( payload.code ?? '' ).toString().trim() || this.generateCode();
+        // 6) Create complaint doc (then attach packets)
+        const dueAt = dueAtISO ? new Date( dueAtISO ) : null;
 
         const doc = await ComplaintModel.create( {
           code,
@@ -1017,128 +724,109 @@ export default class Tenant {
           category,
           priority,
           status,
-          assigneeId: assigneeId || null,
-          dueAt: dueAtISO ? new Date( dueAtISO ) : null,
+          assigneeId: assigneeId ? assigneeId : null,
+          dueAt: dueAt ? dueAt : null,
+          // attachments will be pushed below (schema-dependent)
         } );
 
-        // 4) Handle attachments
-        const filesMap = ( req.files as Record<string, Express.Multer.File[]> ) || {};
-        const files = filesMap[ 'attachments' ] || [];
-
-        if ( files.length !== expectedCount ) {
-          ApiResponseBuilder.validationError( res, `attachmentCount mismatch: expected ${ expectedCount }, received ${ files.length }` );
-          return;
-        }
-
-        if ( files.length > 0 ) {
-          const baseURL = `${ req.protocol }://${ req.get( 'host' ) }`;
-          const baseDir = this.safeJoin( this.UPLOADS_ROOT, 'tenants', doc.tenantId, 'complaints', doc.code, 'attachments' );
-          await fse.ensureDir( baseDir );
-
-          for ( const f of files ) {
-            // Defense-in-depth (fileFilter already validated)
-            if ( !this.isAllowedAttachmentType( f.mimetype ) ) {
-              ApiResponseBuilder.validationError( res, `Unsupported file type: ${ f.mimetype }` );
-              return;
-            }
-
-            const rawName = ( f.originalname || 'file' ).toString();
-            const cleanBase = ( rawName.replace( /[^\w.\- ]+/g, '_' ).trim() || 'file' ).replace( /\.[^.]+$/, '' );
-            const extFromName = path.extname( rawName ).toLowerCase();
-            const extFromMime = this.mimeToExt( f.mimetype );
-            const ext = extFromName || extFromMime || '';
-            const storedName = ext ? `${ randomUUID() }-${ cleanBase }${ ext }` : `${ randomUUID() }-${ cleanBase }`;
-
-            await fse.writeFile( path.join( baseDir, storedName ), f.buffer );
-
+        // 7) Persist attachments in DB (store relativePath for restore + publicUrl for UI)
+        if ( uploadedAttachments.length > 0 ) {
+          for ( const p of uploadedAttachments ) {
             ( doc as any ).attachments.push( {
-              name: cleanBase + ( ext || '' ),
-              mimetype: f.mimetype,
-              size: f.size,
-              url: `${ baseURL }/uploads/tenants/${ encodeURIComponent( doc.tenantId ) }/complaints/${ encodeURIComponent( doc.code ) }/attachments/${ encodeURIComponent( storedName ) }`,
+              originalName: p.originalName,
+              storedName: p.storedName,
+              mimeType: p.mimeType,
+              sizeBytes: p.sizeBytes,
+              relativePath: p.relativePath,
+              url: p.publicUrl,
+              uploadedAtIso: p.uploadedAtIso,
             } );
           }
-
           await ( doc as any ).save?.();
         }
 
-        // 5) Prepare response with optional display names
-
-        // 6) Broadcast notification (non-fatal if missing socket)
+        // 8) notify (best-effort)  ✅ correct event + tags
         try {
-          const notificationService = new NotificationService();
-          const io = req.app.get( 'io' ) as import( 'socket.io' ).Server;
-          await notificationService.createNotification(
-            {
-              title: 'New Complaint',
-              body: `New complaint ${ doc.code } has been created by tenant ${ tenantId }.`,
-              type: 'create',
-              severity: 'info',
-              audience: { mode: 'role', roles: [ 'admin', 'agent', 'manager', 'operator', 'developer' ], usernames: [ tenantId ] },
-              channels: [ 'inapp', 'email' ],
-              metadata: { refId: doc.code, data: { snapshot: doc } },
-            },
-            ( rooms, payload ) => rooms.forEach( room => io?.to( room ).emit( 'notification.new', payload ) ),
-          );
-        } catch { /* ignore */ }
+          const actor = this.buildNotificationActor( author );
 
-        ApiResponseBuilder.ok( res, 'complaint', doc, 'Complaint created!' );
+          this.notificationHub.emit( {
+            eventKey: "complaint.create",
+            actor,
+            audiences: [
+              { mode: "User", userId: String( ( userTenantDoc as any )?._id ?? userTenantDoc.username ?? tenantId ) },
+              { mode: "Role", roleKey: "admin" },
+              { mode: "Role", roleKey: "manager" },
+              { mode: "Role", roleKey: "operator" },
+            ],
+            tags: [ "complaint", "create" ],
+            target: {
+              category: "Complaint",
+              module: "Complaints",
+              refId: doc.code,
+              actionKey: 'tenant:complaint.created'
+            },
+            category: "Complaint",
+          } );
+        } catch ( e: unknown ) {
+          console.warn( "[Warning:] [TenantsRouter] complaint.create notification failed.\n", e );
+        }
+
+        ApiResponseBuilder.ok( res, "complaint", doc, "Complaint created!" );
         return;
-      } catch ( error: any ) {
-        console.error( 'create-complaint error:', error );
-        ApiResponseBuilder.internalError( res, error );
+      } catch ( error: unknown ) {
+        console.error( "[Error:] create-complaint error:\n", error );
+
+        // If we already uploaded files and then failed (e.g., DB error), cleanup to avoid orphan uploads
+        if ( uploadedBaseRelativeDir ) {
+          const abs = path.resolve( this.PUBLIC_ROOT, uploadedBaseRelativeDir );
+          await this.safeRmAbs( abs );
+        }
+
+        const msg = error instanceof Error ? error.message : "Unexpected error occurred during complaint creation.";
+        ApiResponseBuilder.internalError( res, msg );
         return;
       }
     } );
   }
-
 
   // ===========================================================================
   // GET /complaint/:complaintID
   // ===========================================================================
   private getComplaintById(): void {
-    this.router.get( '/complaint/:complaintID', async ( req: Request<{ complaintID: string; }>, res: Response ) => {
+    this.router.get( "/complaint/:complaintID", async ( req: Request<{ complaintID: string; }>, res: Response ) => {
       try {
-        const complaintID = ( req.params.complaintID || '' ).toString().trim();
-        if ( !complaintID ) { ApiResponseBuilder.validationError( res, 'Complaint ID is required!' ); return; }
+        const complaintID = this.s( req.params.complaintID );
+        if ( !complaintID ) { ApiResponseBuilder.validationError( res, "Complaint ID is required!" ); return; }
 
-        const complaintDoc = await ComplaintModel.findOne( { code: complaintID } ).lean<IComplaint>();
+        const complaintDoc = await ComplaintModel.findOne( { code: complaintID } ).lean<IComplaint>().exec();
+        if ( !complaintDoc ) { ApiResponseBuilder.notFound( res, "Complaint does not found!" ); return; }
 
-        if ( !complaintDoc ) { ApiResponseBuilder.notFound( res, 'Complaint does not found!' ); return; }
-
-        ApiResponseBuilder.ok( res, 'complaint', complaintDoc, 'Complaint fetched successfully!' );
+        ApiResponseBuilder.ok( res, "complaint", complaintDoc, "Complaint fetched successfully!" );
         return;
-      } catch ( error ) {
-        console.error( 'get-complaint-by-id error:', error );
+      } catch ( error: unknown ) {
+        console.error( "[Error:] get-complaint-by-id error:\n", error );
         ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
   }
-
 
   // ===========================================================================
   // GET /complaints/tenant/:username
   // ===========================================================================
   private getAllComplaintsByTenantUsername(): void {
-    this.router.get( '/complaints/tenant/:username', async ( req: Request<{ username: string; }>, res: Response ) => {
+    this.router.get( "/complaints/tenant/:username", async ( req: Request<{ username: string; }>, res: Response ) => {
       try {
-        const username = ( req.params.username || '' ).toString().trim();
-        if ( !username ) {
-          ApiResponseBuilder.validationError( res, 'Username is required' );
-          return;
-        }
+        const username = this.s( req.params.username );
+        if ( !username ) { ApiResponseBuilder.validationError( res, "Username is required" ); return; }
 
-        const start = req.query.start ? parseInt( req.query.start as string, 10 ) : 0;
-
-        const limit = req.query.limit ? parseInt( req.query.limit as string, 10 ) : 50;
-
-        const search = req.query.search ? ( req.query.search as string ).toString().trim().toLowerCase() : '';
+        const start = this.safeInt( req.query.start, 0, 0, Number.MAX_SAFE_INTEGER );
+        const limit = this.safeInt( req.query.limit, 50, 1, 200 );
+        const search = this.s( req.query.search ).toLowerCase();
 
         const filter: FilterQuery<IComplaint> = {};
-
         if ( search ) {
-          const rx = new RegExp( search, 'i' );
+          const rx = new RegExp( search, "i" );
           filter.$or = [
             { code: { $regex: rx } },
             { title: { $regex: rx } },
@@ -1148,102 +836,68 @@ export default class Tenant {
           ];
         }
 
-        // const complaints = await ComplaintModel.find({tenantId: username}).lean();
-
         const [ complaints, total ] = await Promise.all( [
-          ComplaintModel.find( { ...filter, tenantId: username } ).sort( { createdAt: -1 } ).skip( start ).limit( limit ).lean<IComplaint>().exec() as unknown as IComplaint[],
+          ComplaintModel.find( { ...filter, tenantId: username } )
+            .sort( { createdAt: -1 } )
+            .skip( start )
+            .limit( limit )
+            .lean<IComplaint>()
+            .exec() as unknown as IComplaint[],
           ComplaintModel.countDocuments( { ...filter, tenantId: username } ),
         ] );
 
-        // 1) Total pages (0 if no records)
-        const totalPages: number = total > 0 ? Math.ceil( total / limit ) : 0;
+        const totalPages = total > 0 ? Math.ceil( total / limit ) : 0;
+        const index = total > 0 ? Math.floor( start / limit ) : 0;
+        const end = total > 0 ? Math.min( start + complaints.length - 1, total - 1 ) : 0;
 
-        // 2) Zero-based page index (0,1,2…)
-        const index: number = total > 0 ? Math.floor( start / limit ) : 0;
-
-        // 3) Do we have any results at all?
-        const hasResults: boolean = total > 0;
-
-        // 4) End index (0-based, inclusive)
-        const end: number = hasResults
-          ? Math.min( start + complaints.length - 1, total - 1 )
-          : 0;
-
-        // 5) Has next/previous
-        const hasNext: boolean = index + 1 < totalPages;
-        const hasPrevious: boolean = index > 0 && totalPages > 0;
-
-        // 6) Build meta
         const pagination: PaginationMeta = {
           index,
           limit,
           total,
-          start,
-          end,
-          hasNext,
-          hasPrevious
+          start: total > 0 ? start : 0,
+          end: total > 0 ? end : 0,
+          hasNext: index + 1 < totalPages,
+          hasPrevious: index > 0 && totalPages > 0,
         };
+        if ( search ) pagination.search = search;
 
-        if ( search && search.trim() !== '' ) {
-          pagination.search = search.trim();
-        }
-
-
-
-        // ──────────────────────────────────────────────
-        // Response
-        // ──────────────────────────────────────────────
-        ApiResponseBuilder.ok( res, 'complaints', complaints, 'All leases retrieved successfully!', { pagination } );
-
+        ApiResponseBuilder.ok( res, "complaints", complaints, "Complaints retrieved successfully!", { pagination } );
         return;
-      } catch ( error ) {
-        console.error( 'get-all-complaints-by-tenant-username error:', error );
+      } catch ( error: unknown ) {
+        console.error( "[Error:] get-all-complaints-by-tenant-username error:\n", error );
         ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
   }
 
-  // ===========================================================================
-  // GET /complaints-count/tenant/:username
-  // ===========================================================================
   private getAllComplaintsCountByTenantUsername(): void {
-    this.router.get( '/complaints-count/tenant/:username', async ( req: Request<{ username: string; }>, res: Response ) => {
+    this.router.get( "/complaints-count/tenant/:username", async ( req: Request<{ username: string; }>, res: Response ) => {
       try {
-        const username = ( req.params.username || '' ).toString().trim();
-        if ( !username ) {
-          ApiResponseBuilder.validationError( res, 'Username is required' );
-          return;
-        }
+        const username = this.s( req.params.username );
+        if ( !username ) { ApiResponseBuilder.validationError( res, "Username is required" ); return; }
 
         const total = await ComplaintModel.countDocuments( { tenantId: username } );
-
-        ApiResponseBuilder.ok( res, 'other', {}, 'Complaints total fetched successfully', { pagination: { total } } );
+        ApiResponseBuilder.ok( res, "other", {}, "Complaints total fetched successfully", { pagination: { total } } );
         return;
-      } catch ( error ) {
-        console.error( 'get-all-complaints-by-tenant-username error:', error );
+      } catch ( error: unknown ) {
+        console.error( "[Error:] complaints-count-by-tenant error:\n", error );
         ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
   }
 
-  // ===========================================================================
-  // GET /complaints/all
-  // ===========================================================================
   private getAllComplaints(): void {
-    this.router.get( '/complaints/all', async ( _req: Request, res: Response ) => {
+    this.router.get( "/complaints/all", async ( req: Request, res: Response ) => {
       try {
-        const start = _req.query.start ? parseInt( _req.query.start as string, 10 ) : 0;
-
-        const limit = _req.query.limit ? parseInt( _req.query.limit as string, 10 ) : 100;
-
-        const search = _req.query.search ? ( _req.query.search as string ).toString().trim().toLowerCase() : '';
+        const start = this.safeInt( req.query.start, 0, 0, Number.MAX_SAFE_INTEGER );
+        const limit = this.safeInt( req.query.limit, 100, 1, 300 );
+        const search = this.s( req.query.search ).toLowerCase();
 
         const filter: FilterQuery<IComplaint> = {};
-
         if ( search ) {
-          const rx = new RegExp( search, 'i' );
+          const rx = new RegExp( search, "i" );
           filter.$or = [
             { code: { $regex: rx } },
             { title: { $regex: rx } },
@@ -1253,82 +907,49 @@ export default class Tenant {
           ];
         }
 
-        // Fetch sorted (newest first)
         const [ items, total ] = await Promise.all( [
-          ComplaintModel
-            .find( { ...filter } )
-            .sort( { createdAt: -1 } )
-            .skip( start )
-            .limit( limit )
-            .lean<IComplaint>()
-            .exec() as unknown as IComplaint[],
-          ComplaintModel.countDocuments( { ...filter } )
+          ComplaintModel.find( { ...filter } ).sort( { createdAt: -1 } ).skip( start ).limit( limit ).lean<IComplaint>().exec() as unknown as IComplaint[],
+          ComplaintModel.countDocuments( { ...filter } ),
         ] );
 
-        // 1) Total pages (0 if no records)
-        const totalPages: number = total > 0 ? Math.ceil( total / limit ) : 0;
+        const totalPages = total > 0 ? Math.ceil( total / limit ) : 0;
+        const index = total > 0 ? Math.floor( start / limit ) : 0;
+        const end = total > 0 ? Math.min( start + items.length - 1, total - 1 ) : 0;
 
-        // 2) Zero-based page index (0,1,2…)
-        const index: number = total > 0 ? Math.floor( start / limit ) : 0;
-
-        // 3) Do we have any results at all?
-        const hasResults: boolean = total > 0;
-
-        // 4) End index (0-based, inclusive)
-        const end: number = hasResults
-          ? Math.min( start + items.length - 1, total - 1 )
-          : 0;
-
-        // 5) Has next/previous
-        const hasNext: boolean = index + 1 < totalPages;
-        const hasPrevious: boolean = index > 0 && totalPages > 0;
-
-        // 6) Build meta
         const pagination: PaginationMeta = {
           index,
           limit,
           total,
-          start,
-          end,
-          hasNext,
-          hasPrevious
+          start: total > 0 ? start : 0,
+          end: total > 0 ? end : 0,
+          hasNext: index + 1 < totalPages,
+          hasPrevious: index > 0 && totalPages > 0,
         };
+        if ( search ) pagination.search = search;
 
-        if ( search && search.trim() !== '' ) {
-          pagination.search = search.trim();
-        }
-
-        ApiResponseBuilder.ok( res, 'complaints', items, 'Complaints fetched successful', { pagination } );
+        ApiResponseBuilder.ok( res, "complaints", items, "Complaints fetched successful", { pagination } );
         return;
-      } catch ( error ) {
-        console.error( 'get-all-complaints:', error );
+      } catch ( error: unknown ) {
+        console.error( "[Error:] get-all-complaints error:\n", error );
         ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
   }
 
-  // ===========================================================================
-  // GET /complaints/all/status/:status
-  // ===========================================================================
   private getAllComplaintsByStatus(): void {
-    this.router.get( '/complaints/all/status/:status', async ( req: Request<{ status: string; }>, res: Response ): Promise<void> => {
+    this.router.get( "/complaints/all/status/:status", async ( req: Request<{ status: string; }>, res: Response ) => {
       try {
-        const status = ( req.params.status || '' ).toString().trim().toLowerCase();
-        if ( !status ) {
-          ApiResponseBuilder.validationError( res, 'Status is required' );
-          return;
-        }
-        const start = req.query.start ? parseInt( req.query.start as string, 10 ) : 0;
+        const status = this.s( req.params.status ).toLowerCase();
+        if ( !status ) { ApiResponseBuilder.validationError( res, "Status is required" ); return; }
 
-        const limit = req.query.limit ? parseInt( req.query.limit as string, 10 ) : 100;
-
-        const search = req.query.search ? ( req.query.search as string ).toString().trim().toLowerCase() : '';
+        const start = this.safeInt( req.query.start, 0, 0, Number.MAX_SAFE_INTEGER );
+        const limit = this.safeInt( req.query.limit, 100, 1, 300 );
+        const search = this.s( req.query.search ).toLowerCase();
 
         const filter: FilterQuery<IComplaint> = { status };
-
         if ( search ) {
-          const rx = new RegExp( search, 'i' );
+          const rx = new RegExp( search, "i" );
           filter.$or = [
             { code: { $regex: rx } },
             { title: { $regex: rx } },
@@ -1338,177 +959,87 @@ export default class Tenant {
           ];
         }
 
-        // Fetch sorted (newest first)
         const [ items, total ] = await Promise.all( [
-          ComplaintModel
-            .find( { ...filter } )
-            .sort( { createdAt: -1 } )
-            .skip( start )
-            .limit( limit )
-            .lean<IComplaint>()
-            .exec() as unknown as IComplaint[],
-          ComplaintModel.countDocuments( { ...filter } )
+          ComplaintModel.find( { ...filter } ).sort( { createdAt: -1 } ).skip( start ).limit( limit ).lean<IComplaint>().exec() as unknown as IComplaint[],
+          ComplaintModel.countDocuments( { ...filter } ),
         ] );
 
-        // 1) Total pages (0 if no records)
-        const totalPages: number = total > 0 ? Math.ceil( total / limit ) : 0;
-        // 2) Zero-based page index (0,1,2…)
-        const index: number = total > 0 ? Math.floor( start / limit ) : 0;
-        // 3) Do we have any results at all?
-        const hasResults: boolean = total > 0;
-        // 4) End index (0-based, inclusive)
-        const end: number = hasResults
-          ? Math.min( start + items.length - 1, total - 1 )
-          : 0;
-        // 5) Has next/previous
-        const hasNext: boolean = index + 1 < totalPages;
-        const hasPrevious: boolean = index > 0 && totalPages > 0;
-        // 6) Build meta
+        const totalPages = total > 0 ? Math.ceil( total / limit ) : 0;
+        const index = total > 0 ? Math.floor( start / limit ) : 0;
+        const end = total > 0 ? Math.min( start + items.length - 1, total - 1 ) : 0;
+
         const pagination: PaginationMeta = {
           index,
           limit,
           total,
-          start,
-          end,
-          hasNext,
-          hasPrevious
+          start: total > 0 ? start : 0,
+          end: total > 0 ? end : 0,
+          hasNext: index + 1 < totalPages,
+          hasPrevious: index > 0 && totalPages > 0,
         };
-        if ( search && search.trim() !== '' ) {
-          pagination.search = search.trim();
-        }
-        ApiResponseBuilder.ok( res, 'complaints', items, 'Complaints fetched successful', { pagination } );
+        if ( search ) pagination.search = search;
+
+        ApiResponseBuilder.ok( res, "complaints", items, "Complaints fetched successful", { pagination } );
         return;
-      }
-      catch ( error ) {
-        console.error( '[Complaint Error:] get-all-complaints-by-status:', error );
+      } catch ( error: unknown ) {
+        console.error( "[Error:] get-all-complaints-by-status error:\n", error );
         ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
   }
 
-  // ===========================================================================
-  // GET /complaints/all/count/status/:status
-  // ===========================================================================
   private getAllComplaintsCountByStatus(): void {
-    this.router.get( '/complaints/all/count/status/:status', async ( req: Request<{ status: string; }>, res: Response ): Promise<void> => {
+    this.router.get( "/complaints/all/count/status/:status", async ( req: Request<{ status: string; }>, res: Response ) => {
       try {
-        const status = req.params.status?.trim().toLowerCase();
-
-        if ( !status ) {
-          ApiResponseBuilder.validationError( res, 'Status is invalid!' );
-          return;
-        }
+        const status = this.s( req.params.status ).toLowerCase();
+        if ( !status ) { ApiResponseBuilder.validationError( res, "Status is invalid!" ); return; }
 
         const total = await ComplaintModel.countDocuments( { status } );
-
-        ApiResponseBuilder.ok( res, 'other', {}, 'Complaints count fetched successfully', { pagination: { total } } );
+        ApiResponseBuilder.ok( res, "other", {}, "Complaints count fetched successfully", { pagination: { total } } );
         return;
-      } catch ( error ) {
-        console.error( '[Complaint Error:] get-all-complaints-count-by-status:', error );
+      } catch ( error: unknown ) {
+        console.error( "[Error:] get-all-complaints-count-by-status error:\n", error );
         ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
   }
 
-  // ===========================================================================
-  // GET /complaints-count/all
-  // ===========================================================================
   private getAllComplaintsCount(): void {
-    this.router.get( '/complaints-count/all', async ( _req: Request, res: Response ) => {
+    this.router.get( "/complaints-count/all", async ( _req: Request, res: Response ) => {
       try {
-        // Fetch sorted (newest first)
         const total = await ComplaintModel.countDocuments( {} );
-
-
-        ApiResponseBuilder.ok( res, 'other', {}, 'Complaints total fetched successfully', { pagination: { total } } );
+        ApiResponseBuilder.ok( res, "other", {}, "Complaints total fetched successfully", { pagination: { total } } );
         return;
-      } catch ( error ) {
-        console.error( 'get-all-complaints:', error );
+      } catch ( error: unknown ) {
+        console.error( "[Error:] complaints-count-all error:\n", error );
         ApiResponseBuilder.internalError( res, error );
         return;
       }
     } );
   }
 
-  // ===========================================================================
-  // GET /complaints-by-section/all/:section
-  // ===========================================================================
   private getAllComplaintsBySection(): void {
-    this.router.get(
-      '/complaints-by-section/all/:section',
-      async (
-        req: Request<{ section: string; }>,
-        res: Response
-      ): Promise<void> => {
-        try {
-          // -----------------------------
-          // 1) Sanitize section
-          // -----------------------------
-          const section = req.params.section?.trim().toLowerCase();
+    this.router.get( "/complaints-by-section/all/:section", async ( req: Request<{ section: string; }>, res: Response ) => {
+      try {
+        const section = this.s( req.params.section ).toLowerCase();
+        if ( !section ) { ApiResponseBuilder.validationError( res, "Section is invalid!" ); return; }
 
-          if ( !section ) {
-            ApiResponseBuilder.validationError( res, 'Section is invalid!' );
-            return;
-          }
+        const projection: Record<string, 1 | 0> = { [ section ]: 1, _id: 0 };
 
-          // -----------------------------
-          // 2) Build PROJECTION correctly
-          // -----------------------------
-          const projection: Record<string, 1 | 0> = {
-            [ section ]: 1,
-            _id: 0,
-          };
+        const [ complaints, total ] = await Promise.all( [
+          ComplaintModel.find( {}, projection ).lean<IComplaint>().exec() as unknown as IComplaint[],
+          ComplaintModel.countDocuments(),
+        ] );
 
-          // -----------------------------
-          // 3) Fetch correct data
-          // -----------------------------
-          const [ complaints, total ] = await Promise.all( [
-            ComplaintModel.find( {}, projection ).lean<IComplaint>().exec() as unknown as IComplaint[],
-            ComplaintModel.countDocuments(),
-          ] );
-
-          // -----------------------------
-          // 4) Return success
-          // -----------------------------
-          ApiResponseBuilder.ok( res, 'complaints', complaints, 'Complaints fetched successfully by section', { pagination: { total } } );
-        } catch ( error ) {
-          console.error( 'get-all-complaints:', error );
-
-          ApiResponseBuilder.internalError( res, error );
-
-          return;
-        }
+        ApiResponseBuilder.ok( res, "complaints", complaints, "Complaints fetched successfully by section", { pagination: { total } } );
+        return;
+      } catch ( error: unknown ) {
+        console.error( "[Error:] complaints-by-section error:\n", error );
+        ApiResponseBuilder.internalError( res, error );
+        return;
       }
-    );
+    } );
   }
-
-
-
-
-
-
-
-
-
-  //___________________________________________________________________________________
-  // HELPER METHOS
-  //___________________________________________________________________________________
-
-  // --- Narrow/convert ---
-  private isStr( v: unknown ): v is string {
-    return typeof v === "string";
-  }
-
-  private s( v: unknown ): string {
-    return this.isStr( v ) ? v.trim() : "";
-  }
-
-
-
-
-
-
-
 }

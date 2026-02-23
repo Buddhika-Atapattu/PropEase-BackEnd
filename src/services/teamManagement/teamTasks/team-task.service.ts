@@ -9,10 +9,10 @@
 // - Lean typing uses LeanTeamTask (plain object), NOT mongoose Document
 // - PaginationInput normalized (page/limit/skip), but tolerates old pageIndex usage
 // =============================================================================
-
+import { Response, Request } from "express";
 import { Types, type FilterQuery, type PipelineStage } from "mongoose";
 
-import type { ISODateString } from "../../../types/common";
+import type { AuthUser, FileMetaPacket, ISODateString } from "../../../types/common";
 
 import {
   TEAM_DOMAINS,
@@ -54,7 +54,12 @@ import { TeamTaskModel } from "../../../models/teamManagement/teamTasks/teamTask
 
 import { TeamTaskSocketService, type TeamTaskWsContext } from "./team-task.socket.service";
 
-import { UserModel } from "../../../models/user.model";
+import { UserModel, type User } from "../../../models/user.model";
+
+import { RecycleBinDomainDeleteService, type DomainDeletePlan } from "../../../services/recyclebin/recyclebin-domain-delete.service";
+import { FileUploadDataBuilder } from "../../../utils/api-data.builder";
+import { FileMetaPacketBuilder } from "../../../utils/files/file-meta-packet.builder";
+import { ApiGuardExport } from "../../../guard/api-router.guard";
 
 type LeanRow = LeanTeamTask;
 
@@ -65,7 +70,10 @@ type AdvancedRow = LeanTeamTask & {
 
 type LabelsGroupRow = { _id: string; };
 
+type UserModelKeyFields = keyof User;
+
 export class TeamTaskService {
+  private readonly recycleBinDomainDeleteService: RecycleBinDomainDeleteService = new RecycleBinDomainDeleteService();
   private readonly socket: TeamTaskSocketService = new TeamTaskSocketService();
 
   private static readonly URGENCY_VALUES = [ "low", "medium", "high", "critical" ] as const;
@@ -359,11 +367,35 @@ export class TeamTaskService {
     return dto;
   }
 
-  public async delete( taskMongoId: string, ctx?: TeamTaskWsContext ): Promise<boolean> {
+  public async delete( taskMongoId: string, req: Request, ctx?: TeamTaskWsContext ): Promise<boolean> {
     const existing = await TeamTaskModel.findById( this.toObjectId( taskMongoId ) ).lean<LeanRow>().exec();
     if ( !existing ) return false;
 
-    await TeamTaskModel.deleteOne( { _id: this.toObjectId( taskMongoId ) } ).exec();
+    const actor: AuthUser | null = await ApiGuardExport.GetAuthUser( req );
+
+    if ( !actor ) {
+      throw new Error( "Unauthorized: unable to identify user" );
+    }
+
+    const root: string = `public/uploads/teamManagement/teamTasks/${ existing.teamCode }/${ existing._id ?? existing.id }/`;
+
+    const filesScan: FileMetaPacket[] = await FileMetaPacketBuilder.scanTree( {
+      bucket: 'taskDocs',
+      rootPathLike: root,
+      ...req ? req : {}
+    } );
+    const deletePlan: DomainDeletePlan<LeanRow> = {
+      sourceKey: "teamTask",
+      label: [ 'Team Task', existing.name ?? existing._id ?? existing.id ].join( " - " ),
+      refId: String( existing.id ),
+      snapshotData: existing,
+      files: filesScan,
+      deleteDbRecord: async ( session ): Promise<void> => {
+        await TeamTaskModel.deleteOne( { _id: this.toObjectId( taskMongoId ) }, { session } ).exec();
+      },
+    };
+
+    await this.recycleBinDomainDeleteService.deleteWithRecycleBin( actor, deletePlan );
 
     const dto = this.toDtoMinimal( existing );
     const ctxWithUsers = await this.withResolvedCtx( dto, ctx );
@@ -622,9 +654,70 @@ export class TeamTaskService {
     return await this.update( taskMongoId, { notes }, ctx );
   }
 
+  /**
+   * Fetch a single field (keyof User) as string[] for given user ObjectIds.
+   *
+   * Why this method exists
+   * - Multiple parent flows already know (a) which users and (b) which field is required.
+   * - We only want a projection read (least privilege) and return a simple array.
+   *
+   * @param membersIDs
+   * - Expected: Types.ObjectId[]
+   * - Usage: list of user _id values (duplicates allowed; will be deduped)
+   *
+   * @param key
+   * - Expected: keyof User
+   * - Usage: which user field should be extracted (ex: "email", "username")
+   *
+   * Keep in mind
+   * - Return type is string[] so this is intended for string-like fields.
+   * - If the selected field is not a string, it will be ignored (not pushed).
+   * - This does NOT guarantee ordering by ids; it returns values found in DB order.
+   */
+  public async fetchUserFieldAsStringArray(
+    membersIDs: Types.ObjectId[],
+    key: UserModelKeyFields
+  ): Promise<string[]> {
+    // 1) Normalize ids (dedupe + stable)
+    const normalizedIds = this.normalizeObjectIds( membersIDs );
+    if ( normalizedIds.length === 0 ) return [];
+
+    // 2) Projection-only select (Mongo accepts dynamic projection keys)
+    const projection: Record<string, 0 | 1> = { [ String( key ) ]: 1 };
+
+    // 3) Query lean + extract string values safely
+    const rows = await UserModel.find( { _id: { $in: normalizedIds } } )
+      .select( projection )
+      .lean<Array<Record<string, unknown>>>()
+      .exec();
+
+    const out: string[] = [];
+    const seen = new Set<string>();
+
+    for ( const r of rows ) {
+      const raw = r[ String( key ) ];
+      if ( typeof raw !== "string" ) continue;
+
+      const val = raw.trim();
+      if ( !val ) continue;
+
+      // Avoid duplicates (common when multiple users share blank/aliases etc.)
+      if ( seen.has( val ) ) continue;
+      seen.add( val );
+
+      out.push( val );
+    }
+
+    return out;
+  }
+
+
+
   // ──────────────────────────────────────────────────────────────────────────
   // Advanced aggregate
   // ──────────────────────────────────────────────────────────────────────────
+
+
 
   private async getByMongoIdAdvanced( taskMongoId: string ): Promise<TeamTaskDto | null> {
     const pipeline = this.buildAdvancedPipeline(
@@ -1062,5 +1155,22 @@ export class TeamTaskService {
 
   private toObjectId( id: string ): Types.ObjectId {
     return new Types.ObjectId( String( id ) );
+  }
+
+  /**
+   * Normalize ObjectIds by removing duplicates (stable order).
+   */
+  private normalizeObjectIds( ids: Types.ObjectId[] ): Types.ObjectId[] {
+    const out: Types.ObjectId[] = [];
+    const seen = new Set<string>();
+
+    for ( const id of ids ) {
+      const key = String( id );
+      if ( seen.has( key ) ) continue;
+      seen.add( key );
+      out.push( id );
+    }
+
+    return out;
   }
 }

@@ -14,7 +14,7 @@
 // ============================================================================
 
 import express, { type Router } from "express";
-import { WorkItemControllerExport } from "../../../controller/teamManagement/workItems/workItem.controller";
+import { WorkItemControllerExport } from "../../../controllers/teamManagement/workItems/workItem.controller";
 
 export default class WorkItemRouter {
   private readonly router: Router;

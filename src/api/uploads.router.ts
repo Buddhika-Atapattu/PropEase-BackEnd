@@ -2,7 +2,7 @@
 import { Router } from 'express';
 import multer, { FileFilterCallback } from 'multer';
 import path from 'node:path';
-import { UploadsController } from '../controller/uploads.controller';
+import { UploadsController } from '../controllers/uploads.controller';
 import rateLimit from 'express-rate-limit';
 
 

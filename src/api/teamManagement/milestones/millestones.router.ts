@@ -13,7 +13,7 @@
 // ============================================================================
 
 import express, { type Router } from "express";
-import { MilestonesController } from "../../../controller/teamManagement/milestones/milestones.controller";
+import { MilestonesController } from "../../../controllers/teamManagement/milestones/milestones.controller";
 
 export default class MilestonesRouter {
   private readonly router: Router;

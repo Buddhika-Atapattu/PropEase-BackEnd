@@ -13,7 +13,7 @@ import ejs from "ejs";
 import express, { Request, Response, Router } from "express";
 import fs from "fs";
 import * as libre from "libreoffice-convert"; // (kept if you later reuse for docs)
-import { FilterQuery } from "mongoose";
+import { FilterQuery, type ClientSession } from "mongoose";
 import multer from "multer";
 import * as os from "os";
 import path from "path";
@@ -44,15 +44,19 @@ import {
   SystemMetadata,
   TenantInformation,
   TokenViceData,
-  UtilityResponsibility
+  UtilityResponsibility,
+  type LeaseType
 } from "../models/lease.model";
 
 import { Property, PropertyModel, IProperty, AddedBy } from '../models/property.model';
 import { UserModel, User, USER_MODEL_PROJECTION, type IUser } from "../models/user.model";
 import { CryptoService } from "../services/crypto.service";
-import NotificationService from "../services/notification.service";
-import { PaginationMeta } from "../types/api-message";
+import { NotificationHubEngineService } from '../services/notifications/notification-hub-engine.service';
+import { RecycleBinDomainDeleteService, type DomainDeletePlan } from '../services/recyclebin/recyclebin-domain-delete.service';
+import { PaginationMeta, type FileMetaPacket } from "../types/common";
 import { ApiResponseBuilder } from '../utils/api-combiner.builder';
+import { ApiGuardExport } from '../guard/api-router.guard';
+import { FileMetaPacketBuilder } from '../utils/files/file-meta-packet.builder';
 
 
 // Optional (future): promisify libre if you add DOC->PDF here
@@ -95,6 +99,8 @@ const ALLOWED_MIME = new Set<string>( [
 type TokenPayload = { tenant?: string; issuedAt?: number; };
 
 export default class Lease {
+  private notificationHub: NotificationHubEngineService = new NotificationHubEngineService();
+  private deleteService: RecycleBinDomainDeleteService = new RecycleBinDomainDeleteService();
   // --------------------------- Static roots ---------------------------
   private readonly PUBLIC_ROOT = path.resolve( __dirname, "../../public" );
   private readonly UPLOADS_ROOT = path.join( this.PUBLIC_ROOT, "uploads" );
@@ -131,6 +137,7 @@ export default class Lease {
     // Register routes
     this.registerLeaseAgreement();                          // POST /register/:leaseID   (create)
     this.updateLeaseAgreement();                            // PUT  /update-lease-agreement/:leaseID  (update)
+    this.deleteLeaseAgreement();                            // DELETE /delete-lease-agreement/:leaseID (soft delete + recycle bin)
     this.setupEjsPreview();                                 // GET  /preview-lease-agreement/:leaseID (EJS preview)
     this.generatePDFOfLeaseAgreement();                     // GET  /lease-agreement-pdf/:leaseID/:type/:generator
     this.getAllLeaseAgreementsByUsername();                 // GET  /lease-agreements/:username
@@ -652,32 +659,43 @@ export default class Lease {
           const INSERT = new LeaseModel( INSERT_DATA );
           await INSERT.save();
 
-          // -------------------- Notify relevant users --------------------
-          const notificationService = new NotificationService();
-          const io = req.app.get( "io" ) as import( "socket.io" ).Server;
+          const actor = await ApiGuardExport.GetNormalisedAuthUser( req );
+          if ( !actor ) {
+            ApiResponseBuilder.internalError( res, new Error( "Authenticated user not found for notification actor." ) );
+            return;
+          }
 
-          await notificationService.createNotification(
-            {
-              title: "New Lease",
-              body: `New lease agreement has been created with ID: ${ leaseID }. Please review and validate the agreement.`,
-              type: "create",
-              severity: "info",
-              audience: { mode: "role", usernames: [ tenantUsername ], roles: [ "admin", "operator", "manager" ] },
-              channels: [ "inapp", "email" ],
-              metadata: {
-                refId: leaseID,
-                data: {
-                  tenantUsername,
-                  lease: INSERT_DOCUMENT_DATA,
-                  leaseID,
-                  action: "created",
-                  performedBy: INSERT_DATA_signatures.userAgent,
-                  ipAddress,
-                }
+          // -------------------- Notify relevant users --------------------
+          this.notificationHub.emit( {
+            eventKey: 'lease:agreement.created',
+            actor,
+            audiences: [
+              {
+                mode: 'User',
+                userId: INSERT_DATA.tenantInformation.tenantUsername
               },
+              {
+                mode: 'Role',
+                roleKey: 'admin',
+              },
+              {
+                mode: 'Role',
+                roleKey: 'operator',
+              },
+              {
+                mode: 'Role',
+                roleKey: 'manager',
+              },
+            ],
+            target: {
+              actionKey: 'lease:agreement.created',
+              category: 'Lease',
+              module: 'Lease Management',
+              params: { leaseID: INSERT_DATA.leaseID },
+              refId: INSERT_DATA.leaseID,
             },
-            ( rooms, payload ) => rooms.forEach( ( room ) => io.to( room ).emit( "notification.new", payload ) )
-          );
+            category: 'Lease',
+          } );
 
           ApiResponseBuilder.ok( res, 'lease', INSERT, 'Agreement has been created successfully!' );
           return;
@@ -1107,33 +1125,43 @@ export default class Lease {
           // DB update
           const result: LeasePayload = await LeaseModel.updateOne( { leaseID }, { $set: UPDATE_DATA } ).lean<LeasePayload>();
 
-          // notify
-          const notificationService = new NotificationService();
-          const io = req.app.get( "io" ) as import( "socket.io" ).Server;
+          const actor = await ApiGuardExport.GetNormalisedAuthUser( req );
+          if ( !actor ) {
+            ApiResponseBuilder.internalError( res, new Error( "Authenticated user not found for notification actor." ) );
+            return;
+          }
 
-          await notificationService.createNotification(
-            {
-              title: "Update Lease",
-              body: `Lease agreement has been updated successfully with ID: ${ leaseID }. Please review and validate the agreement.`,
-              type: "update",
-              severity: "info",
-              audience: { mode: "user", usernames: [ tenantUsername ], roles: [ "admin", "operator" ] },
-              channels: [ "inapp", "email" ],
-              metadata: {
-                refId: UPDATE_DOCUMENT_DATA.leaseID,
-                data: {
-                  lease: UPDATE_DOCUMENT_DATA,
-                  leaseID,
-                  tenantUsername,
-                  updatedBy: userAgent,
-                  ipAddress,
-                  updatedAt: new Date().toISOString(),
-                }
+          // -------------------- Notify relevant users --------------------
+          this.notificationHub.emit( {
+            eventKey: 'lease:agreement.renewed',
+            actor,
+            audiences: [
+              {
+                mode: 'User',
+                userId: result.tenantInformation.tenantUsername
               },
+              {
+                mode: 'Role',
+                roleKey: 'admin',
+              },
+              {
+                mode: 'Role',
+                roleKey: 'operator',
+              },
+              {
+                mode: 'Role',
+                roleKey: 'manager',
+              },
+            ],
+            target: {
+              actionKey: 'lease:agreement.renewed',
+              category: 'Lease',
+              module: 'Lease Management',
+              params: { leaseID: result.leaseID },
+              refId: result.leaseID,
             },
-            ( rooms, payload ) => rooms.forEach( ( room ) => io.to( room ).emit( "notification.new", payload ) )
-          );
-
+            category: 'Lease',
+          } );
 
           ApiResponseBuilder.ok( res, 'lease', result, 'Lease updated successfully!' );
           return;
@@ -1144,6 +1172,98 @@ export default class Lease {
         }
       }
     );
+  }
+
+
+  private deleteLeaseAgreement(): void {
+    this.router.delete( "/delete-lease-agreement/:leaseID", async ( req: Request<{ leaseID: string; }>, res: Response ) => {
+      try {
+        const actor = await ApiGuardExport.GetAuthUser( req );
+        if ( !actor ) {
+          ApiResponseBuilder.internalError( res, new Error( "Authenticated user not found for notification actor." ) );
+          return;
+        }
+
+        const leaseID = this.mustString( req.params.leaseID, "Lease ID" );
+
+        const leaseAgreementDB = await LeaseModel.findOne( { leaseID } ).lean<LeasePayload>().exec();
+
+        if ( !leaseAgreementDB ) {
+          ApiResponseBuilder.notFound( res, 'Lease agreement not found!' );
+          return;
+        }
+
+        const leaseFileRoot = `public/upoads/leases/${ leaseID }`;
+        const scanFiles: FileMetaPacket[] = await FileMetaPacketBuilder.scanTree( {
+          bucket: `${ leaseFileRoot }-documents`,
+          rootPathLike: leaseFileRoot,
+          req,
+        } );
+
+        const deletionPlan: DomainDeletePlan<LeasePayload> = {
+          snapshotData: leaseAgreementDB as unknown as Record<string, unknown>,
+          label: `Lease agreement ${ leaseID }`,
+          refId: leaseID,
+          sourceKey: 'Lease',
+          description: `Delete lease agreement with ID ${ leaseID } and all associated documents.`,
+          module: 'Lease Management',
+          tags: [ 'Lease', 'Agreement', 'Document Deletion' ],
+          files: scanFiles,
+          deleteDbRecord: async ( session: ClientSession ): Promise<void> => {
+            await LeaseModel.deleteOne( { leaseID } ).session( session ).exec();
+          },
+        };
+
+        const result = await this.deleteService.deleteWithRecycleBin( actor, deletionPlan );
+
+        if ( !result.entry ) {
+          ApiResponseBuilder.internalError( res, new Error( "Failed to delete lease agreement." ) );
+          return;
+        }
+
+        const notificationActor = await ApiGuardExport.GetNormalisedAuthUser( req );
+        if ( !notificationActor ) {
+          ApiResponseBuilder.internalError( res, new Error( "Authenticated user not found for notification actor." ) );
+          return;
+        }
+
+        // -------------------- Notify relevant users --------------------
+        this.notificationHub.emit( {
+          eventKey: 'lease:agreement.deleted',
+          actor: notificationActor,
+          audiences: [
+            {
+              mode: 'User',
+              userId: leaseAgreementDB.tenantInformation.tenantUsername
+            },
+            {
+              mode: 'Role',
+              roleKey: 'admin',
+            },
+            {
+              mode: 'Role',
+              roleKey: 'operator',
+            },
+            {
+              mode: 'Role',
+              roleKey: 'manager',
+            },
+          ],
+          target: {
+            actionKey: 'lease:agreement.renewed',
+            category: 'Lease',
+            module: 'Lease Management',
+            params: { leaseID: leaseAgreementDB.leaseID },
+            refId: leaseAgreementDB.leaseID,
+          },
+          category: 'Lease',
+        } );
+      } catch ( error ) {
+        console.error( "Error in delete lease agreement:", error );
+        ApiResponseBuilder.internalError( res, error );
+        return;
+      }
+    } );
   }
 
   // ============================================================================
@@ -1326,29 +1446,43 @@ export default class Lease {
         await page.close();
 
         // Notify download/view
-        const notificationService = new NotificationService();
-        const io = req.app.get( "io" ) as import( "socket.io" ).Server;
-        await notificationService.createNotification(
-          {
-            title: type.trim().toLowerCase() === "download" ? "Lease Agreement Download" : "Lease Agreement View",
-            body: `Lease agreement PDF has been generated successfully with ID: ${ leaseID }.`,
-            type: "download",
-            severity: "info",
-            audience: { mode: "role", usernames: [ leaseData.tenantInformation.tenantUsername ], roles: [ "admin", "operator" ] },
-            channels: [ "inapp", "email" ],
-            metadata: {
-              refId: leaseID,
-              data: {
-                lease: leaseData,
-                generatedAt: new Date().toISOString(),
-                generatedBy: generator,
-                ipAddress: req.ip,
-                userAgent: req.headers[ "user-agent" ],
-              }
+        const actor = await ApiGuardExport.GetNormalisedAuthUser( req );
+        if ( !actor ) {
+          ApiResponseBuilder.internalError( res, new Error( "Authenticated user not found for notification actor." ) );
+          return;
+        }
+
+        // -------------------- Notify relevant users --------------------
+        this.notificationHub.emit( {
+          eventKey: type.trim().toLowerCase() === "download" ? 'lease:agreement.downloaded' : 'lease:agreement.viewed',
+          actor,
+          audiences: [
+            {
+              mode: 'User',
+              userId: leaseWithProperty.tenantInformation.tenantUsername
             },
+            {
+              mode: 'Role',
+              roleKey: 'admin',
+            },
+            {
+              mode: 'Role',
+              roleKey: 'operator',
+            },
+            {
+              mode: 'Role',
+              roleKey: 'manager',
+            },
+          ],
+          target: {
+            actionKey: type.trim().toLowerCase() === "download" ? 'lease:agreement.downloaded' : 'lease:agreement.viewed',
+            category: 'Lease',
+            module: 'Lease Management',
+            params: { leaseID: leaseWithProperty.leaseID },
+            refId: leaseWithProperty.leaseID,
           },
-          ( rooms, payload ) => rooms.forEach( ( room ) => io.to( room ).emit( "notification.new", payload ) )
-        );
+          category: 'Lease',
+        } );
 
         res.setHeader( "Content-Type", "application/pdf" );
         res.setHeader(

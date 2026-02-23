@@ -13,6 +13,8 @@ import { AuthUser } from '../types/common';
 
 export type JwtPayload = {
     sub?: string;
+
+    name?: string;        // optional "name" claim (for better FE display), fallback to "username"
     userId: Types.ObjectId;        // userId (string) if your JWT uses it
     username: string;
     role: Role;

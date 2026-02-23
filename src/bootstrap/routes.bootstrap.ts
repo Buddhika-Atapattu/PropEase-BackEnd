@@ -12,9 +12,16 @@
 // - “Public endpoints” are STILL mounted behind apiGuard, but apiGuard bypasses
 //   them using PUBLIC_ENDPOINTS (so we keep consistent middleware order).
 // - Mount order matters when a router has catch-all params (e.g. /:teamCode).
-// - Add new routers here the moment you add a new API module, otherwise:
-//   - FE will 404 or
-//   - apiGuard will treat it as "unmapped" (auth-only) if mounted elsewhere.
+// - Add new routers here the moment you add a new API module.
+//
+// ✅ FIXES APPLIED (this version)
+// - Fixed MilestonesRouter import path to match app-server.core.ts:
+//   `millestones.router` (your current file name).
+// - 404 handler now uses ApiResponseBuilder.error for consistency.
+// - Kept router property usage consistent with your current codebase:
+//   - Most routers expose `.route`
+//   - Some expose `.router` (e.g., UploadsRoutes, PlacesController, NotificationHubRoute, RecycleBinRouter)
+//   - CommentsEngineRouter is mounted via `.route` (as in your project).
 // ============================================================================
 
 import type {
@@ -35,16 +42,17 @@ import { apiGuard } from "../guard/api-router.guard";
 import Guards from "../guard/fullAccess.guard";
 import type { TypedNamespace } from "../socket/socket-types.type";
 
+import { ApiResponseBuilder } from "../utils/api-combiner.builder";
+
 // Controllers (class-based routers)
-import type { AuthController } from "../controller/auth.controller";
-import type { MfaController } from "../controller/mfa.controller";
-import type NotificationController from "../controller/notification.controller";
-import type ReportController from "../controller/report.controller";
+import type { AuthController } from "../controllers/auth.controller";
+import type { MfaController } from "../controllers/mfa.controller";
+import type NotificationHubRoute from "../api/notifications/notification-hub.router";
+import type ReportController from "../controllers/report.controller";
 
 // Routers (feature APIs)
 import FileTransfer from "../api/fileTransfer.router";
 import Lease from "../api/lease.router";
-import Payments from "../api/payment.router";
 import { PlacesController } from "../api/PlacesController.router";
 import Property from "../api/property.router";
 import Tenant from "../api/tenant.router";
@@ -52,6 +60,8 @@ import Tracking from "../api/tracking.router";
 import UploadsRoutes from "../api/uploads.router";
 import UserRoute from "../api/user.router";
 import Validator from "../api/validator.router";
+import RecycleBinRouter from "../api/recyclebin/recyclebin.router";
+import { PaymentRouter } from "../api/payment/payment.router";
 
 // Team Management
 import TeamKpiRouter from "../api/teamManagement/teamKpi.router";
@@ -62,6 +72,7 @@ import WorkItemRouter from "../api/teamManagement/workItems/workItem.router";
 
 // ✅ NEW (missing previously)
 import MemberActivitiesRouter from "../api/teamManagement/memberActivities/memberActivities.router";
+// IMPORTANT: match your current filename used in app-server.core.ts
 import MilestonesRouter from "../api/teamManagement/milestones/millestones.router";
 
 // Shared modules
@@ -76,7 +87,7 @@ interface RoutesBootstrapDeps {
   io: TypedNamespace;
 
   // Controllers
-  notification: NotificationController;
+  notification: NotificationHubRoute;
   reportController: ReportController;
   authController: AuthController;
   mfaController: MfaController;
@@ -94,7 +105,6 @@ interface RoutesBootstrapDeps {
   fileTransfer: FileTransfer;
   lease: Lease;
   validator: Validator;
-  payments: Payments;
 
   // Team routers
   teamManagement: TeamManagementRouter;
@@ -103,12 +113,14 @@ interface RoutesBootstrapDeps {
   workItemRouter: WorkItemRouter;
   workEventRouter: WorkEventApi;
 
-  // ✅ NEW (missing previously)
+  // ✅ NEW
   memberActivitiesRouter: MemberActivitiesRouter;
   milestonesRouter: MilestonesRouter;
 
   // Shared routers
   commentsEngineRouter: CommentsEngineRouter;
+  recyclebin: RecycleBinRouter;
+  payment: PaymentRouter;
 }
 
 export class RoutesBootstrap {
@@ -116,7 +128,7 @@ export class RoutesBootstrap {
   private readonly db: Database;
   private readonly io: TypedNamespace;
 
-  private readonly notification: NotificationController;
+  private readonly notification: NotificationHubRoute;
   private readonly reportController: ReportController;
   private readonly authController: AuthController;
   private readonly mfaController: MfaController;
@@ -131,7 +143,6 @@ export class RoutesBootstrap {
   private readonly fileTransfer: FileTransfer;
   private readonly lease: Lease;
   private readonly validator: Validator;
-  private readonly payments: Payments;
 
   private readonly teamManagement: TeamManagementRouter;
   private readonly teamTaskRouter: TeamTaskRouter;
@@ -139,11 +150,12 @@ export class RoutesBootstrap {
   private readonly workItemRouter: WorkItemRouter;
   private readonly workEventRouter: WorkEventApi;
 
-  // ✅ NEW (missing previously)
   private readonly memberActivitiesRouter: MemberActivitiesRouter;
   private readonly milestonesRouter: MilestonesRouter;
 
   private readonly commentsEngineRouter: CommentsEngineRouter;
+  private readonly recycleBin: RecycleBinRouter;
+  private readonly payment: PaymentRouter;
 
   public constructor ( deps: RoutesBootstrapDeps ) {
     this.app = deps.app;
@@ -165,7 +177,6 @@ export class RoutesBootstrap {
     this.fileTransfer = deps.fileTransfer;
     this.lease = deps.lease;
     this.validator = deps.validator;
-    this.payments = deps.payments;
 
     this.teamManagement = deps.teamManagement;
     this.teamTaskRouter = deps.teamTaskRouter;
@@ -173,11 +184,12 @@ export class RoutesBootstrap {
     this.workItemRouter = deps.workItemRouter;
     this.workEventRouter = deps.workEventRouter;
 
-    // ✅ NEW (missing previously)
     this.memberActivitiesRouter = deps.memberActivitiesRouter;
     this.milestonesRouter = deps.milestonesRouter;
 
     this.commentsEngineRouter = deps.commentsEngineRouter;
+    this.recycleBin = deps.recyclebin;
+    this.payment = deps.payment;
   }
 
   // ===========================================================================
@@ -205,7 +217,7 @@ export class RoutesBootstrap {
    */
   public registerNotFoundAndErrorHandlers( errorHandler: ErrorRequestHandler ): void {
     this.app.use( ( _req: Request, res: Response ) => {
-      res.status( 404 ).json( { status: "error", message: "Not Found" } );
+      ApiResponseBuilder.error( res, 404, "Not Found" );
       return;
     } );
 
@@ -308,8 +320,8 @@ export class RoutesBootstrap {
      */
     this.app.use(
       "/api/auth",
-      this.loginRateLimiter, // rate limit login attempts
-      apiGuard,              // PUBLIC_ENDPOINTS allowlist decides what is truly public
+      this.loginRateLimiter,
+      apiGuard,
       this.authController.getRouter(),
     );
 
@@ -336,6 +348,7 @@ export class RoutesBootstrap {
     this.app.use( "/api-user", apiGuard, this.user.route );
     this.app.use( "/api-tracking", apiGuard, this.tracking.route );
     this.app.use( "/api-validator", apiGuard, this.validator.route );
+    this.app.use( "/api-recycle-bin", apiGuard, this.recycleBin.router );
 
     // ─────────────────────────────────────────────────────────────────────────
     // Property + Places
@@ -349,52 +362,39 @@ export class RoutesBootstrap {
     this.app.use( "/api-tenant", apiGuard, this.tenant.route );
     this.app.use( "/api-file-transfer", apiGuard, this.fileTransfer.route );
     this.app.use( "/api-lease", apiGuard, this.lease.route );
-    this.app.use( "/api-payments", apiGuard, this.payments.route );
 
     // ─────────────────────────────────────────────────────────────────────────
     // Team Management (IMPORTANT ORDER)
-    // - Keep /api-team-management/task mounted BEFORE any /:teamCode catch-all
-    //   BUT because it is mounted as a separate base path, it is safe.
     // ─────────────────────────────────────────────────────────────────────────
-
-    // Team main (teams CRUD + analytics)
     this.app.use( "/api-team-management", apiGuard, this.teamManagement.route );
-
-    // Team tasks (your mount must match GUARD_ROUTES patterns exactly)
     this.app.use( "/api-team-management/task", apiGuard, this.teamTaskRouter.route );
-
-    // Team KPI module
     this.app.use( "/api-team-management/kpi", apiGuard, this.teamKpiRouter.route );
+    //
 
-    // ✅ NEW: Member Activities (TeamManagement)
-    // Suggested base:
-    //   /api-team-management/member-activities/*
-    // This keeps it clearly under TeamManagement domain.
     this.app.use(
       "/api-team-management/member-activities",
       apiGuard,
       this.memberActivitiesRouter.route,
     );
 
-    // ✅ NEW: Milestones (TeamManagement)
-    // Suggested base:
-    //   /api-team-management/milestones/*
     this.app.use(
       "/api-team-management/milestones",
       apiGuard,
       this.milestonesRouter.route,
     );
 
-    // Work items + events were already mounted at their own roots
     this.app.use( "/api-work-item", apiGuard, this.workItemRouter.route );
     this.app.use( "/api-work-event", apiGuard, this.workEventRouter.route );
 
     // ─────────────────────────────────────────────────────────────────────────
     // Comments Engine
-    // - Read endpoints are “public” via PUBLIC_ENDPOINTS in apiGuard
-    // - Write endpoints require RBAC via GUARD_ROUTES
     // ─────────────────────────────────────────────────────────────────────────
     this.app.use( "/api-comments", apiGuard, this.commentsEngineRouter.route );
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Payments
+    // ─────────────────────────────────────────────────────────────────────────
+    this.app.use( "/api-payments", apiGuard, this.payment.router );
   }
 
   // ===========================================================================
@@ -403,16 +403,13 @@ export class RoutesBootstrap {
 
   private registerIndexPage(): void {
     this.app.get( "/", ( _req: Request, res: Response ) => {
-      res.sendFile(
-        path.join( process.cwd(), "public", "index.html" ),
-        ( err: Error | null ) => {
-          if ( err ) {
-            // eslint-disable-next-line no-console
-            console.error( "[Error:] [RoutesBootstrap] index.html sendFile:\n", err, "\n" );
-            res.status( 500 ).send( "Internal Server Error" );
-          }
-        },
-      );
+      res.sendFile( path.join( process.cwd(), "public", "index.html" ), ( err: Error | null ) => {
+        if ( err ) {
+          // eslint-disable-next-line no-console
+          console.error( "[Error:] [RoutesBootstrap] index.html sendFile:\n", err, "\n" );
+          res.status( 500 ).send( "Internal Server Error" );
+        }
+      } );
     } );
   }
 }

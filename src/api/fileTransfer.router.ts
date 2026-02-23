@@ -465,4 +465,3 @@ export default class FileTransfer {
   }
 }
 
-

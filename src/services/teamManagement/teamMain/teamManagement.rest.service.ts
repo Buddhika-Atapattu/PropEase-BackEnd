@@ -38,7 +38,7 @@ import { TeamManagementModel } from "../../../models/teamManagement/teamMain/tea
 import { UserModel, USER_MODEL_PROJECTION } from "../../../models/user.model";
 import type { User } from "../../../models/user.model";
 
-import type { PaginationMeta } from "../../../types/api-message";
+import type { PaginationMeta } from "../../../types/common";
 
 // ---------------------------------------------------------------------------
 // Service results (router/controller uses these to respond with ApiResponseBuilder)

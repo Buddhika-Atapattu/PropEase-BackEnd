@@ -26,7 +26,12 @@
     "exactOptionalPropertyTypes": true,
     "useDefineForClassFields": true
   },
-  "include": ["src", "src/**/*.ts", "src/**/*.d.ts"],
+  "include": [
+    "src",
+    "src/**/*.ts",
+    "src/**/*.d.ts",
+    "../front-end/src/app/types/team-management/work-items"
+  ],
   "exclude": [
     "node_modules",
     "angular",

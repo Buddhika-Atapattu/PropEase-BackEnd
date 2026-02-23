@@ -12,7 +12,6 @@ import type { Types } from "mongoose";
 import type { User } from "../../../models/user.model";
 import type { Address, GeoLocation, ISODateString } from "../../common"; // already stable primitive there
 import type { FileMetaBase, TeamDomain, } from "../teamMain/teamManagement.types";
-import { PaginationMeta, PaginationType } from "../../api-message";
 
 // ─────────────────────────────────────────────
 // Deadline policy (formerly SLA)
