@@ -230,7 +230,7 @@ export default class Tenant {
             eventKey: "tenant.create",
             actor,
             audiences: [
-              { mode: "User", userId: tenantDoc.username },
+              { mode: "User", username: tenantDoc.username },
               { mode: "Role", roleKey: "admin" },
               { mode: "Role", roleKey: "manager" },
               { mode: "Role", roleKey: "operator" },
@@ -753,7 +753,7 @@ export default class Tenant {
             eventKey: "complaint.create",
             actor,
             audiences: [
-              { mode: "User", userId: String( ( userTenantDoc as any )?._id ?? userTenantDoc.username ?? tenantId ) },
+              { mode: "User", username: String( ( userTenantDoc as any )?._id ?? userTenantDoc.username ?? tenantId ) },
               { mode: "Role", roleKey: "admin" },
               { mode: "Role", roleKey: "manager" },
               { mode: "Role", roleKey: "operator" },

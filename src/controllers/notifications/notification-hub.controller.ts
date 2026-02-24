@@ -9,7 +9,6 @@
 // IMPORTANT (your project rules):
 // - Constructor MUST NOT accept parameters
 // - Use ApiResponseBuilder.ok / ApiResponseBuilder.error only
-// - Use `res.status(...).json(...); return;` style via ApiResponseBuilder
 // - exactOptionalPropertyTypes-safe: NEVER set optional props to undefined
 // - Logs prefixed and end with '\n'
 // =============================================================================
@@ -26,8 +25,31 @@ import type {
   NotificationLoadResponse,
 } from "../../types/notification/notification.types";
 
+import type {
+  NotificationPriorityScope,
+  NotificationScope,
+} from "../../socket/events/notifications/notification.rpc.events";
+
 import { NotificationRestService } from "../../services/notifications/notification.rest.service";
 import { NotificationSocketService } from "../../services/notifications/notification.socket.service";
+import type { Role } from "../../types/roles";
+
+type ScopeCounts = {
+  total: number;
+  unread: number;
+  prioritized: number;
+  unprioritized: number;
+};
+
+type InboxScopeLoadBody = {
+  scope?: NotificationScope;
+  priorityScope?: NotificationPriorityScope;
+  request?: Partial<NotificationLoadRequest>;
+};
+
+type InboxScopeCountBody = {
+  filters?: NotificationLoadFilters;
+};
 
 export default class NotificationHubController {
   public readonly router: Router;
@@ -36,7 +58,6 @@ export default class NotificationHubController {
   private readonly socket: NotificationSocketService;
 
   public constructor () {
-    // ✅ no constructor params (your rule)
     this.router = Router();
 
     this.rest = new NotificationRestService();
@@ -46,6 +67,10 @@ export default class NotificationHubController {
     this.router.post( "/inbox/load", this.loadInbox );
     this.router.post( "/inbox/count", this.countInbox );
 
+    // ✅ NEW: scope-based queries (user | role | company + priorityScope)
+    this.router.post( "/inbox/scope/load", this.loadInboxByScope );
+    this.router.post( "/inbox/scope/count", this.countInboxByScope );
+
     // Mutations (single actions)
     this.router.post( "/inbox/:inboxId/read", this.markRead );
     this.router.post( "/inbox/read-all", this.markAllRead );
@@ -53,7 +78,7 @@ export default class NotificationHubController {
   }
 
   // =============================================================================
-  // A) Queries
+  // A) Queries (basic)
   // =============================================================================
 
   /**
@@ -65,15 +90,25 @@ export default class NotificationHubController {
       const auth = await ApiGuardExport.GetAuthUser( req );
       const username = this.safeUsername( auth?.username );
 
-      const body = ( req.body ?? {} ) as Partial<NotificationLoadRequest>;
-      const request = this.safeLoadRequest( body );
+      const body = this.asObject( req.body ) as Partial<NotificationLoadRequest>;
+      const request = this.safeLoadRequest( {
+        ...body,
+        // ✅ force boundary to auth user (never trust body.username)
+        username,
+      } );
 
       const data: NotificationLoadResponse = await this.rest.loadInbox( {
         username,
         request,
       } );
 
-      ApiResponseBuilder.ok( res, "notifications", data.items, "[notifications:loadInbox] Loaded", { pagination: { total: data.other.total } } );
+      ApiResponseBuilder.ok(
+        res,
+        "notifications",
+        data.items,
+        "[notifications:loadInbox] Loaded",
+        { pagination: { total: data.other.total } }
+      );
       return;
     } catch ( err: unknown ) {
       // eslint-disable-next-line no-console
@@ -81,11 +116,7 @@ export default class NotificationHubController {
         `[Error:] [NotificationHubController] loadInbox failed: ${ err instanceof Error ? err.message : "Unknown error"
         }\n`
       );
-      ApiResponseBuilder.error(
-        res,
-        500,
-        err instanceof Error ? err.message : "Failed to load inbox"
-      );
+      ApiResponseBuilder.error( res, 500, err instanceof Error ? err.message : "Failed to load inbox" );
       return;
     }
   };
@@ -99,14 +130,21 @@ export default class NotificationHubController {
       const auth = await ApiGuardExport.GetAuthUser( req );
       const username = this.safeUsername( auth?.username );
 
-      const filters = this.safeFilters( ( ( req.body as any )?.filters ?? {} ) as NotificationLoadFilters );
+      const body = this.asObject( req.body ) as { filters?: unknown; };
+      const filters = this.safeFilters( this.asObject( body.filters ) as NotificationLoadFilters );
 
       const counts: NotificationCountResponse = await this.rest.countInbox( {
         username,
         filters,
       } );
 
-      ApiResponseBuilder.ok( res, "other", { unread: counts.unread }, "[notifications:countInbox] Counted", { pagination: { total: counts.total } } );
+      ApiResponseBuilder.ok(
+        res,
+        "other",
+        { unread: counts.unread },
+        "[notifications:countInbox] Counted",
+        { pagination: { total: counts.total } }
+      );
       return;
     } catch ( err: unknown ) {
       // eslint-disable-next-line no-console
@@ -114,10 +152,146 @@ export default class NotificationHubController {
         `[Error:] [NotificationHubController] countInbox failed: ${ err instanceof Error ? err.message : "Unknown error"
         }\n`
       );
+      ApiResponseBuilder.error( res, 500, err instanceof Error ? err.message : "Failed to count inbox" );
+      return;
+    }
+  };
+
+  // =============================================================================
+  // A2) Queries (NEW: scope-based)
+  // =============================================================================
+
+  /**
+   * POST /api-notification/inbox/scope/load
+   *
+   * Body:
+   * {
+   *   scope: "user" | "role" | "company",
+   *   priorityScope?: "all" | "prioritized" | "unprioritized",
+   *   request: { page, limit, filters }
+   * }
+   *
+   * Notes:
+   * - username is ALWAYS forced from auth
+   * - roleKey is ALWAYS forced from auth.role
+   */
+  private readonly loadInboxByScope: RequestHandler = async ( req, res ): Promise<void> => {
+    try {
+      const auth = await ApiGuardExport.GetAuthUser( req );
+      const username = this.safeUsername( auth?.username );
+      const roleKey = this.safeRole( auth?.role );
+
+      const body = this.asObject( req.body ) as InboxScopeLoadBody;
+
+      const scope = this.safeScope( body.scope );
+      const priorityScope = this.safePriorityScope( body.priorityScope );
+
+      const reqBody = this.asObject( body.request ) as Partial<NotificationLoadRequest>;
+
+      const request = this.safeLoadRequest( {
+        ...reqBody,
+        username, // ✅ boundary
+      } );
+
+      // ✅ relies on your REST service method that bridges into query.loadInboxForUserByScope(...)
+      const data = await this.rest.loadInboxByScope( {
+        username,
+        roleKey,
+        scope,
+        priorityScope,
+        request,
+      } );
+
+      ApiResponseBuilder.ok(
+        res,
+        "notifications",
+        data.items,
+        "[notifications:loadInboxByScope] Loaded",
+        {
+          pagination: { total: data.other.total },
+          other: {
+            unread: data.other.unread,
+            prioritized: data.other.prioritized,
+            unprioritized: data.other.unprioritized,
+            scope,
+            priorityScope,
+          },
+        }
+      );
+      return;
+    } catch ( err: unknown ) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[Error:] [NotificationHubController] loadInboxByScope failed: ${ err instanceof Error ? err.message : "Unknown error"
+        }\n`
+      );
       ApiResponseBuilder.error(
         res,
         500,
-        err instanceof Error ? err.message : "Failed to count inbox"
+        err instanceof Error ? err.message : "Failed to load inbox (scope)"
+      );
+      return;
+    }
+  };
+
+  /**
+   * POST /api-notification/inbox/scope/count
+   *
+   * Body:
+   * {
+   *   filters?: NotificationLoadFilters
+   * }
+   *
+   * Returns:
+   * { total, unread, prioritized, unprioritized }
+   *
+   * Notes:
+   * - username + roleKey forced from auth
+   * - filters sanitized (exactOptionalPropertyTypes-safe)
+   */
+  private readonly countInboxByScope: RequestHandler = async ( req, res ): Promise<void> => {
+    try {
+      const auth = await ApiGuardExport.GetAuthUser( req );
+      const username = this.safeUsername( auth?.username );
+      const roleKey = this.safeRole( auth?.role );
+
+      const body = this.asObject( req.body ) as InboxScopeCountBody;
+      const filters = this.safeFilters( this.asObject( body.filters ) as NotificationLoadFilters );
+
+      // ✅ relies on your REST service method that bridges into query.countInboxForUserWithScopes(...)
+      const counts: ScopeCounts = await this.rest.countScopes( {
+        username,
+        roleKey,
+        filters,
+      } );
+
+      ApiResponseBuilder.ok(
+        res,
+        "other",
+        {
+          total: counts.total,
+          unread: counts.unread,
+          prioritized: counts.prioritized,
+          unprioritized: counts.unprioritized,
+        },
+        "[notifications:countInboxByScope] Counted",
+        {
+          pagination: {
+            total: counts.total,
+          }
+        }
+      );
+      return;
+    } catch ( err: unknown ) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[Error:] [NotificationHubController] countInboxByScope failed: ${ err instanceof Error ? err.message : "Unknown error"
+        }\n`
+      );
+      ApiResponseBuilder.error(
+        res,
+        500,
+        err instanceof Error ? err.message : "Failed to count inbox (scope)"
       );
       return;
     }
@@ -129,15 +303,6 @@ export default class NotificationHubController {
 
   /**
    * POST /api-notification/inbox/:inboxId/read
-   * - Marks one row read
-   * - Emits:
-   *   - notify:bulk (reason bulk-update) so UI can refresh current page safely
-   *   - notify:count with latest totals
-   *
-   * NOTE:
-   * We intentionally avoid notify:patch here because your WS patch payload
-   * needs notificationId + state, and the minimal hub method returns only changed:boolean.
-   * If you want PATCH later, we can extend hub/query to return notificationId + new state.
    */
   private readonly markRead: RequestHandler = async ( req, res ): Promise<void> => {
     try {
@@ -148,10 +313,9 @@ export default class NotificationHubController {
 
       const result = await this.rest.markRead( { username, inboxId } );
 
-      // WS: tell the dialog to reload (single delta communication)
+      // WS: safest UX is bulk refresh + count push
       this.socket.emitBulkToUser( username, { reason: "bulk-update" } );
 
-      // WS: update count badge in real time
       const counts = await this.rest.countInbox( { username, filters: {} } );
       this.socket.emitCountToUser( username, { total: counts.total, unread: counts.unread } );
 
@@ -169,11 +333,7 @@ export default class NotificationHubController {
         `[Error:] [NotificationHubController] markRead failed: ${ err instanceof Error ? err.message : "Unknown error"
         }\n`
       );
-      ApiResponseBuilder.error(
-        res,
-        500,
-        err instanceof Error ? err.message : "Failed to mark read"
-      );
+      ApiResponseBuilder.error( res, 500, err instanceof Error ? err.message : "Failed to mark read" );
       return;
     }
   };
@@ -188,7 +348,6 @@ export default class NotificationHubController {
 
       const result = await this.rest.markAllRead( { username } );
 
-      // WS: safest UX is bulk refresh + count push
       this.socket.emitBulkToUser( username, { reason: "bulk-update" } );
 
       const counts = await this.rest.countInbox( { username, filters: {} } );
@@ -208,11 +367,7 @@ export default class NotificationHubController {
         `[Error:] [NotificationHubController] markAllRead failed: ${ err instanceof Error ? err.message : "Unknown error"
         }\n`
       );
-      ApiResponseBuilder.error(
-        res,
-        500,
-        err instanceof Error ? err.message : "Failed to mark all read"
-      );
+      ApiResponseBuilder.error( res, 500, err instanceof Error ? err.message : "Failed to mark all read" );
       return;
     }
   };
@@ -229,7 +384,6 @@ export default class NotificationHubController {
 
       const result = await this.rest.archiveOne( { username, inboxId } );
 
-      // WS: bulk refresh (archiving changes list composition)
       this.socket.emitBulkToUser( username, { reason: "bulk-update" } );
 
       const counts = await this.rest.countInbox( { username, filters: {} } );
@@ -249,11 +403,7 @@ export default class NotificationHubController {
         `[Error:] [NotificationHubController] archiveOne failed: ${ err instanceof Error ? err.message : "Unknown error"
         }\n`
       );
-      ApiResponseBuilder.error(
-        res,
-        500,
-        err instanceof Error ? err.message : "Failed to archive"
-      );
+      ApiResponseBuilder.error( res, 500, err instanceof Error ? err.message : "Failed to archive" );
       return;
     }
   };
@@ -262,19 +412,26 @@ export default class NotificationHubController {
   // C) Sanitizers (exactOptionalPropertyTypes-safe)
   // =============================================================================
 
+  private asObject( v: unknown ): Record<string, unknown> {
+    if ( v && typeof v === "object" ) return v as Record<string, unknown>;
+    return {};
+  }
+
   private safeUsername( v: unknown ): string {
     const u = typeof v === "string" ? v.trim() : "";
-    if ( !u ) {
-      throw new Error( "NotificationHubController: auth username is required." );
-    }
+    if ( !u ) throw new Error( "NotificationHubController: auth username is required." );
     return u;
+  }
+
+  private safeRole( v: unknown ): Role {
+    // Keep it permissive; your Role union is project-defined.
+    // If Role is a strict union, swap to an allow-list check.
+    return ( typeof v === "string" && v.trim() ? v.trim() : "user" ) as Role;
   }
 
   private safeId( v: unknown, label: string ): string {
     const s = typeof v === "string" ? v.trim() : "";
-    if ( !s ) {
-      throw new Error( `NotificationHubController: ${ label } is required.` );
-    }
+    if ( !s ) throw new Error( `NotificationHubController: ${ label } is required.` );
     return s;
   }
 
@@ -283,8 +440,8 @@ export default class NotificationHubController {
     const limit = this.safeLimit( body.limit );
     const username = this.safeUsername( body.username );
 
-    // filters is required in contract — default to {}
-    const filters = this.safeFilters( ( body.filters ?? {} ) as NotificationLoadFilters );
+    // filters is required in your backend contract -> default to {}
+    const filters = this.safeFilters( this.asObject( body.filters ) as NotificationLoadFilters );
 
     return { username, filters, page, limit };
   }
@@ -292,9 +449,11 @@ export default class NotificationHubController {
   private safeFilters( filters: NotificationLoadFilters ): NotificationLoadFilters {
     const out: NotificationLoadFilters = {};
 
-    if ( filters.category ) out.category = filters.category;
-    if ( filters.severity ) out.severity = filters.severity;
-    if ( filters.mode ) out.mode = filters.mode;
+    // ✅ IMPORTANT for exactOptionalPropertyTypes:
+    // Only assign when value is truly present (not undefined).
+    if ( filters.category !== undefined ) out.category = filters.category;
+    if ( filters.severity !== undefined ) out.severity = filters.severity;
+    if ( filters.mode !== undefined ) out.mode = filters.mode;
 
     const search = this.safeString( filters.search );
     if ( search ) out.search = search;
@@ -307,8 +466,19 @@ export default class NotificationHubController {
 
     if ( typeof filters.unreadOnly === "boolean" ) out.unreadOnly = filters.unreadOnly;
     if ( typeof filters.includeDeleted === "boolean" ) out.includeDeleted = filters.includeDeleted;
+    if ( typeof filters.includeArchived === "boolean" ) out.includeArchived = filters.includeArchived;
 
     return out;
+  }
+
+  private safeScope( v: unknown ): NotificationScope {
+    if ( v === "user" || v === "role" || v === "company" ) return v;
+    return "user";
+  }
+
+  private safePriorityScope( v: unknown ): NotificationPriorityScope {
+    if ( v === "all" || v === "prioritized" || v === "unprioritized" ) return v;
+    return "all";
   }
 
   private safeString( v: unknown ): string {
@@ -320,7 +490,6 @@ export default class NotificationHubController {
   private safeIso( v: unknown ): string {
     const s = this.safeString( v );
     if ( !s ) return "";
-    // minimal ISO guard (same style you used)
     if ( !/^\d{4}-\d{2}-\d{2}T/.test( s ) ) return "";
     return s;
   }

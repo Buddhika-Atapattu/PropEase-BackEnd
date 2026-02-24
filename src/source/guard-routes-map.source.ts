@@ -1105,6 +1105,24 @@ export const GUARD_ROUTES: ReadonlyArray<GuardRouteDefinition> = [
     description: "TeamManagement.TeamTasks.delete → Delete a task",
   },
   {
+    id: "team-task:get-all-for-team",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/get-all-for-team\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "view",
+    description: "TeamManagement.TeamTasks.view → Get all tasks for a team",
+
+  },
+  {
+    id: "team-task:get-count-for-team",
+    method: "GET",
+    pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/get-count-for-team\/[^/]+\/?$/ ),
+    module: "TeamManagement.TeamTasks",
+    action: "view",
+    description: "TeamManagement.TeamTasks.view → Get all tasks for a team",
+
+  },
+  {
     id: "team-task:evidence-delete",
     method: "DELETE",
     pattern: GuardRoutesMapSource.p( /^\/api-team-management\/task\/evidence\/[^/]+\/[^/]+\/?$/ ),

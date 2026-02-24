@@ -47,6 +47,7 @@ import type {
 import {
     TASK_PRIORITIES,
     TASK_STATUSES,
+    TEAM_TASK_LOAD_MODES,
 }
     from '../../../types/teamManagement/teamTasks/team-tasks.type';
 
@@ -111,7 +112,7 @@ export class TeamTaskController {
         teamMembersUsernames.forEach( ( m ) => {
             const data: NotificationAudience = {
                 mode: 'User',
-                userId: String( m ).trim()
+                username: String( m ).trim()
             };
 
             audiences.push( data );
@@ -1001,8 +1002,8 @@ export class TeamTaskController {
 
     public readonly remove: RequestHandler = async ( req: Request, res: Response ): Promise<void> => {
         try {
-            const actor = await ApiGuardExport.GetNormalisedAuthUser(req);
-            if(!actor) {
+            const actor = await ApiGuardExport.GetNormalisedAuthUser( req );
+            if ( !actor ) {
                 ApiResponseBuilder.error( res, 401, "Unauthorized: unable to identify user" );
                 return;
             }
@@ -1020,17 +1021,17 @@ export class TeamTaskController {
             const wsCtx = await this.buildWsContext( req );
             const ok = await this.service.delete( taskMongoId, req, wsCtx );
 
-            this.notificationHub.emit({
+            this.notificationHub.emit( {
                 eventKey: 'team:task.deleted',
                 actor,
-                audiences:[
+                audiences: [
                     {
                         mode: 'Role',
                         roleKey: 'admin',
                     },
                     {
-                        mode:"Team",
-                        teamCode: this.safeStr(existing.teamCode),
+                        mode: "Team",
+                        teamCode: this.safeStr( existing.teamCode ),
                     },
                     {
                         mode: 'Role',
@@ -1045,17 +1046,17 @@ export class TeamTaskController {
                         roleKey: 'manager',
                     },
                 ],
-                target:{
+                target: {
                     actionKey: 'team:task.deleted',
                     category: 'teamTask',
                     module: 'teamManagement',
                     params: {
-                        teamCode: this.safeStr(existing.teamCode), 
-                        taskId: this.safeStr(existing.id ?? existing.taskMongoId),
+                        teamCode: this.safeStr( existing.teamCode ),
+                        taskId: this.safeStr( existing.id ?? existing.taskMongoId ),
                     },
-                    refId: this.safeStr(existing.id ?? existing.taskMongoId),
+                    refId: this.safeStr( existing.id ?? existing.taskMongoId ),
                 }
-            })
+            } );
 
             if ( !ok ) {
                 ApiResponseBuilder.error( res, 404, "TeamTask not found" );
@@ -1063,6 +1064,63 @@ export class TeamTaskController {
             }
 
             ApiResponseBuilder.ok( res, "other", { deleted: true }, "TeamTask deleted" );
+            return;
+        } catch ( err: unknown ) {
+            ApiResponseBuilder.error( res, 500, err instanceof Error ? err.message : "Internal error" );
+            return;
+        }
+    };
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Get all tasks under a team (for dropdowns, etc.)
+    // ──────────────────────────────────────────────────────────────────────────
+    public readonly getAllForTeam: RequestHandler = async ( req: Request, res: Response ): Promise<void> => {
+        try {
+            const teamCode = this.safeStr( req.params[ "teamCode" ] );
+            if ( !teamCode ) {
+                ApiResponseBuilder.validationError( res, "teamCode is required" );
+                return;
+            }
+
+            const actor = await ApiGuardExport.GetNormalisedAuthUser( req );
+            if ( !actor ) {
+                ApiResponseBuilder.error( res, 401, "Unauthorized: unable to identify user" );
+                return;
+            }
+
+            const mode = this.filterTaskMode( req.query[ "mode" ] );
+            if ( !mode ) {
+                ApiResponseBuilder.validationError( res, "Invalid mode" );
+                return;
+            }
+
+            const query = this.parsePagination( req.query as unknown as Record<string, unknown> );
+
+            // If your service needs auth context, pass actor too:
+            const tasks = await this.service.getAllForTeam( teamCode, mode, query /*, actor */ );
+
+            // Prefer returning empty array with 200 for list endpoints:
+            ApiResponseBuilder.ok( res, "teamTasks", tasks ?? [], "Team tasks loaded" );
+            return;
+        } catch ( err: unknown ) {
+            ApiResponseBuilder.error( res, 500, err instanceof Error ? err.message : "Internal error" );
+            return;
+        }
+    };
+
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Get all tasks count under a team
+    // ──────────────────────────────────────────────────────────────────────────
+    public readonly countAllForTeam: RequestHandler = async ( req: Request, res: Response ): Promise<void> => {
+        try {
+            const teamCode = this.safeStr( req.params[ "teamCode" ] );
+            if ( !teamCode ) {
+                ApiResponseBuilder.validationError( res, "teamCode is required" );
+                return;
+            }
+            const count = await this.service.getAllTasksCountForTeam( teamCode );
+            ApiResponseBuilder.ok( res, "other", {}, "Team tasks count loaded", { pagination: { total: count } } );
             return;
         } catch ( err: unknown ) {
             ApiResponseBuilder.error( res, 500, err instanceof Error ? err.message : "Internal error" );
@@ -1820,4 +1878,39 @@ export class TeamTaskController {
             return;
         }
     };
+
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Helpers
+    // ──────────────────────────────────────────────────────────────────────────
+
+    private filterTaskMode( modeRaw: unknown ): TeamTaskLoadMode | null {
+        const raw = this.safeStr( modeRaw );
+        if ( !raw ) return "minimal"; // treat missing as default
+        const value = raw.toLowerCase();
+
+        const allowed = TEAM_TASK_LOAD_MODES;
+        if ( !allowed.includes( value as TeamTaskLoadMode ) ) return null;
+
+        return value as TeamTaskLoadMode;
+    }
+
+    private parsePagination( query: Record<string, unknown> ): { page: number; limit: number; } {
+        const pageRaw = query[ "page" ];
+        const limitRaw = query[ "limit" ];
+
+        const page = this.parsePositiveInt( pageRaw ) ?? 1;
+
+        const requestedLimit = this.parsePositiveInt( limitRaw ) ?? 20;
+        const limit = Math.min( Math.max( requestedLimit, 1 ), 100 ); // clamp 1..100
+
+        return { page, limit };
+    }
+
+    private parsePositiveInt( value: unknown ): number | null {
+        if ( value === undefined || value === null ) return null;
+        const num = Number( value );
+        if ( Number.isNaN( num ) || num <= 0 || !Number.isInteger( num ) ) return null;
+        return num;
+    }
 }

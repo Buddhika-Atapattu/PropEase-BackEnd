@@ -104,41 +104,41 @@ export interface UserNotificationEntity extends Document {
 
 export interface UserNotificationModelType extends Model<UserNotificationEntity> {
   deleteAllForUser(
-    userId: string,
+    username: string,
     session?: ClientSession
   ): Promise<{ acknowledged: boolean; deletedCount: number }>;
 
   deleteManyForUser(
-    userId: string,
+    username: string,
     notificationIds: Array<string | Types.ObjectId>,
     session?: ClientSession
   ): Promise<{ acknowledged: boolean; deletedCount: number }>;
 
   markAllRead(
-    userId: string,
+    username: string,
     session?: ClientSession
   ): Promise<{ acknowledged: boolean; modifiedCount: number; matchedCount: number }>;
 
   markManyDeleted(
-    userId: string,
+    username: string,
     notificationIds: Array<string | Types.ObjectId>,
     session?: ClientSession
   ): Promise<{ acknowledged: boolean; modifiedCount: number; matchedCount: number }>;
 
   restoreMany(
-    userId: string,
+    username: string,
     notificationIds: Array<string | Types.ObjectId>,
     session?: ClientSession
   ): Promise<{ acknowledged: boolean; modifiedCount: number; matchedCount: number; }>;
 
   archiveMany(
-    userId: string,
+    username: string,
     notificationIds: Array<string | Types.ObjectId>,
     session?: ClientSession
   ): Promise<{ acknowledged: boolean; modifiedCount: number; matchedCount: number; }>;
 
   unarchiveMany(
-    userId: string,
+    username: string,
     notificationIds: Array<string | Types.ObjectId>,
     session?: ClientSession
   ): Promise<{ acknowledged: boolean; modifiedCount: number; matchedCount: number; }>;

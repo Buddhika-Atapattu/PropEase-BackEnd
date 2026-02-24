@@ -64,6 +64,12 @@ export default class TeamTaskRouter {
     // DELETE /delete/:taskMongoId
     this.router.delete( "/delete/:taskMongoId", this.ctrl.remove );
 
+    // GET /get-all-for-team/:teamCode?mode=minimal|advanced&page=&limit=
+    this.router.get( "/get-all-for-team/:teamCode", this.ctrl.getAllForTeam );
+
+    // GET /get-count-for-team/:teamCode
+    this.router.get( "/get-count-for-team/:teamCode", this.ctrl.countAllForTeam );
+
     // ------------------------------------------------------------------------
     // Evidence
     // ------------------------------------------------------------------------

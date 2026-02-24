@@ -421,9 +421,9 @@ export class NotificationInnerSetterService {
     }
 
     if (mode === "User") {
-      const userId = this.safeString((raw as { userId?: unknown }).userId);
-      if (!userId) return null;
-      return { mode: "User", userId };
+      const username = this.safeString( ( raw as { username?: unknown; } ).username );
+      if ( !username ) return null;
+      return { mode: "User", username };
     }
 
     return null;

@@ -348,7 +348,7 @@ export class TeamManagementController {
     memberData.forEach( ( m ) => {
       const data: NotificationAudience = {
         mode: 'User',
-        userId: String( m.id ?? m.username ?? '' ).trim()
+        username: String( m.id ?? m.username ?? '' ).trim()
       };
 
       audiences.push( data );

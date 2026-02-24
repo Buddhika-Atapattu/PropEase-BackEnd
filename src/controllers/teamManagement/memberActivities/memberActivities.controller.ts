@@ -455,7 +455,7 @@ export class MemberActivitiesController {
   }
 
   private buildActivityAudiences(activityOwnerUserId: string): NotificationAudience[] {
-    const audiences: NotificationAudience[] = [{ mode: "User", userId: activityOwnerUserId }];
+    const audiences: NotificationAudience[] = [{ mode: "User", username: activityOwnerUserId }];
     for (const a of this.buildDefaultRoleAudiences()) audiences.push(a);
     return audiences;
   }

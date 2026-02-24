@@ -18,6 +18,7 @@
 // ============================================================================
 
 import type { Server as HttpServer } from "http";
+import type { Socket } from "socket.io";
 
 import SocketServer from "../core/socket-server";
 import { SocketConnectionHandler } from "../socket/socket-connection.handler";
@@ -38,6 +39,9 @@ import { CommentsWsRegistry } from "../socket/comments/comments-ws.registry";
 import { CommentsSourceRegistry } from "../source/comments.source";
 
 import { WsEmitterProvider } from "../socket/ws-emitter.provider";
+
+import { NotificationRpcGateway } from "../socket/gateways/notifications/notification.ws.gateway";
+import type { AuthUser } from "../types/common";
 
 // ============================================================================
 // Result contract for bootstrap
@@ -236,14 +240,20 @@ export class SocketBootstrap {
     }
 
     // =========================================================================
-    // 8) KPI Runtime boot (WS-only)
+    // 8) NOTIFICATION WS GATEWAY (RPC handlers)
     // -------------------------------------------------------------------------
-    // WHY:
-    // - KPI runtime emits realtime updates (dashboards, charts, monitoring).
-    // - This should happen AFTER io is attached and connection handler is ready,
-    //   so KPI runtime can broadcast to valid rooms/users.
+    // WS-first: count/list/markRead/markAllRead
+    // REST remains backup.
     // =========================================================================
-   
+    try {
+      const notifRpc = new NotificationRpcGateway();
+      notifRpc.attach( io );
+
+      console.log( "[Info:] [SocketBootstrap] Notification WS gateway attached.\n" );
+    } catch ( err ) {
+      console.error( "[Warning:] [SocketBootstrap] Notification WS attach failed.\n", err );
+    }
+
 
     // ------------------------------------------------------------------------
     // 9) Return handles

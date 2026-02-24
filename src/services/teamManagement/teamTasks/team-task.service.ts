@@ -2,65 +2,66 @@
 // =============================================================================
 // TeamTaskService — rebuilt to match TeamTaskModel + team-tasks.type.ts
 // =============================================================================
-// Key alignment fixes:
-// - deadlinePolicy replaces sla
-// - dueAt filters/sort use "deadlinePolicy.dueAt"
-// - DTO mapper never assigns undefined to optionals (exactOptionalPropertyTypes-safe)
-// - Lean typing uses LeanTeamTask (plain object), NOT mongoose Document
-// - PaginationInput normalized (page/limit/skip), but tolerates old pageIndex usage
+// ✅ Class-based service (PropEase rule)
+// ✅ DeadlinePolicy aware (filters/sorts use "deadlinePolicy.dueAt")
+// ✅ Lean typing (NO mongoose Document typing in DTO mappers)
+// ✅ DTO mappers do NOT assign undefined to optionals (safe for strict TS)
+// ✅ Pagination normalized (page/limit/skip) + legacy pageIndex tolerated
+// ✅ RecycleBin delete uses JSON-safe snapshot + scanned file packets
+// ✅ WS emits are DTO-first and ctx is resolved with usernames when needed
 // =============================================================================
-import { Response, Request } from "express";
-import { Types, type FilterQuery, type PipelineStage } from "mongoose";
+
+import type { Request } from "express";
+import { Types, type FilterQuery, type PipelineStage, type ClientSession } from "mongoose";
 
 import type { AuthUser, FileMetaPacket, ISODateString } from "../../../types/common";
 
-import {
-  TEAM_DOMAINS,
-  type TeamDomain,
-} from "../../../types/teamManagement/teamMain/teamManagement.types";
+import { TEAM_DOMAINS, type TeamDomain } from "../../../types/teamManagement/teamMain/teamManagement.types";
 
 import {
   TASK_PRIORITIES,
   TASK_STATUSES,
-  TaskDeadlinePolicy,
-  TaskUrgencyLevel,
-} from "../../../types/teamManagement/teamTasks/team-tasks.type";
-
-import type {
-  CreateTeamTaskInput,
-  LeanTeamTask,
-  LeanUserLite,
-  ListResult,
-  PaginationInput,
-  TaskUserLiteDto,
-  TaskUsersResult,
-  TeamTaskDto,
-  TeamTaskFilterInput,
-  TeamTaskLoadMode,
-  TeamTaskSortInput,
-  UpdateTeamTaskInput,
-  TeamTaskKeyValuesMetaDto,
-  TaskAuditMeta,
-  TaskBlockedWindow,
-  TaskCompletionConfirmation,
-  TaskPriority,
-  TaskRuntimeMetrics,
-  TaskStatus,
-  TaskTiming,
-  TaskEvidence,
+  type TaskDeadlinePolicy,
+  type TaskUrgencyLevel,
+  type TaskPriority,
+  type TaskStatus,
+  type TaskTiming,
+  type TaskRuntimeMetrics,
+  type TaskEvidence,
+  type TaskAuditMeta,
+  type TaskBlockedWindow,
+  type TaskCompletionConfirmation,
+  type TeamTaskLoadMode,
+  type TeamTaskSortInput,
+  type TeamTaskFilterInput,
+  type PaginationInput,
+  type ListResult,
+  type TeamTaskDto,
+  type CreateTeamTaskInput,
+  type UpdateTeamTaskInput,
+  type LeanTeamTask,
+  type LeanUserLite,
+  type TaskUserLiteDto,
+  type TaskUsersResult,
+  type TeamTaskKeyValuesMetaDto,
 } from "../../../types/teamManagement/teamTasks/team-tasks.type";
 
 import { TeamTaskModel } from "../../../models/teamManagement/teamTasks/teamTask.model";
+import { UserModel, type User } from "../../../models/user.model";
 
 import { TeamTaskSocketService, type TeamTaskWsContext } from "./team-task.socket.service";
 
-import { UserModel, type User } from "../../../models/user.model";
+import {
+  RecycleBinDomainDeleteService,
+  type DomainDeletePlan,
+} from "../../../services/recyclebin/recyclebin-domain-delete.service";
 
-import { RecycleBinDomainDeleteService, type DomainDeletePlan } from "../../../services/recyclebin/recyclebin-domain-delete.service";
-import { FileUploadDataBuilder } from "../../../utils/api-data.builder";
 import { FileMetaPacketBuilder } from "../../../utils/files/file-meta-packet.builder";
 import { ApiGuardExport } from "../../../guard/api-router.guard";
 
+// ----------------------------------------------------------------------------
+// Local lean shapes used by service
+// ----------------------------------------------------------------------------
 type LeanRow = LeanTeamTask;
 
 type AdvancedRow = LeanTeamTask & {
@@ -73,9 +74,25 @@ type LabelsGroupRow = { _id: string; };
 type UserModelKeyFields = keyof User;
 
 export class TeamTaskService {
-  private readonly recycleBinDomainDeleteService: RecycleBinDomainDeleteService = new RecycleBinDomainDeleteService();
+  /**
+   * Why this exists
+   * - Centralized domain delete handler to ensure recyclebin snapshot + file move + transaction discipline.
+   * - Keeps service methods lean and consistent across modules.
+   */
+  private readonly recycleBinDomainDeleteService: RecycleBinDomainDeleteService =
+    new RecycleBinDomainDeleteService();
+
+  /**
+   * Why this exists
+   * - DTO-first WS emits for task create/update/delete/bulk refresh.
+   * - Avoids leaking DB entities or mongoose types into realtime layer.
+   */
   private readonly socket: TeamTaskSocketService = new TeamTaskSocketService();
 
+  /**
+   * Allowed urgency strings (kept as const to avoid TS enum runtime cost).
+   * IMPORTANT: must align with TaskUrgencyLevel union in team-tasks.type.ts
+   */
   private static readonly URGENCY_VALUES = [ "low", "medium", "high", "critical" ] as const;
 
   public constructor () {}
@@ -84,18 +101,27 @@ export class TeamTaskService {
   // GET ONE
   // ──────────────────────────────────────────────────────────────────────────
 
-  public async getByMongoId(
-    taskMongoId: string,
-    mode: TeamTaskLoadMode = "minimal"
-  ): Promise<TeamTaskDto | null> {
+  /**
+   * Load a single task by Mongo _id.
+   *
+   * Why this method exists
+   * - Controller/UI often navigates to a specific task screen by mongo id.
+   * - Supports both "minimal" (fast) and "advanced" (enriched) projections.
+   *
+   * @param taskMongoId
+   * - Expected: MongoDB ObjectId as string
+   * - Usage: identifies the TeamTask document in TeamTaskModel
+   *
+   * @param mode
+   * - Expected: "minimal" | "advanced"
+   * - Usage: controls whether we return enriched fields (captainUsername, assignedMember usernames)
+   */
+  public async getByMongoId( taskMongoId: string, mode: TeamTaskLoadMode = "minimal" ): Promise<TeamTaskDto | null> {
     if ( mode === "advanced" ) {
       return await this.getByMongoIdAdvanced( taskMongoId );
     }
 
-    const doc = await TeamTaskModel.findById( this.toObjectId( taskMongoId ) )
-      .lean<LeanRow>()
-      .exec();
-
+    const doc = await TeamTaskModel.findById( this.toObjectId( taskMongoId ) ).lean<LeanRow>().exec();
     if ( !doc ) return null;
 
     return this.toDtoMinimal( doc );
@@ -105,6 +131,29 @@ export class TeamTaskService {
   // LIST (minimal / advanced)
   // ──────────────────────────────────────────────────────────────────────────
 
+  /**
+   * List tasks with filters + pagination + sorting and return DTO list payload.
+   *
+   * Why this method exists
+   * - Single entry point for both minimal and advanced listing.
+   * - Keeps controller thin and consistent across multiple list endpoints.
+   *
+   * @param filters
+   * - Expected: TeamTaskFilterInput
+   * - Usage: team/domain/status/priority/date ranges/text search/evidence flags
+   *
+   * @param page
+   * - Expected: PaginationInput (page/limit/skip)
+   * - Usage: supports both modern and legacy runtime shapes
+   *
+   * @param sort
+   * - Expected: TeamTaskSortInput
+   * - Usage: supports special key "dueAt" which maps to deadlinePolicy.dueAt
+   *
+   * @param mode
+   * - Expected: TeamTaskLoadMode
+   * - Usage: "advanced" uses aggregation lookups for usernames
+   */
   public async list(
     filters: TeamTaskFilterInput,
     page: PaginationInput,
@@ -116,6 +165,18 @@ export class TeamTaskService {
       : await this.listMinimal( filters, page, sort );
   }
 
+  /**
+   * Minimal list: simple find() + lean() + map.
+   *
+   * @param filters
+   * - Expected: TeamTaskFilterInput
+   *
+   * @param page
+   * - Expected: PaginationInput
+   *
+   * @param sort
+   * - Expected: TeamTaskSortInput
+   */
   public async listMinimal(
     filters: TeamTaskFilterInput,
     page: PaginationInput,
@@ -128,11 +189,12 @@ export class TeamTaskService {
     const sortDoc = this.buildFindSort( sort );
 
     const skip = this.normalizeSkip( page );
+    const limit = this.normalizeLimit( page );
 
     const docs = await TeamTaskModel.find( query )
       .sort( sortDoc )
       .skip( skip )
-      .limit( this.normalizeLimit( page ) )
+      .limit( limit )
       .lean<LeanRow[]>()
       .exec();
 
@@ -140,6 +202,18 @@ export class TeamTaskService {
     return { items, other: { total } };
   }
 
+  /**
+   * Advanced list: aggregation pipeline with user lookups and username mapping.
+   *
+   * @param filters
+   * - Expected: TeamTaskFilterInput
+   *
+   * @param page
+   * - Expected: PaginationInput
+   *
+   * @param sort
+   * - Expected: TeamTaskSortInput
+   */
   public async listAdvanced(
     filters: TeamTaskFilterInput,
     page: PaginationInput,
@@ -158,10 +232,94 @@ export class TeamTaskService {
     return { items, other: { total } };
   }
 
+  /**
+   * Convenience method for "all tasks for team" endpoints.
+   *
+   * Why this method exists
+   * - Your controller endpoint only has teamCode + list mode + pagination.
+   * - Keeps controller clean and delegates list details to service.
+   *
+   * @param teamCode
+   * - Expected: team code string (ex: "TEAM-001")
+   * - Usage: filter tasks by team
+   *
+   * @param mode
+   * - Expected: TeamTaskLoadMode
+   * - Usage: "minimal" or "advanced"
+   *
+   * @param queries
+   * - Expected: { page: number; limit: number }
+   * - Usage: controller-level pagination extracted from req.query
+   */
+  public async getAllForTeam(
+    teamCode: string,
+    mode: TeamTaskLoadMode,
+    queries: { page: number; limit: number; }
+  ): Promise<TeamTaskDto[]> {
+    const filters: TeamTaskFilterInput = { teamCode };
+    const page: PaginationInput = { page: queries.page ?? 0, limit: queries.limit ?? 1000 };
+    const sort: TeamTaskSortInput = { key: "createdAt", dir: "desc" };
+
+    const result = await this.list( filters, page, sort, mode );
+    return result.items;
+  }
+
+
+  /**
+   * Get total number of tasks for a specific team.
+   *
+   * Why this method exists
+   * - Frequently used by dashboards (Team Overview, KPI widgets, header counters).
+   * - Avoids duplicating filter-building logic in controllers.
+   * - Delegates actual counting logic to the centralized `count()` method
+   *   to ensure consistent filter behavior across the system.
+   *
+   * Architectural reasoning
+   * - Service layer should own all domain query logic.
+   * - Controller should not construct filter objects directly.
+   * - Keeps pagination and counter endpoints aligned (single source of truth).
+   *
+   * @param teamCode
+   * - Expected: string (non-empty team identifier, e.g., "TEAM-001")
+   * - Usage: Filters tasks belonging only to this team.
+   * - Validation Responsibility: Controller should validate non-empty string
+   *   before calling this method (service assumes trusted input).
+   *
+   * @returns Promise<number>
+   * - Total count of tasks associated with the given teamCode.
+   * - Returns 0 if no tasks exist.
+   *
+   * Keep in mind
+   * - This method performs a database countDocuments() operation.
+   * - For very large datasets, ensure appropriate indexing on `teamCode`
+   *   in TeamTaskModel for optimal performance.
+   * - This method does NOT check team existence. If teamCode is invalid,
+   *   it will simply return 0.
+   */
+  public async getAllTasksCountForTeam( teamCode: string ): Promise<number> {
+    const filters: TeamTaskFilterInput = { teamCode };
+    return await this.count( filters );
+  }
+
   // ──────────────────────────────────────────────────────────────────────────
   // KEY VALUES (META)
   // ──────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Get meta key-values to populate UI dropdowns/filters.
+   *
+   * Why this method exists
+   * - UI needs canonical domains/statuses/priorities and distinct labels for a team/context.
+   * - Avoids FE hardcoding and keeps data-driven filtering consistent.
+   *
+   * @param filters
+   * - Optional narrowing filters for label discovery.
+   * - Expected:
+   *   - teamCode?: string
+   *   - teamMongoId?: string (ObjectId string)
+   *   - domain?: TeamDomain
+   *   - status?: TaskStatus
+   */
   public async getKeyValues( filters?: {
     teamCode?: string;
     teamMongoId?: string;
@@ -175,7 +333,6 @@ export class TeamTaskService {
     };
 
     const match: Record<string, unknown> = {};
-
     if ( filters?.teamCode ) match.teamCode = filters.teamCode;
     if ( filters?.teamMongoId ) match.teamMongoId = this.toObjectId( filters.teamMongoId );
     if ( filters?.domain ) match.domain = filters.domain;
@@ -205,6 +362,16 @@ export class TeamTaskService {
   // COUNT
   // ──────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Count tasks matching filters.
+   *
+   * Why this method exists
+   * - Paginator requires total result count.
+   * - Keeps list methods consistent and testable.
+   *
+   * @param filters
+   * - Expected: TeamTaskFilterInput
+   */
   public async count( filters: TeamTaskFilterInput ): Promise<number> {
     const query = this.buildFindQuery( filters );
     return await TeamTaskModel.countDocuments( query ).exec();
@@ -214,6 +381,21 @@ export class TeamTaskService {
   // CRUD
   // ──────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Create a new TeamTask.
+   *
+   * Why this method exists
+   * - Centralized validation + canonical timestamp anchors.
+   * - WS emits "task.created" with DTO-first payload.
+   *
+   * @param input
+   * - Expected: CreateTeamTaskInput
+   * - Usage: task creation payload (teamCode, domain, name, etc.)
+   *
+   * @param ctx
+   * - Optional WS context used by socket layer (audience routing + enrichment)
+   * - If ctx.assignedMember is missing, service will resolve usernames.
+   */
   public async create( input: CreateTeamTaskInput, ctx?: TeamTaskWsContext ): Promise<TeamTaskDto> {
     this.assertDomain( input.domain );
     this.assertStatus( input.status );
@@ -225,7 +407,7 @@ export class TeamTaskService {
       id: input.id,
 
       teamCode: input.teamCode,
-      teamMongoId: input.teamMongoId, // already ObjectId in CreateTeamTaskInput
+      teamMongoId: input.teamMongoId,
       domain: input.domain,
 
       name: input.name,
@@ -247,7 +429,6 @@ export class TeamTaskService {
       status: input.status ?? "draft",
       priority: input.priority ?? "medium",
 
-      // model has default {}, but we set meaningful anchors if caller didn't provide
       timing: input.timing ? this.cleanTiming( input.timing ) : { createdAt: nowIso, updatedAt: nowIso },
 
       ...( input.deadlinePolicy ? { deadlinePolicy: this.cleanDeadlinePolicy( input.deadlinePolicy ) } : {} ),
@@ -272,12 +453,25 @@ export class TeamTaskService {
     return dto;
   }
 
-  public async update(
-    taskMongoId: string,
-    input: UpdateTeamTaskInput,
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
-    // Validators only if field present
+  /**
+   * Update a task using $set/$unset (never assign undefined).
+   *
+   * Why this method exists
+   * - exact optional handling: optional fields are either set with value or unset.
+   * - Avoids mixing "replacement doc" updates (dangerous) with update operators.
+   *
+   * @param taskMongoId
+   * - Expected: Mongo ObjectId string
+   * - Usage: identifies the task to update
+   *
+   * @param input
+   * - Expected: UpdateTeamTaskInput
+   * - Usage: patch payload. null means "unset", value means "set"
+   *
+   * @param ctx
+   * - Optional TeamTaskWsContext for WS routing; usernames are resolved if missing.
+   */
+  public async update( taskMongoId: string, input: UpdateTeamTaskInput, ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     if ( typeof input.domain !== "undefined" && input.domain !== null ) this.assertDomain( input.domain );
     if ( typeof input.status !== "undefined" && input.status !== null ) this.assertStatus( input.status );
     if ( typeof input.priority !== "undefined" && input.priority !== null ) this.assertPriority( input.priority );
@@ -295,9 +489,7 @@ export class TeamTaskService {
     else if ( input.address ) $set.address = input.address;
 
     if ( input.assignedMembers === null ) $unset.assignedMembers = 1;
-    else if ( Array.isArray( input.assignedMembers ) ) {
-      $set.assignedMembers = input.assignedMembers;
-    }
+    else if ( Array.isArray( input.assignedMembers ) ) $set.assignedMembers = input.assignedMembers;
 
     if ( input.assignedTaskCaptain === null ) $unset.assignedTaskCaptain = 1;
     else if ( input.assignedTaskCaptain ) $set.assignedTaskCaptain = input.assignedTaskCaptain;
@@ -360,37 +552,58 @@ export class TeamTaskService {
     if ( !updated ) return null;
 
     const dto = this.toDtoMinimal( updated );
-
     const ctxWithUsers = await this.withResolvedCtx( dto, ctx );
-    this.socket.emitTaskUpdated( dto, ctxWithUsers );
 
+    this.socket.emitTaskUpdated( dto, ctxWithUsers );
     return dto;
   }
 
+  /**
+   * Delete a task with RecycleBin support.
+   *
+   * Why this method exists
+   * - Soft delete must be durable: snapshot first, move files, then delete DB record.
+   * - Ensures restore/purge capability and audit trace.
+   *
+   * @param taskMongoId
+   * - Expected: Mongo ObjectId string
+   *
+   * @param req
+   * - Expected: Express Request
+   * - Usage: used to resolve AuthUser and to build absolute public URLs when scanning file packets
+   *
+   * @param ctx
+   * - Optional WS context for routing
+   */
   public async delete( taskMongoId: string, req: Request, ctx?: TeamTaskWsContext ): Promise<boolean> {
     const existing = await TeamTaskModel.findById( this.toObjectId( taskMongoId ) ).lean<LeanRow>().exec();
     if ( !existing ) return false;
 
     const actor: AuthUser | null = await ApiGuardExport.GetAuthUser( req );
-
     if ( !actor ) {
       throw new Error( "Unauthorized: unable to identify user" );
     }
 
-    const root: string = `public/uploads/teamManagement/teamTasks/${ existing.teamCode }/${ existing._id ?? existing.id }/`;
+    // IMPORTANT:
+    // - your project stores public assets under top-level "public/"
+    // - never use leading "/" for Electron compatibility
+    const rootPublicRel = `public/uploads/teamManagement/teamTasks/${ existing.teamCode }/${ String(
+      existing._id ?? existing.id
+    ) }`;
 
     const filesScan: FileMetaPacket[] = await FileMetaPacketBuilder.scanTree( {
-      bucket: 'taskDocs',
-      rootPathLike: root,
-      ...req ? req : {}
+      rootPathLike: rootPublicRel,
+      req,
+      bucket: "taskDocs",
     } );
-    const deletePlan: DomainDeletePlan<LeanRow> = {
+
+    const deletePlan: DomainDeletePlan<Record<string, unknown>> = {
       sourceKey: "teamTask",
-      label: [ 'Team Task', existing.name ?? existing._id ?? existing.id ].join( " - " ),
-      refId: String( existing.id ),
-      snapshotData: existing,
+      label: [ "Team Task", existing.name ?? String( existing._id ?? existing.id ) ].join( " - " ),
+      refId: String( existing._id ?? existing.id ),
+      snapshotData: this.toJsonSafeSnapshot( existing ),
       files: filesScan,
-      deleteDbRecord: async ( session ): Promise<void> => {
+      deleteDbRecord: async ( session: ClientSession ): Promise<void> => {
         await TeamTaskModel.deleteOne( { _id: this.toObjectId( taskMongoId ) }, { session } ).exec();
       },
     };
@@ -408,11 +621,24 @@ export class TeamTaskService {
   // Evidence
   // ──────────────────────────────────────────────────────────────────────────
 
-  public async appendEvidence(
-    taskMongoId: string,
-    evidenceItems: TaskEvidence[],
-    ctx?: TeamTaskWsContext
-  ): Promise<TeamTaskDto | null> {
+  /**
+   * Append evidence items to a task.
+   *
+   * Why this method exists
+   * - Evidence uploads are often handled in controller and then appended here.
+   * - Uses $push/$each and emits WS updated.
+   *
+   * @param taskMongoId
+   * - Expected: Mongo ObjectId string
+   *
+   * @param evidenceItems
+   * - Expected: TaskEvidence[]
+   * - Usage: packets/metadata for uploaded evidence
+   *
+   * @param ctx
+   * - Optional WS context for routing
+   */
+  public async appendEvidence( taskMongoId: string, evidenceItems: TaskEvidence[], ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     const safe = Array.isArray( evidenceItems ) ? evidenceItems : [];
     if ( safe.length <= 0 ) return await this.getByMongoId( taskMongoId, "minimal" );
 
@@ -433,6 +659,23 @@ export class TeamTaskService {
     return dto;
   }
 
+  /**
+   * Remove evidence by storageKey.
+   *
+   * Why this method exists
+   * - Evidence removal must be predictable and idempotent.
+   * - storageKey is the stable identity for a stored file.
+   *
+   * @param taskMongoId
+   * - Expected: Mongo ObjectId string
+   *
+   * @param storageKey
+   * - Expected: string
+   * - Usage: evidence.storageKey value to pull
+   *
+   * @param ctx
+   * - Optional WS context for routing
+   */
   public async removeEvidenceByStorageKey(
     taskMongoId: string,
     storageKey: string,
@@ -462,7 +705,14 @@ export class TeamTaskService {
   // Users
   // ──────────────────────────────────────────────────────────────────────────
 
-  public async getassignedMembers( taskMongoId: string ): Promise<string[]> {
+  /**
+   * Get assigned members usernames for a task.
+   *
+   * @param taskMongoId
+   * - Expected: Mongo ObjectId string
+   * - Usage: load assignedMembers and resolve usernames via UserModel
+   */
+  public async getAssignedMembers( taskMongoId: string ): Promise<string[]> {
     const task = await TeamTaskModel.findById( this.toObjectId( taskMongoId ) )
       .select( { assignedMembers: 1 } )
       .lean<{ assignedMembers?: Types.ObjectId[]; }>()
@@ -474,6 +724,33 @@ export class TeamTaskService {
     return await this.resolveUsernamesByIds( ids );
   }
 
+  /**
+   * Backward compatible alias (your original method name had a casing issue).
+   * Keep until all controllers/routers are updated.
+   *
+   * @param taskMongoId
+   * - Expected: Mongo ObjectId string
+   */
+  public async getassignedMembers( taskMongoId: string ): Promise<string[]> {
+    return await this.getAssignedMembers( taskMongoId );
+  }
+
+  /**
+   * Load captain + members as lightweight DTOs for a task.
+   *
+   * Why this exists
+   * - UI needs to show who is responsible (captain) and who is assigned (members).
+   * - Supports filtering by userId or username (useful for permission checks / profile views).
+   *
+   * @param taskMongoId
+   * - Expected: Mongo ObjectId string
+   *
+   * @param filter
+   * - Optional: { userId?: string; username?: string }
+   * - Usage:
+   *   - userId: restrict result to a single user if they are part of this task
+   *   - username: restrict result to a username (in addition to id logic)
+   */
   public async getTaskUsers(
     taskMongoId: string,
     filter?: { userId?: string; username?: string; }
@@ -513,33 +790,56 @@ export class TeamTaskService {
     const mapped = Array.isArray( users ) ? users.map( ( u ) => this.toUserLiteDto( u ) ) : [];
 
     const captain = captainId ? mapped.find( ( x ) => x.userId === String( captainId ) ) ?? null : null;
-
     const members = mapped.filter( ( x ) => memberIds.some( ( m ) => String( m ) === x.userId ) );
 
-    return {
-      captain,
-      members,
-      other: { memberTotal: members.length },
-    };
+    return { captain, members, other: { memberTotal: members.length } };
   }
 
   // ──────────────────────────────────────────────────────────────────────────
   // Operations expected by TeamTaskController
   // ──────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Patch only status (thin wrapper over update()).
+   *
+   * @param taskMongoId - Mongo ObjectId string
+   * @param status - TaskStatus
+   * @param ctx - optional WS context
+   */
   public async setStatus( taskMongoId: string, status: TaskStatus, ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     return await this.update( taskMongoId, { status }, ctx );
   }
 
+  /**
+   * Patch only priority (thin wrapper over update()).
+   *
+   * @param taskMongoId - Mongo ObjectId string
+   * @param priority - TaskPriority
+   * @param ctx - optional WS context
+   */
   public async setPriority( taskMongoId: string, priority: TaskPriority, ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     return await this.update( taskMongoId, { priority }, ctx );
   }
 
+  /**
+   * Replace all labels with given list.
+   *
+   * @param taskMongoId - Mongo ObjectId string
+   * @param labels - string[]
+   * @param ctx - optional WS context
+   */
   public async setLabels( taskMongoId: string, labels: string[], ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     const clean = this.cleanStringArray( labels );
     return await this.update( taskMongoId, { labels: clean }, ctx );
   }
 
+  /**
+   * Add labels using $addToSet $each (no duplicates).
+   *
+   * @param taskMongoId - Mongo ObjectId string
+   * @param labels - string[]
+   * @param ctx - optional WS context
+   */
   public async addLabels( taskMongoId: string, labels: string[], ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     const clean = this.cleanStringArray( labels );
     if ( clean.length <= 0 ) return await this.getByMongoId( taskMongoId, "minimal" );
@@ -556,10 +856,18 @@ export class TeamTaskService {
 
     const dto = this.toDtoMinimal( updated );
     const ctxWithUsers = await this.withResolvedCtx( dto, ctx );
+
     this.socket.emitTaskUpdated( dto, ctxWithUsers );
     return dto;
   }
 
+  /**
+   * Remove labels using $pull $in.
+   *
+   * @param taskMongoId - Mongo ObjectId string
+   * @param labels - string[]
+   * @param ctx - optional WS context
+   */
   public async removeLabels( taskMongoId: string, labels: string[], ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     const clean = this.cleanStringArray( labels );
     if ( clean.length <= 0 ) return await this.getByMongoId( taskMongoId, "minimal" );
@@ -576,10 +884,18 @@ export class TeamTaskService {
 
     const dto = this.toDtoMinimal( updated );
     const ctxWithUsers = await this.withResolvedCtx( dto, ctx );
+
     this.socket.emitTaskUpdated( dto, ctxWithUsers );
     return dto;
   }
 
+  /**
+   * Replace assignedMembers entirely.
+   *
+   * @param taskMongoId - Mongo ObjectId string
+   * @param memberIds - string[] (user _id values)
+   * @param ctx - optional WS context
+   */
   public async setAssignedMembers( taskMongoId: string, memberIds: string[], ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     const ids = this.cleanStringArray( memberIds );
     const oids = ids.map( ( x ) => this.toObjectId( x ) );
@@ -596,10 +912,18 @@ export class TeamTaskService {
 
     const dto = this.toDtoMinimal( updated );
     const ctxWithUsers = await this.withResolvedCtx( dto, ctx );
+
     this.socket.emitTaskUpdated( dto, ctxWithUsers );
     return dto;
   }
 
+  /**
+   * Add assigned members using $addToSet $each.
+   *
+   * @param taskMongoId - Mongo ObjectId string
+   * @param memberIds - string[] (user _id values)
+   * @param ctx - optional WS context
+   */
   public async addAssignedMembers( taskMongoId: string, memberIds: string[], ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     const ids = this.cleanStringArray( memberIds );
     if ( ids.length <= 0 ) return await this.getByMongoId( taskMongoId, "minimal" );
@@ -618,10 +942,18 @@ export class TeamTaskService {
 
     const dto = this.toDtoMinimal( updated );
     const ctxWithUsers = await this.withResolvedCtx( dto, ctx );
+
     this.socket.emitTaskUpdated( dto, ctxWithUsers );
     return dto;
   }
 
+  /**
+   * Remove assigned members using $pull $in.
+   *
+   * @param taskMongoId - Mongo ObjectId string
+   * @param memberIds - string[] (user _id values)
+   * @param ctx - optional WS context
+   */
   public async removeAssignedMembers( taskMongoId: string, memberIds: string[], ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     const ids = this.cleanStringArray( memberIds );
     if ( ids.length <= 0 ) return await this.getByMongoId( taskMongoId, "minimal" );
@@ -640,16 +972,31 @@ export class TeamTaskService {
 
     const dto = this.toDtoMinimal( updated );
     const ctxWithUsers = await this.withResolvedCtx( dto, ctx );
+
     this.socket.emitTaskUpdated( dto, ctxWithUsers );
     return dto;
   }
 
+  /**
+   * Set/unset captain.
+   *
+   * @param taskMongoId - Mongo ObjectId string
+   * @param captainUserId - string | null (null means unset)
+   * @param ctx - optional WS context
+   */
   public async setCaptain( taskMongoId: string, captainUserId: string | null, ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     if ( captainUserId === null ) return await this.update( taskMongoId, { assignedTaskCaptain: null }, ctx );
     const oid = this.toObjectId( captainUserId );
     return await this.update( taskMongoId, { assignedTaskCaptain: oid }, ctx );
   }
 
+  /**
+   * Set/unset notes.
+   *
+   * @param taskMongoId - Mongo ObjectId string
+   * @param notes - string | null (null means unset)
+   * @param ctx - optional WS context
+   */
   public async setNotes( taskMongoId: string, notes: string | null, ctx?: TeamTaskWsContext ): Promise<TeamTaskDto | null> {
     return await this.update( taskMongoId, { notes }, ctx );
   }
@@ -674,18 +1021,12 @@ export class TeamTaskService {
    * - If the selected field is not a string, it will be ignored (not pushed).
    * - This does NOT guarantee ordering by ids; it returns values found in DB order.
    */
-  public async fetchUserFieldAsStringArray(
-    membersIDs: Types.ObjectId[],
-    key: UserModelKeyFields
-  ): Promise<string[]> {
-    // 1) Normalize ids (dedupe + stable)
+  public async fetchUserFieldAsStringArray( membersIDs: Types.ObjectId[], key: UserModelKeyFields ): Promise<string[]> {
     const normalizedIds = this.normalizeObjectIds( membersIDs );
     if ( normalizedIds.length === 0 ) return [];
 
-    // 2) Projection-only select (Mongo accepts dynamic projection keys)
     const projection: Record<string, 0 | 1> = { [ String( key ) ]: 1 };
 
-    // 3) Query lean + extract string values safely
     const rows = await UserModel.find( { _id: { $in: normalizedIds } } )
       .select( projection )
       .lean<Array<Record<string, unknown>>>()
@@ -701,7 +1042,6 @@ export class TeamTaskService {
       const val = raw.trim();
       if ( !val ) continue;
 
-      // Avoid duplicates (common when multiple users share blank/aliases etc.)
       if ( seen.has( val ) ) continue;
       seen.add( val );
 
@@ -711,14 +1051,16 @@ export class TeamTaskService {
     return out;
   }
 
-
-
   // ──────────────────────────────────────────────────────────────────────────
   // Advanced aggregate
   // ──────────────────────────────────────────────────────────────────────────
 
-
-
+  /**
+   * Advanced single load using the same advanced pipeline used by list.
+   *
+   * @param taskMongoId
+   * - Expected: Mongo ObjectId string
+   */
   private async getByMongoIdAdvanced( taskMongoId: string ): Promise<TeamTaskDto | null> {
     const pipeline = this.buildAdvancedPipeline(
       { _id: this.toObjectId( taskMongoId ) },
@@ -733,6 +1075,28 @@ export class TeamTaskService {
     return this.toDtoAdvanced( rows[ 0 ] );
   }
 
+  /**
+   * Build advanced aggregation pipeline.
+   *
+   * Mongo keywords used (what/why)
+   * - $match: filters documents early (like SQL WHERE)
+   * - $sort: ordering (like SQL ORDER BY)
+   * - $skip/$limit: pagination (like OFFSET/LIMIT)
+   * - $lookup: join-like fetch from other collection (like SQL JOIN)
+   * - $addFields: compute new fields without changing stored doc
+   * - $map/$let/$arrayElemAt: transform arrays and safely read first element
+   * - $project: exclude heavy intermediate arrays from result
+   *
+   * @param match
+   * - Expected: Record<string, unknown>
+   * - Usage: aggregation match stage
+   *
+   * @param page
+   * - Expected: PaginationInput
+   *
+   * @param sort
+   * - Expected: TeamTaskSortInput
+   */
   private buildAdvancedPipeline( match: Record<string, unknown>, page: PaginationInput, sort: TeamTaskSortInput ): PipelineStage[] {
     const stages: PipelineStage[] = [];
 
@@ -786,6 +1150,12 @@ export class TeamTaskService {
   // Filters + sorting (deadlinePolicy aware)
   // ──────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Build a find() query for minimal listing.
+   *
+   * @param filters
+   * - Expected: TeamTaskFilterInput
+   */
   private buildFindQuery( filters: TeamTaskFilterInput ): FilterQuery<unknown> {
     const q: Record<string, unknown> = {};
 
@@ -802,7 +1172,7 @@ export class TeamTaskService {
 
     if ( filters.label && filters.label.trim() ) q.labels = filters.label.trim();
 
-    // ✅ deadlinePolicy dueAt range
+    // deadlinePolicy.dueAt range filter
     if ( filters.dueFrom || filters.dueTo ) {
       const cond: Record<string, unknown> = {};
       if ( filters.dueFrom ) cond.$gte = filters.dueFrom;
@@ -835,10 +1205,23 @@ export class TeamTaskService {
     return q as FilterQuery<unknown>;
   }
 
+  /**
+   * Build aggregate match object.
+   *
+   * @param filters
+   * - Expected: TeamTaskFilterInput
+   */
   private buildAggregateMatch( filters: TeamTaskFilterInput ): Record<string, unknown> {
     return this.buildFindQuery( filters ) as unknown as Record<string, unknown>;
   }
 
+  /**
+   * Build find() sort object.
+   *
+   * @param sort
+   * - Expected: TeamTaskSortInput
+   * - Special: "dueAt" maps to deadlinePolicy.dueAt
+   */
   private buildFindSort( sort: TeamTaskSortInput ): Record<string, 1 | -1> {
     const dir: 1 | -1 = sort.dir === "asc" ? 1 : -1;
 
@@ -846,6 +1229,12 @@ export class TeamTaskService {
     return { [ sort.key ]: dir } as Record<string, 1 | -1>;
   }
 
+  /**
+   * Build aggregate sort object.
+   *
+   * @param sort
+   * - Expected: TeamTaskSortInput
+   */
   private buildAggregateSort( sort: TeamTaskSortInput ): Record<string, 1 | -1> {
     return this.buildFindSort( sort );
   }
@@ -854,6 +1243,12 @@ export class TeamTaskService {
   // DTO mapping
   // ──────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Map lean DB row to minimal DTO.
+   *
+   * @param doc
+   * - Expected: LeanRow (lean TeamTask)
+   */
   private toDtoMinimal( doc: LeanRow ): TeamTaskDto {
     const dto: TeamTaskDto = {
       taskMongoId: String( doc._id ),
@@ -929,6 +1324,12 @@ export class TeamTaskService {
     return dto;
   }
 
+  /**
+   * Map advanced aggregate row to DTO (adds assignedMember usernames + captainUsername).
+   *
+   * @param row
+   * - Expected: AdvancedRow
+   */
   private toDtoAdvanced( row: AdvancedRow ): TeamTaskDto {
     const base = this.toDtoMinimal( row );
 
@@ -949,11 +1350,22 @@ export class TeamTaskService {
   // WS ctx helper
   // ──────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Ensure WS ctx has assignedMember usernames.
+   *
+   * @param dto
+   * - Expected: TeamTaskDto
+   *
+   * @param ctx
+   * - Optional TeamTaskWsContext
+   */
   private async withResolvedCtx( dto: TeamTaskDto, ctx?: TeamTaskWsContext ): Promise<TeamTaskWsContext | undefined> {
     if ( !ctx ) return undefined;
 
+    // If already present, return as-is
     if ( Array.isArray( ctx.assignedMember ) && ctx.assignedMember.length > 0 ) return ctx;
 
+    // Resolve from dto.assignedMembers (userIds) if possible
     if ( !Array.isArray( dto.assignedMembers ) || dto.assignedMembers.length <= 0 ) return ctx;
 
     const ids = dto.assignedMembers.map( ( x ) => this.toObjectId( x ) );
@@ -964,6 +1376,12 @@ export class TeamTaskService {
     return { ...ctx, assignedMember: usernames };
   }
 
+  /**
+   * Resolve usernames by user ObjectIds.
+   *
+   * @param ids
+   * - Expected: Types.ObjectId[]
+   */
   private async resolveUsernamesByIds( ids: Types.ObjectId[] ): Promise<string[]> {
     if ( !Array.isArray( ids ) || ids.length <= 0 ) return [];
 
@@ -977,6 +1395,12 @@ export class TeamTaskService {
       : [];
   }
 
+  /**
+   * Map lean user to TaskUserLiteDto.
+   *
+   * @param u
+   * - Expected: LeanUserLite
+   */
   private toUserLiteDto( u: LeanUserLite ): TaskUserLiteDto {
     const dto: TaskUserLiteDto = {
       userId: String( u._id ),
@@ -997,16 +1421,34 @@ export class TeamTaskService {
   // Validators
   // ──────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Validate domain.
+   *
+   * @param domain
+   * - Expected: TeamDomain | undefined
+   */
   private assertDomain( domain?: TeamDomain ): void {
     if ( !domain ) return;
     if ( !TEAM_DOMAINS.includes( domain ) ) throw new Error( `Invalid domain: ${ domain }` );
   }
 
+  /**
+   * Validate status.
+   *
+   * @param status
+   * - Expected: TaskStatus | undefined
+   */
   private assertStatus( status?: TaskStatus ): void {
     if ( !status ) return;
     if ( !TASK_STATUSES.includes( status ) ) throw new Error( `Invalid status: ${ status }` );
   }
 
+  /**
+   * Validate priority.
+   *
+   * @param priority
+   * - Expected: TaskPriority | undefined
+   */
   private assertPriority( priority?: TaskPriority ): void {
     if ( !priority ) return;
     if ( !TASK_PRIORITIES.includes( priority ) ) throw new Error( `Invalid priority: ${ priority }` );
@@ -1016,11 +1458,23 @@ export class TeamTaskService {
   // Cleaners
   // ──────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Normalize string list (trim + remove empty).
+   *
+   * @param list
+   * - Expected: string[]
+   */
   private cleanStringArray( list: string[] ): string[] {
     if ( !Array.isArray( list ) ) return [];
     return list.map( ( x ) => ( typeof x === "string" ? x.trim() : "" ) ).filter( Boolean );
   }
 
+  /**
+   * Normalize audit meta (trim ids/usernames).
+   *
+   * @param audit
+   * - Expected: TaskAuditMeta
+   */
   private cleanAudit( audit: TaskAuditMeta ): TaskAuditMeta {
     const out: TaskAuditMeta = {};
 
@@ -1042,6 +1496,12 @@ export class TeamTaskService {
     return out;
   }
 
+  /**
+   * Normalize TaskTiming fields to ISO strings or null.
+   *
+   * @param timing
+   * - Expected: TaskTiming
+   */
   private cleanTiming( timing: TaskTiming ): TaskTiming {
     const norm = ( v: unknown ): ISODateString | null | undefined => {
       if ( typeof v === "string" ) return v.trim() ? ( v.trim() as ISODateString ) : null;
@@ -1072,17 +1532,29 @@ export class TeamTaskService {
     return out;
   }
 
-  private cleanDeadlinePolicy( input: TaskDeadlinePolicy | { dueAt?: unknown; breachAt?: unknown; urgency?: unknown; } ): TaskDeadlinePolicy {
+  /**
+   * Normalize deadlinePolicy.
+   *
+   * @param input
+   * - Expected: TaskDeadlinePolicy or partial-like input object
+   * - Usage: used in create/update and mapper cleanup
+   */
+  private cleanDeadlinePolicy(
+    input: TaskDeadlinePolicy | { dueAt?: unknown; breachAt?: unknown; urgency?: unknown; }
+  ): TaskDeadlinePolicy {
     const out: TaskDeadlinePolicy = {};
 
-    const dueAt = this.safeStr( ( input as { dueAt?: unknown; } ).dueAt );
-    const breachAt = this.safeStr( ( input as { breachAt?: unknown; } ).breachAt );
+    const dueAtRaw = ( input as { dueAt?: unknown; } ).dueAt;
+    const breachAtRaw = ( input as { breachAt?: unknown; } ).breachAt;
 
-    if ( typeof ( input as { dueAt?: unknown; } ).dueAt === "string" ) out.dueAt = dueAt ? dueAt : null;
-    if ( ( input as { dueAt?: unknown; } ).dueAt === null ) out.dueAt = null;
+    const dueAt = this.safeStr( dueAtRaw );
+    const breachAt = this.safeStr( breachAtRaw );
 
-    if ( typeof ( input as { breachAt?: unknown; } ).breachAt === "string" ) out.breachAt = breachAt ? breachAt : null;
-    if ( ( input as { breachAt?: unknown; } ).breachAt === null ) out.breachAt = null;
+    if ( typeof dueAtRaw === "string" ) out.dueAt = dueAt ? dueAt : null;
+    if ( dueAtRaw === null ) out.dueAt = null;
+
+    if ( typeof breachAtRaw === "string" ) out.breachAt = breachAt ? breachAt : null;
+    if ( breachAtRaw === null ) out.breachAt = null;
 
     const urg = ( input as { urgency?: unknown; } ).urgency;
     if ( this.isUrgency( urg ) ) out.urgency = urg;
@@ -1091,6 +1563,12 @@ export class TeamTaskService {
     return out;
   }
 
+  /**
+   * Normalize runtime metrics (NaN -> 0).
+   *
+   * @param metrics
+   * - Expected: TaskRuntimeMetrics
+   */
   private cleanMetrics( metrics: TaskRuntimeMetrics ): TaskRuntimeMetrics {
     const out: TaskRuntimeMetrics = { ...metrics };
 
@@ -1102,43 +1580,76 @@ export class TeamTaskService {
     return out;
   }
 
+  /**
+   * Type guard for urgency values.
+   *
+   * @param v
+   * - Expected: unknown
+   */
   private isUrgency( v: unknown ): v is TaskUrgencyLevel {
     return typeof v === "string" && ( TeamTaskService.URGENCY_VALUES as readonly string[] ).includes( v );
   }
 
+  /**
+   * Check if deadlinePolicy has any meaningful keys.
+   *
+   * @param p - TaskDeadlinePolicy
+   */
   private hasAnyDeadlinePolicy( p: TaskDeadlinePolicy ): boolean {
     return typeof p.dueAt !== "undefined" || typeof p.breachAt !== "undefined" || typeof p.urgency !== "undefined";
   }
 
+  /**
+   * Check if metrics has keys.
+   *
+   * @param m - TaskRuntimeMetrics
+   */
   private hasAnyMetrics( m: TaskRuntimeMetrics ): boolean {
-    return m && Object.keys( m ).length > 0;
+    return !!m && Object.keys( m ).length > 0;
   }
 
+  /**
+   * Check if audit has keys.
+   *
+   * @param a - TaskAuditMeta
+   */
   private hasAnyAudit( a: TaskAuditMeta ): boolean {
-    return a && Object.keys( a ).length > 0;
+    return !!a && Object.keys( a ).length > 0;
   }
 
   // ──────────────────────────────────────────────────────────────────────────
   // Pagination helpers (supports legacy "pageIndex")
   // ──────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Normalize limit with safety clamp.
+   *
+   * @param page
+   * - Expected: PaginationInput
+   */
   private normalizeLimit( page: PaginationInput ): number {
     const raw = typeof page.limit === "number" ? page.limit : 20;
     const safe = Number.isFinite( raw ) && raw > 0 ? Math.min( raw, 200 ) : 20;
     return safe;
   }
 
+  /**
+   * Normalize skip:
+   * - Uses page.skip if provided
+   * - Supports legacy pageIndex
+   * - Otherwise uses 1-based page
+   *
+   * @param page
+   * - Expected: PaginationInput
+   */
   private normalizeSkip( page: PaginationInput ): number {
-    // Prefer explicit skip
     if ( typeof page.skip === "number" && Number.isFinite( page.skip ) && page.skip >= 0 ) return page.skip;
 
-    // Support legacy runtime shape: pageIndex
     const legacyPageIndex = ( page as unknown as { pageIndex?: number; } ).pageIndex;
     if ( typeof legacyPageIndex === "number" && legacyPageIndex >= 0 ) {
       return legacyPageIndex * this.normalizeLimit( page );
     }
 
-    // Standard: 1-based page
     const p = typeof page.page === "number" ? page.page : 1;
     const safePage = Number.isFinite( p ) && p > 0 ? p : 1;
 
@@ -1149,16 +1660,30 @@ export class TeamTaskService {
   // Small helpers
   // ──────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Safe string normalize.
+   *
+   * @param v - unknown
+   */
   private safeStr( v: unknown ): string {
     return typeof v === "string" ? v.trim() : "";
   }
 
+  /**
+   * Convert string to ObjectId (throws if invalid).
+   *
+   * @param id
+   * - Expected: ObjectId string
+   */
   private toObjectId( id: string ): Types.ObjectId {
     return new Types.ObjectId( String( id ) );
   }
 
   /**
    * Normalize ObjectIds by removing duplicates (stable order).
+   *
+   * @param ids
+   * - Expected: Types.ObjectId[]
    */
   private normalizeObjectIds( ids: Types.ObjectId[] ): Types.ObjectId[] {
     const out: Types.ObjectId[] = [];
@@ -1170,6 +1695,44 @@ export class TeamTaskService {
       seen.add( key );
       out.push( id );
     }
+
+    return out;
+  }
+
+  /**
+   * Convert a lean task into JSON-safe snapshot data for RecycleBin.
+   *
+   * Why this is needed
+   * - RecycleBin snapshotData is intended to be JSON-safe (no ObjectId instances).
+   * - This avoids future restore/export issues and keeps snapshots portable.
+   *
+   * @param doc
+   * - Expected: LeanRow
+   */
+  private toJsonSafeSnapshot( doc: LeanRow ): Record<string, unknown> {
+    const raw = doc as unknown as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+
+    for ( const k of Object.keys( raw ) ) {
+      const v = raw[ k ];
+
+      if ( v instanceof Types.ObjectId ) {
+        out[ k ] = String( v );
+        continue;
+      }
+
+      if ( Array.isArray( v ) ) {
+        out[ k ] = v.map( ( x ) => ( x instanceof Types.ObjectId ? String( x ) : x ) );
+        continue;
+      }
+
+      // shallow keep for plain JSON-like values
+      out[ k ] = v;
+    }
+
+    // Ensure snapshot always has stable ids
+    out._id = String( ( doc as unknown as { _id?: unknown; } )._id ?? "" );
+    out.id = String( ( doc as unknown as { id?: unknown; } ).id ?? "" );
 
     return out;
   }

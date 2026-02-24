@@ -166,7 +166,7 @@ class NotificationAudienceSchemaFactory {
          */
         roleKey: { type: String, required: false, trim: true, index: true },
         teamCode: { type: String, required: false, trim: true, index: true },
-        userId: { type: String, required: false, trim: true, index: true },
+        username: { type: String, required: false, trim: true, index: true },
       },
       { _id: false }
     );

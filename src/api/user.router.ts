@@ -676,7 +676,7 @@ export default class UserRoute {
             audiences: [
               {
                 mode: 'User',
-                userId: safeUser.username
+                username: safeUser.username
               },
               {
                 mode: 'Role',
@@ -965,7 +965,7 @@ export default class UserRoute {
             audiences: [
               {
                 mode: 'User',
-                userId: safeUser.username
+                username: safeUser.username
               },
               {
                 mode: 'Role',
@@ -1988,7 +1988,7 @@ export default class UserRoute {
             audiences: [
               {
                 mode: 'User',
-                userId: actor.username
+                username: actor.username
               },
               {
                 mode: 'Role',

@@ -160,7 +160,7 @@ export class MilestonesController {
         audiences: [
           {
             mode: 'User',
-            userId: actor.userId,
+            username: actor.userId,
           },
           {
             mode: 'Role',
@@ -231,7 +231,7 @@ export class MilestonesController {
         audiences: [
           {
             mode: 'User',
-            userId: actor.userId,
+            username: actor.userId,
           },
           {
             mode: 'Role',
@@ -303,7 +303,7 @@ export class MilestonesController {
         audiences: [
           {
             mode: 'User',
-            userId: actor.userId,
+            username: actor.userId,
           },
           {
             mode: 'Role',

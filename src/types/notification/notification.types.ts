@@ -20,20 +20,13 @@ import type { ISODateString } from "../common";
 import type { Role } from "../roles";
 import type { NotificationActionKey } from "./notification-action-keys.catalog";
 
+
 /* =============================================================================
  * 01) Basic domain enums / unions
  * ========================================================================== */
 
-/**
- * Severity of a notification.
- * - UI uses this to determine colors/icons and alert importance.
- */
 export type NotificationSeverity = "info" | "success" | "warning" | "error";
 
-/**
- * Category of the notification.
- * - High-level grouping for filtering and analytics.
- */
 export type NotificationCategory =
   | "User"
   | "Tenant"
@@ -43,8 +36,54 @@ export type NotificationCategory =
   | "Payment"
   | "Team"
   | "Comment"
-  | "System";
+  | "System"
+  | "Security"
+  | "Audit";
 
+/**
+ * Optional audience filter (admin/tools).
+ * NOTE: audiences is an array, query service must match on "n.audiences.mode".
+ */
+export interface NotificationLoadFilters {
+  category?: NotificationCategory;
+  severity?: NotificationSeverity;
+  mode?: "User" | "Team" | "Company" | "Role";
+  search?: string;
+  from?: ISODateString;
+  to?: ISODateString;
+  unreadOnly?: boolean;
+  includeDeleted?: boolean;
+  includeArchived?: boolean;
+}
+
+/** ✅ Runtime enum lists used by WS/REST sanitizers (NO undefined values). */
+export const NOTIFICATION_CATEGORY_VALUES = [
+  "User",
+  "Tenant",
+  "Property",
+  "Lease",
+  "Complaint",
+  "Payment",
+  "Team",
+  "Comment",
+  "System",
+  "Security",
+  "Audit",
+] as const satisfies readonly NotificationCategory[];
+
+export const NOTIFICATION_SEVERITY_VALUES = [
+  "info",
+  "success",
+  "warning",
+  "error",
+] as const satisfies readonly NotificationSeverity[];
+
+export const NOTIFICATION_AUDIENCE_MODE_VALUES = [
+  "User",
+  "Team",
+  "Company",
+  "Role",
+] as const satisfies readonly NonNullable<NotificationLoadFilters[ "mode" ]>[];
 /**
  * EventKey is your "event identity".
  * - Enterprise recommended: bind this to NotificationActionKey (catalog) later
@@ -68,7 +107,7 @@ export type NotificationAudience =
   | { mode: "Company"; }
   | { mode: "Role"; roleKey: Role; }
   | { mode: "Team"; teamCode: string; }
-  | { mode: "User"; userId: string; };
+  | { mode: "User"; username: string; };
 
 /* =============================================================================
  * 03) Actor model (who triggered the event)

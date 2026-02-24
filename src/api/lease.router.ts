@@ -672,7 +672,7 @@ export default class Lease {
             audiences: [
               {
                 mode: 'User',
-                userId: INSERT_DATA.tenantInformation.tenantUsername
+                username: INSERT_DATA.tenantInformation.tenantUsername
               },
               {
                 mode: 'Role',
@@ -1138,7 +1138,7 @@ export default class Lease {
             audiences: [
               {
                 mode: 'User',
-                userId: result.tenantInformation.tenantUsername
+                username: result.tenantInformation.tenantUsername
               },
               {
                 mode: 'Role',
@@ -1234,7 +1234,7 @@ export default class Lease {
           audiences: [
             {
               mode: 'User',
-              userId: leaseAgreementDB.tenantInformation.tenantUsername
+              username: leaseAgreementDB.tenantInformation.tenantUsername
             },
             {
               mode: 'Role',
@@ -1459,7 +1459,7 @@ export default class Lease {
           audiences: [
             {
               mode: 'User',
-              userId: leaseWithProperty.tenantInformation.tenantUsername
+              username: leaseWithProperty.tenantInformation.tenantUsername
             },
             {
               mode: 'Role',

@@ -48,7 +48,7 @@ export class NotificationRecipientResolverRegistry {
 
         if ( audience.mode === "User" ) {
             if ( !this.userResolver ) return { usernames: [] };
-            return this.userResolver( audience.userId, ctx );
+            return this.userResolver( audience.username, ctx );
         }
 
         return { usernames: [] };

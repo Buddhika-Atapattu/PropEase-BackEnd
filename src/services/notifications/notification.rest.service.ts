@@ -1,21 +1,6 @@
 // Path: src/services/notifications/notification.rest.service.ts
 // =============================================================================
 // Notification Hub — REST Service (Controller-facing Command + Query Facade)
-// -----------------------------------------------------------------------------
-// PURPOSE:
-// - Controller-friendly façade for Notification Hub
-// - Owns all HTTP-input sanitization + mapping into engine/query calls
-// - Keeps controllers thin (ApiResponseBuilder stays in controller)
-// - exactOptionalPropertyTypes-safe: omit optionals, never pass undefined
-//
-// DESIGN:
-// - READ operations -> NotificationQueryService
-// - MUTATIONS -> NotificationHubEngineService (your hub already contains markRead/markAllRead/archiveOne)
-// - NO constructor parameters (your rule)
-//
-// IMPORTANT:
-// - 100% class-based
-// - TypeScript-strict, no `any`
 // =============================================================================
 
 import type { ClientSession } from "mongoose";
@@ -26,10 +11,24 @@ import type {
     NotificationLoadResponse,
     NotificationCountResponse,
     NotificationEmitInput,
+    NotificationInboxItemDto,
 } from "../../types/notification/notification.types";
+
+import {
+    NOTIFICATION_CATEGORY_VALUES,
+    NOTIFICATION_SEVERITY_VALUES,
+    NOTIFICATION_AUDIENCE_MODE_VALUES,
+} from "../../types/notification/notification.types";
+
+import type { Role } from "../../types/roles";
 
 import { NotificationQueryService } from "./notification.query.service";
 import { NotificationHubEngineService, type EmitResult } from "./notification-hub-engine.service";
+
+import type {
+    NotificationScope,
+    NotificationPriorityScope,
+} from "../../socket/events/notifications/notification.rpc.events";
 
 /* =============================================================================
  * A) REST payload shapes (controller -> service)
@@ -44,6 +43,22 @@ export interface NotificationInboxLoadHttpInput {
 export interface NotificationInboxCountHttpInput {
     username: string;
     filters: NotificationLoadFilters;
+    session?: ClientSession;
+}
+
+export interface NotificationScopeLoadHttpInput {
+    username: string;
+    roleKey: Role;
+    scope: NotificationScope;
+    priorityScope?: NotificationPriorityScope;
+    request: NotificationLoadRequest;
+    session?: ClientSession;
+}
+
+export interface NotificationScopeCountHttpInput {
+    username: string;
+    roleKey: Role;
+    filters?: NotificationLoadFilters;
     session?: ClientSession;
 }
 
@@ -78,28 +93,113 @@ export class NotificationRestService {
     private readonly hub: NotificationHubEngineService;
 
     public constructor () {
-        // ✅ NO constructor params (your rule)
-        this.query = new NotificationQueryService();
-        this.hub = new NotificationHubEngineService();
-    }
+      this.query = new NotificationQueryService();
+      this.hub = new NotificationHubEngineService();
+  }
 
     /* ===========================================================================
      * 1) Query operations (read-only)
      * ======================================================================== */
-
+ 
+    /**
+     * Load inbox list for the current user (default view).
+     *
+     * @param input.username
+     * - Expected: logged-in username
+     *
+     * @param input.request
+     * - Expected: NotificationLoadRequest (page/limit/filters)
+     *
+     * @param input.session
+     * - Optional mongoose ClientSession (transaction context)
+     */
     public async loadInbox( input: NotificationInboxLoadHttpInput ): Promise<NotificationLoadResponse> {
         const username = this.safeUsername( input.username );
-        const req = this.safeLoadRequest( input.request );
+        const req = this.safeLoadRequest( { ...input.request, username } );
 
-        // Query service is read-only and optimized for inbox list
-        return this.query.loadInboxForUser( username, req, input.session );
-    }
+      return this.query.loadInboxForUser( username, req, input.session );
+  }
 
+    /**
+     * Count inbox totals for current user (total + unread).
+     *
+     * @param input.username
+     * - Expected: logged-in username
+     *
+     * @param input.filters
+     * - Expected: NotificationLoadFilters
+     */
     public async countInbox( input: NotificationInboxCountHttpInput ): Promise<NotificationCountResponse> {
         const username = this.safeUsername( input.username );
         const filters = this.safeFilters( input.filters );
 
         return this.query.countInboxForUser( username, filters, input.session );
+    }
+
+    /**
+     * Load inbox by scope (user / role / company) and priorityScope.
+     * This is the REST backup of the WS RPC LIST_GET.
+     *
+     * @param input.username
+     * - Expected: logged-in username
+     *
+     * @param input.roleKey
+     * - Expected: current role (Role union)
+     *
+     * @param input.scope
+     * - Expected: "user" | "role" | "company"
+     *
+     * @param input.priorityScope
+     * - Optional: "all" | "prioritized" | "unprioritized"
+     *
+     * @param input.request
+     * - Expected: NotificationLoadRequest (page/limit/filters)
+     */
+    public async loadInboxByScope( input: NotificationScopeLoadHttpInput ): Promise<{
+        items: NotificationInboxItemDto[];
+        other: { total: number; unread: number; prioritized: number; unprioritized: number; };
+    }> {
+        const username = this.safeUsername( input.username );
+        const roleKey = this.safeRole( input.roleKey );
+
+        const scope = this.safeScope( input.scope );
+        const priorityScope = this.safePriorityScope( input.priorityScope );
+
+        const req: NotificationLoadRequest = {
+            username,
+            page: this.safePage( input.request?.page ),
+            limit: this.safeLimit( input.request?.limit ),
+            filters: this.safeFilters( input.request?.filters ),
+        };
+
+        return this.query.loadInboxForUserByScope(
+            username,
+            roleKey,
+            scope,
+            priorityScope,
+            req
+        );
+    }
+
+    /**
+     * Count scope totals (total/unread/prioritized/unprioritized).
+     * REST backup of WS COUNT_GET.
+     *
+     * @param input.username - current user
+     * @param input.roleKey  - current role
+     * @param input.filters  - optional filters for future extension
+     */
+    public async countScopes( input: NotificationScopeCountHttpInput ): Promise<{
+        total: number;
+        unread: number;
+        prioritized: number;
+        unprioritized: number;
+    }> {
+        const username = this.safeUsername( input.username );
+        const roleKey = this.safeRole( input.roleKey );
+        const filters = this.safeFilters( input.filters );
+
+        return this.query.countInboxForUserWithScopes( username, roleKey, filters );
     }
 
     /* ===========================================================================
@@ -110,120 +210,147 @@ export class NotificationRestService {
         if ( !input || !input.input ) {
             throw new Error( "NotificationRestService.emit: input is required." );
         }
-        return this.hub.emit( input.input, input.session );
-    }
+      return this.hub.emit( input.input, input.session );
+  }
 
-    /**
-     * Mark ONE inbox row read.
-     * Uses hub.markRead(username, inboxId, session?)
-     */
+  /**
+   * Mark ONE inbox row read.
+   *
+   * @param input.username - inbox owner username
+   * @param input.inboxId  - inbox row id (string)
+   */
     public async markRead( input: NotificationMarkReadHttpInput ): Promise<{ changed: boolean; }> {
         const username = this.safeUsername( input.username );
         const inboxId = this.safeId( input.inboxId, "inboxId" );
 
-        const changed = await this.hub.markRead( username, inboxId, input.session );
-        return { changed };
-    }
+      const changed = await this.hub.markRead( username, inboxId, input.session );
+      return { changed };
+  }
 
-    /**
-     * Mark ALL inbox rows read.
-     * Uses hub.markAllRead(username, session?)
-     */
+  /**
+   * Mark ALL inbox rows read.
+   *
+   * @param input.username - inbox owner username
+   */
     public async markAllRead( input: NotificationMarkAllReadHttpInput ): Promise<{ changedCount: number; }> {
         const username = this.safeUsername( input.username );
 
-        const changedCount = await this.hub.markAllRead( username, input.session );
-        return { changedCount };
-    }
+      const changedCount = await this.hub.markAllRead( username, input.session );
+      return { changedCount };
+  }
 
-    /**
-     * Archive ONE inbox row.
-     * Uses hub.archiveOne(username, inboxId, session?)
-     */
+  /**
+   * Archive ONE inbox row.
+   *
+   * @param input.username - inbox owner username
+   * @param input.inboxId  - inbox row id (string)
+   */
     public async archiveOne( input: NotificationArchiveOneHttpInput ): Promise<{ changed: boolean; }> {
         const username = this.safeUsername( input.username );
         const inboxId = this.safeId( input.inboxId, "inboxId" );
 
-        const changed = await this.hub.archiveOne( username, inboxId, input.session );
-        return { changed };
-    }
+      const changed = await this.hub.archiveOne( username, inboxId, input.session );
+      return { changed };
+  }
 
     /* =============================================================================
      * C) Sanitizers (exactOptionalPropertyTypes-safe)
      * ========================================================================== */
 
-    private safeUsername( v: string ): string {
+    private safeUsername( v: unknown ): string {
         const u = typeof v === "string" ? v.trim() : "";
-        if ( !u ) {
-            throw new Error( "NotificationRestService: username is required." );
-        }
-        return u;
-    }
+      if ( !u ) throw new Error( "NotificationRestService: username is required." );
+      return u;
+  }
+
+    private safeRole( v: unknown ): Role {
+        const s = typeof v === "string" ? v.trim() : "";
+      if ( !s ) throw new Error( "NotificationRestService: role is required." );
+      return s as Role;
+  }
 
     private safeId( v: unknown, label: string ): string {
         const s = typeof v === "string" ? v.trim() : "";
-        if ( !s ) {
-            throw new Error( `NotificationRestService: ${ label } is required.` );
-        }
-        return s;
+        if ( !s ) throw new Error( `NotificationRestService: ${ label } is required.` );
+      return s;
+  }
+
+    private safeScope( v: unknown ): NotificationScope {
+        if ( v === "user" || v === "role" || v === "company" ) return v;
+        throw new Error( "NotificationRestService: invalid scope." );
     }
 
-    private safeFilters( filters: NotificationLoadFilters ): NotificationLoadFilters {
-        const out: NotificationLoadFilters = {};
-
-        if ( filters.category ) out.category = filters.category;
-        if ( filters.severity ) out.severity = filters.severity;
-        if ( filters.mode ) out.mode = filters.mode;
-
-        const search = this.safeString( filters.search );
-        if ( search ) out.search = search;
-
-        const from = this.safeIso( filters.from );
-        if ( from ) out.from = from;
-
-        const to = this.safeIso( filters.to );
-        if ( to ) out.to = to;
-
-        if ( typeof filters.unreadOnly === "boolean" ) out.unreadOnly = filters.unreadOnly;
-        if ( typeof filters.includeDeleted === "boolean" ) out.includeDeleted = filters.includeDeleted;
-
-        return out;
+    private safePriorityScope( v: unknown ): NotificationPriorityScope {
+        if ( v === "prioritized" || v === "unprioritized" || v === "all" ) return v;
+        return "all";
     }
 
     private safeLoadRequest( req: NotificationLoadRequest ): NotificationLoadRequest {
-        const page = this.safePage( req.page );
-        const limit = this.safeLimit( req.limit );
-        const username = this.safeUsername( req.username );
+        const username = this.safeUsername( req?.username );
+        const page = this.safePage( req?.page );
+        const limit = this.safeLimit( req?.limit );
 
-        // ✅ NotificationLoadRequest.filters is REQUIRED by your contract
-        const filters = req.filters ? this.safeFilters( req.filters ) : this.safeFilters( {} );
+      // filters is required by your contract; if missing, use empty object
+      const filters = this.safeFilters( req?.filters );
 
-        // ✅ Correct property name: "filters"
-        return { username, filters, page, limit };
+      return { username, filters, page, limit };
+  }
+
+    private safeFilters( filters: unknown ): NotificationLoadFilters {
+        const raw = filters && typeof filters === "object" ? ( filters as Record<string, unknown> ) : {};
+        const out: NotificationLoadFilters = {};
+
+      // category
+      if ( this.isNonEmptyString( raw[ "category" ] ) ) {
+          const cat = this.asEnumLiteral( raw[ "category" ], NOTIFICATION_CATEGORY_VALUES );
+          if ( cat ) out.category = cat;
+      }
+
+      // severity
+      if ( this.isNonEmptyString( raw[ "severity" ] ) ) {
+          const sev = this.asEnumLiteral( raw[ "severity" ], NOTIFICATION_SEVERITY_VALUES );
+          if ( sev ) out.severity = sev;
+      }
+
+      // mode
+      if ( this.isNonEmptyString( raw[ "mode" ] ) ) {
+          const mode = this.asEnumLiteral( raw[ "mode" ], NOTIFICATION_AUDIENCE_MODE_VALUES );
+          if ( mode ) out.mode = mode;
     }
 
-    private safeString( v: unknown ): string {
-        if ( typeof v === "string" ) return v.trim();
-        if ( typeof v === "number" ) return String( v );
-        return "";
+      // search
+      if ( this.isNonEmptyString( raw[ "search" ] ) ) out.search = raw[ "search" ].trim();
+
+      // from/to (best-effort ISO strings)
+      if ( this.isNonEmptyString( raw[ "from" ] ) ) out.from = raw[ "from" ].trim();
+      if ( this.isNonEmptyString( raw[ "to" ] ) ) out.to = raw[ "to" ].trim();
+
+      // booleans
+      if ( typeof raw[ "unreadOnly" ] === "boolean" ) out.unreadOnly = raw[ "unreadOnly" ];
+      if ( typeof raw[ "includeDeleted" ] === "boolean" ) out.includeDeleted = raw[ "includeDeleted" ];
+      if ( typeof raw[ "includeArchived" ] === "boolean" ) out.includeArchived = raw[ "includeArchived" ];
+
+      return out;
+  }
+
+    private safePage( v: unknown ): number {
+        const n = Number( v );
+        if ( !Number.isFinite( n ) || n < 1 ) return 1;
+        return Math.floor( n );
     }
 
-    private safeIso( v: unknown ): string {
-        const s = this.safeString( v );
-        if ( !s ) return "";
-        if ( !/^\d{4}-\d{2}-\d{2}T/.test( s ) ) return "";
-        return s;
-    }
-
-    private safePage( page: number ): number {
-        const p = Number( page );
-        if ( !Number.isFinite( p ) || p < 1 ) return 1;
-        return Math.floor( p );
-    }
-
-    private safeLimit( limit: number ): number {
-        const n = Number( limit );
+    private safeLimit( v: unknown ): number {
+        const n = Number( v );
         if ( !Number.isFinite( n ) || n < 1 ) return 10;
         return Math.min( Math.floor( n ), 100 );
+    }
+
+    private asEnumLiteral<T extends string>( value: string, allowed: readonly T[] ): T | null {
+        const v = value.trim() as T;
+        return allowed.includes( v ) ? v : null;
+    }
+
+    private isNonEmptyString( v: unknown ): v is string {
+        return typeof v === "string" && v.trim().length > 0;
     }
 }

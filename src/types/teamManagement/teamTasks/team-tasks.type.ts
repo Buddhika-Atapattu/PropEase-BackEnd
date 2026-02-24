@@ -244,6 +244,12 @@ export interface TeamTaskSortInput {
 // advanced: future-proof (e.g., metrics, evidence heavy)
 // ─────────────────────────────────────────────
 export type TeamTaskLoadMode = "minimal" | "full" | "users" | "advanced";
+export const TEAM_TASK_LOAD_MODES: TeamTaskLoadMode[] = [
+  "minimal",
+  "full",
+  "users",
+  "advanced",
+];
 
 // ─────────────────────────────────────────────
 // Filters (service-level)
