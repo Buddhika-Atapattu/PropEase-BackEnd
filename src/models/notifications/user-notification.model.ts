@@ -80,7 +80,7 @@ class UserNotifUtil {
  * ========================================================================== */
 export interface UserNotificationEntity extends Document {
   userId: string;
-  username?: string;
+  username: string;
 
   notificationId: Types.ObjectId | string;
 
@@ -173,7 +173,7 @@ class UserNotificationSchemaFactory {
 
         username: {
           type: String,
-          required: false,
+          required: true,
           index: true,
           trim: true,
           set: UserNotifUtil.sanitizeUsername,

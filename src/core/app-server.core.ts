@@ -118,6 +118,7 @@ import { NotificationDeliveryBootstrap } from "../bootstrap/notifications/notifi
 // DO NOT commit this in production branches.
 // ─────────────────────────────────────────────────────────────────────────────
 import { DevKpiRunner } from "../dev/kpi-dev-runner";
+import { GuardTokenService } from "../services/guard-token.service";
 
 
 const isProd: boolean = NODE_ENV === "production";
@@ -131,7 +132,7 @@ const APP_TAG: string = "PropEase";
 const ALLOWED_HOST: Set<string> = new Set(
   String( ALLOWED_HOSTS || "localhost:3000" )
     .split( "," )
-    .map((s: string) => s.trim().toLowerCase())
+    .map( ( s: string ) => s.trim().toLowerCase() )
     .filter( Boolean ),
 );
 
@@ -189,43 +190,47 @@ export class AppServer {
 
 
   // Background jobs (optional)
-  private autoDeleteUserService!: AutoDeleteUserService;
+  private autoDeleteUserService: AutoDeleteUserService | null = null;
 
   // Socket runtime (set during boot)
-  private socketServer!: SocketServer;
-  private io!: TypedNamespace;
-  private socketConnectionHandler!: SocketConnectionHandler;
+  private socketServer: SocketServer | null = null;
+  private io: TypedNamespace | null = null;
+  private socketConnectionHandler: SocketConnectionHandler | null = null;
 
   // DB readiness guard (blocks traffic if DB drops)
   private readonly databaseReadyGuard: RequestHandler;
 
-  public constructor() {
+  private isShuttingDown: boolean = false;
+
+  // Services
+
+  public constructor () {
     this.app = express();
-    this.httpServer = http.createServer(this.app);
+    this.httpServer = http.createServer( this.app );
 
     // ─────────────────────────────────────────────────────────────────────────
     // Observability setup
     // ─────────────────────────────────────────────────────────────────────────
-    this.logger = new LoggerMiddleware({
+    this.logger = new LoggerMiddleware( {
       prefix: APP_TAG,
       userAgentTokens: 2,
-    });
+    } );
 
-    this.corsDebug = new CorsDebug({
+    this.corsDebug = new CorsDebug( {
       verbose: false,
       prefix: APP_TAG,
-    });
+    } );
 
-    this.monitor = new TrafficMonitor({
+    this.monitor = new TrafficMonitor( {
       logDir: path.join( process.cwd(), "public", "trace" ),
       maxBodyBytes: isProd ? 256 : 1024,
       logHeaders: false,
       tag: APP_TAG,
       echoDev: false,
       echoProd: true,
-    });
+    } );
 
-    this.errorMonitor = new InternalErrorMonitor(APP_TAG);
+    this.errorMonitor = new InternalErrorMonitor( APP_TAG );
 
     // ─────────────────────────────────────────────────────────────────────────
     // Database (DO NOT init notification resolvers here)
@@ -236,14 +241,14 @@ export class AppServer {
     // CORS
     // ─────────────────────────────────────────────────────────────────────────
     this.corsOptions = {
-      origin: (origin, cb) => {
+      origin: ( origin, cb ) => {
         const allowList: Set<string> = new Set<string>(
           [ "http://localhost:4200", ( FRONTEND_ORIGIN || "" ).trim() ].filter( Boolean ),
         );
 
         // If origin is missing (same-origin / curl / server-to-server), allow.
-        if (!origin || allowList.has(origin)) {
-          cb(null, true);
+        if ( !origin || allowList.has( origin ) ) {
+          cb( null, true );
           return;
         }
 
@@ -279,28 +284,28 @@ export class AppServer {
      * - Required when you are behind reverse proxy (nginx, cloudflare, etc.)
      * - Makes req.ip / secure cookies behave correctly.
      */
-    this.app.set("trust proxy", true);
+    this.app.set( "trust proxy", true );
 
     // ─────────────────────────────────────────────────────────────────────────
     // Global rate limiter
     // ─────────────────────────────────────────────────────────────────────────
-    this.rateLimiter = rateLimit({
+    this.rateLimiter = rateLimit( {
       windowMs: isProd ? 60_000 : 30_000,
       max: isProd ? 200 : 500,
       standardHeaders: true,
       legacyHeaders: false,
-      keyGenerator: (req: Request, _res: Response): string => {
+      keyGenerator: ( req: Request, _res: Response ): string => {
         // local dev shortcut: keep stable key so you don't get blocked
         if ( req.ip === "::1" || req.ip === "127.0.0.1" ) return "internal";
         return ipKeyGenerator( req.ip || "", 64 );
       },
       skip: ( req: Request ): boolean => req.path === "/api/health",
-    });
+    } );
 
     // ─────────────────────────────────────────────────────────────────────────
     // Login rate limiter (auth endpoints)
     // ─────────────────────────────────────────────────────────────────────────
-    this.loginRateLimiter = rateLimit({
+    this.loginRateLimiter = rateLimit( {
       windowMs: 15 * 60_000,
       max: 20,
       standardHeaders: true,
@@ -309,7 +314,7 @@ export class AppServer {
         status: "error",
         message: "Too many login attempts. Please try again later.",
       },
-    });
+    } );
 
     // ─────────────────────────────────────────────────────────────────────────
     // Routers instantiation (no sockets required here)
@@ -343,10 +348,10 @@ export class AppServer {
     // ─────────────────────────────────────────────────────────────────────────
     // Controllers/services
     // ─────────────────────────────────────────────────────────────────────────
-    this.reportController = new ReportController({
+    this.reportController = new ReportController( {
       logDir: path.join( process.cwd(), "public", "trace", "security" ),
       appTag: APP_TAG,
-    });
+    } );
 
     this.authController = new AuthController();
     this.mfaController = new MfaController();
@@ -354,8 +359,8 @@ export class AppServer {
     // ─────────────────────────────────────────────────────────────────────────
     // DB readiness guard
     // ─────────────────────────────────────────────────────────────────────────
-    this.databaseReadyGuard = (_req: Request, res: Response, next: NextFunction) => {
-      if (!this.db.isConnected()) {
+    this.databaseReadyGuard = ( _req: Request, res: Response, next: NextFunction ) => {
+      if ( !this.db.isConnected() ) {
         ApiResponseBuilder.error( res, 403, "Database is not ready yet!" );
         return;
       }
@@ -367,13 +372,13 @@ export class AppServer {
     this.errorMonitor.install();
 
     // Kick async boot
-    void this.boot().catch((err: unknown) => {
+    void this.boot().catch( ( err: unknown ) => {
       // eslint-disable-next-line no-console
       console.error( "[Error:] [AppServer] Fatal boot error:\n", err, "\n" );
-      process.exit(1);
-    });
+      process.exit( 1 );
+    } );
 
-    NotificationDeliveryBootstrap.init()
+
   }
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -383,6 +388,7 @@ export class AppServer {
     // 1) DB connect
     await this.db.connect();
 
+
     // ✅ Part A: wire notification recipient resolvers AFTER DB is ready
     NotificationResolversBootstrap.init();
 
@@ -390,7 +396,7 @@ export class AppServer {
     const hello = await this.db.handshake( "prop-ease-api" );
 
     // 3) HTTP security / infra
-    const hostGuard = new HostGuardMiddleware(ALLOWED_HOST, isProd, APP_TAG);
+    const hostGuard = new HostGuardMiddleware( ALLOWED_HOST, isProd, APP_TAG );
 
     const httpBootstrap = new HttpSecurityBootstrap(
       this.app,
@@ -407,7 +413,7 @@ export class AppServer {
     httpBootstrap.configureStaticAndDenyList();
 
     // 4) Socket bootstrap (must happen before controllers needing handler)
-    const socketBootstrap = new SocketBootstrap(this.httpServer, this.monitor);
+    const socketBootstrap = new SocketBootstrap( this.httpServer, this.monitor );
     const {
       socketServer,
       io,
@@ -421,17 +427,21 @@ export class AppServer {
     this.io = io;
     this.socketConnectionHandler = socketConnectionHandler;
 
+
+
+    NotificationDeliveryBootstrap.init();
+
     // Background jobs may rely on io
-    this.autoDeleteUserService = new AutoDeleteUserService(this.io);
+    this.autoDeleteUserService = new AutoDeleteUserService( this.io );
 
     // 6) Attach socket references to Express app locals (optional but useful)
     this.attachSocketToApp();
 
     // 7) Gate requests on DB readiness
-    this.app.use(this.databaseReadyGuard);
+    this.app.use( this.databaseReadyGuard );
 
     // 8) Route bootstrap (ALL mounts must be here)
-    const routesBootstrap = new RoutesBootstrap({
+    const routesBootstrap = new RoutesBootstrap( {
       app: this.app,
       db: this.db,
       io: this.io,
@@ -465,7 +475,7 @@ export class AppServer {
 
       commentsEngineRouter: this.commentsEngineRouter,
       recyclebin: this.recycleBin,
-    });
+    } );
 
     routesBootstrap.registerAll();
     routesBootstrap.registerNotFoundAndErrorHandlers(
@@ -474,11 +484,11 @@ export class AppServer {
 
     // 9) DB change streams → notifications (only when DB supports it)
     if ( hello.changeStreams ) {
-      if (!isProd) {
+      if ( !isProd ) {
         // eslint-disable-next-line no-console
         console.log( "[Info:] [Notifications] Change streams enabled.\n" );
       }
-    } else if (!isProd) {
+    } else if ( !isProd ) {
       // eslint-disable-next-line no-console
       console.log(
         "[Warning:] [Notifications] Change streams unavailable — running without watchers.\n",
@@ -506,34 +516,56 @@ export class AppServer {
   // ───────────────────────────────────────────────────────────────────────────
   // Start server + graceful shutdown
   // ───────────────────────────────────────────────────────────────────────────
-  public listen(port?: number): void {
-    const resolvedPort: number = Number(port ?? APP_PORT ?? 3000);
+  public listen( port?: number ): void {
+    const resolvedPort: number = Number( port ?? APP_PORT ?? 3000 );
 
     this.httpServer.listen( resolvedPort, "0.0.0.0", () => {
       // eslint-disable-next-line no-console
       console.log(
         `[Server:]🚀 ${ APP_TAG } API on http://localhost:${ resolvedPort } (Socket.IO ready)\n`,
       );
-    });
+    } );
 
     const shutdown = async ( signal: "SIGINT" | "SIGTERM" ): Promise<void> => {
-      // eslint-disable-next-line no-console
+      if ( this.isShuttingDown ) return;
+      this.isShuttingDown = true;
+
       console.log( `[Server:] ${ signal } received — shutting down…\n` );
 
-      this.httpServer.close(() => {
-        // eslint-disable-next-line no-console
-        console.log( "[Info:] HTTP server closed.\n" );
-      });
+      // Mark shutdown state for other components
+      this.app.set( "isShuttingDown", true );
 
+      // 1) Disconnect sockets FIRST (stops guardTimer/wsTokenTimer races)
+      try {
+        if ( this.io ) {
+          this.io.disconnectSockets( true );
+          console.log( "[Info:] [AppServer] All sockets disconnected.\n" );
+        }
+      } catch ( e: unknown ) {
+        console.warn( "[Warning:] [AppServer] Socket shutdown failed:\n", e, "\n" );
+      }
+
+      // 2) Stop accepting new HTTP connections
+      try {
+        this.httpServer.close();
+        console.log( "[Info:] [AppServer] HTTP server closing.\n" );
+      } catch ( e: unknown ) {
+        console.warn( "[Warning:] [AppServer] HTTP close failed:\n", e, "\n" );
+      }
+
+      // 3) Close DB LAST
       try {
         await this.db.close();
+      } catch ( error: unknown ) {
+        console.error( "[Error:] [AppServer] DB close failed:\n", error, "\n" );
       } finally {
-        // give time for logs/connections to flush
-        setTimeout(() => process.exit(0), 1500).unref();
+        setTimeout( () => process.exit( 0 ), 800 ).unref();
       }
     };
 
     process.on( "SIGINT", () => void shutdown( "SIGINT" ) );
     process.on( "SIGTERM", () => void shutdown( "SIGTERM" ) );
   }
+
+
 }

@@ -40,6 +40,7 @@ import {
 
 import type { Role } from "../types/roles";
 import type { AuthUser, AuthUserNormalized } from "../types/common";
+import { MongoIdUtil } from "../utils/mongo-id.util";
 
 // =============================================================================
 // Local helpers (keep this file self-contained + type-safe)
@@ -567,7 +568,11 @@ export class ApiGuardExport {
 
     public static async GetAuthUser( req: Request ): Promise<AuthUser | null> {
         const user: User | null = await ApiGuardExport.ApiGuardMain.getLoggedUser( req );
-        if ( !user ) return null;
+
+        if ( !user ) {
+            console.error( '[Error:] [ApiRouterGuard:] Invalid user. Cannot process AuthUser.\n' );
+            return null;
+        };
 
         const authUser: AuthUser = {
             role: user.role,
@@ -576,19 +581,27 @@ export class ApiGuardExport {
             userId: user._id,
         };
 
+        console.log( '[Info:] [ApiRouterGuard:] Valid AuthUser \n' );
+
         return authUser;
     }
 
     public static async GetNormalisedAuthUser( req: Request ): Promise<AuthUserNormalized | null> {
         const user: User | null = await ApiGuardExport.ApiGuardMain.getLoggedUser( req );
-        if ( !user ) return null;
+
+        if ( !user ) {
+            console.error( '[Error:] [ApiRouterGuard:] Invalid user. Cannot process AuthUserNormalized.\n' );
+            return null;
+        };
 
         const authUser: AuthUserNormalized = {
             role: user.role,
             username: user.username,
             name: user.name,
-            userId: String( ( user as unknown as { _id?: unknown; } )._id ?? "" ),
+            userId: MongoIdUtil.toIdString( user._id ),
         };
+
+        console.log( '[Info:] [ApiRouterGuard:] Valid AuthUserNormalized \n' )
 
         return authUser;
     }

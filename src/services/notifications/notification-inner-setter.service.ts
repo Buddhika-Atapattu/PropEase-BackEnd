@@ -30,6 +30,8 @@
 // =============================================================================
 
 import { DEFAULT_ROLES } from "../../models/user.model";
+import { NotificationIconMapSource } from "../../source/notifications/icon-map.source";
+import { NotificationTextTemplateSource } from "../../source/notifications/text-template.source";
 import {
   ACTION_KEY_LOOKUP,
   type NotificationActionKey,
@@ -149,12 +151,17 @@ export class NotificationInnerSetterService {
     const category = normalized.category ?? defaults.category;
     const severity = normalized.severity ?? defaults.severity;
 
-    const title = this.renderTemplate(defaults.titleTpl, normalized.vars);
-    const body = this.renderTemplate(defaults.bodyTpl, normalized.vars);
+    const text = NotificationTextTemplateSource.build( input );
 
-    const icon = normalized.icon ?? defaults.icon;
+    // const title = this.renderTemplate(defaults.titleTpl, normalized.vars);
+    // const body = this.renderTemplate(defaults.bodyTpl, normalized.vars);
+    const title = text.title;
+    const body = text.body;
+
+
     const tags = this.mergeTags(normalized.tags, defaults.tags);
     const target = this.mergeTarget(defaults.target, normalized.target);
+    const icon = normalized.icon ?? defaults.icon ?? NotificationIconMapSource.getIcon( target?.actionKey ?? '' );
     const delivery = this.normalizeDelivery(normalized.delivery);
 
     const out: BuiltNotificationCore = {
@@ -304,7 +311,7 @@ export class NotificationInnerSetterService {
    * - Legacy support: input.audience will be converted to audiences[].
    * ========================================================================= */
   private normalizeInput(input: NotificationEmitInput): NotificationEmitInput {
-    const eventKey = this.safeString(input.eventKey);
+    const eventKey = this.safeActionKey( input.eventKey );
     if (!eventKey) {
       throw new Error("NotificationInnerSetterService: eventKey is required.");
     }
@@ -319,7 +326,9 @@ export class NotificationInnerSetterService {
 
     const vars = this.normalizeVars(input.vars);
 
-    const out: NotificationEmitInput = { eventKey, audiences, actor };
+
+
+    const out: NotificationEmitInput = { eventKey, audiences, actor, };
 
     if (input.target) out.target = this.normalizeTarget(input.target);
     if (vars) out.vars = vars;

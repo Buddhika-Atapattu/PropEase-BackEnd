@@ -20,7 +20,7 @@ import { Types, startSession, type ClientSession } from "mongoose";
 
 import { ApiGuardExport } from "../guard/api-router.guard";
 
-import type { AuthUser } from "../types/common";
+import type { AuthUser, AuthUserNormalized } from "../types/common";
 import type { FileMetaPacket } from "../types/common";
 import twilio, { Twilio } from "twilio";
 
@@ -294,6 +294,12 @@ export default class UserRoute {
 
   private async getActor( req: Request ): Promise<AuthUser> {
     const actor = await ApiGuardExport.GetAuthUser( req );
+    if ( !actor ) throw new Error( "Unauthorized: actor missing" );
+    return actor;
+  }
+
+  private async getNormalisedActor( req: Request ): Promise<AuthUserNormalized> {
+    const actor = await ApiGuardExport.GetNormalisedAuthUser( req );
     if ( !actor ) throw new Error( "Unauthorized: actor missing" );
     return actor;
   }
@@ -670,8 +676,8 @@ export default class UserRoute {
 
           const safeUser: User = newUserDoc.toSafeDTO();
 
-          this.notificationHub.emit( {
-            eventKey: 'user:account:created',
+          await this.notificationHub.emit( {
+            eventKey: 'user:account.created',
             actor: notificationActor,
             audiences: [
               {
@@ -959,7 +965,7 @@ export default class UserRoute {
             teamCodes: author.teamCodes ?? [],
           };
 
-          this.notificationHub.emit( {
+          await this.notificationHub.emit( {
             eventKey: 'user:account.updated',
             actor: notificationActor,
             audiences: [
@@ -1878,12 +1884,18 @@ export default class UserRoute {
   private deleteUserByUsername(): void {
     this.router.delete(
       "/user-delete/:username",
-      async ( req: Request<{ username: string; }>, res: Response ): Promise<void> => {
+      async ( req: Request<{ username: string; mode: string; }>, res: Response ): Promise<void> => {
         try {
           // ===================================================================
           // 0) Who is performing the action? (use your guard actor, not a param)
           // ===================================================================
           const actor = await this.getActor( req );
+          const normalisedActor = await this.getNormalisedActor( req );
+
+          if ( !actor || !normalisedActor ) {
+            ApiResponseBuilder.validationError( res, 'Auth user is required!' );
+            return;
+          }
 
           // ===================================================================
           // 1) Validate input
@@ -1960,8 +1972,9 @@ export default class UserRoute {
             // - Must delete the domain record using the same session
             // - Engine already finished durability before this is called
             // ===============================================================
-            deleteDbRecord: async ( session: ClientSession ): Promise<void> => {
-              await UserModel.deleteOne( { username }, { session } );
+            deleteDbRecord: async ( session?: ClientSession ): Promise<void> => {
+              const opts = session ? { session } : {};
+              await UserModel.deleteOne( { username }, opts );
             },
           };
 
@@ -1970,25 +1983,18 @@ export default class UserRoute {
           // ===================================================================
           const result = await this.deleteSvc.deleteWithRecycleBin( actor, plan );
 
+
           // ===================================================================
           // 7) Genanrate Notificaation
           // ===================================================================
 
-          const notificationActor: NotificationActorDto = {
-            role: actor.role,
-            userId: String( actor.userId ),
-            username: actor.username,
-            branchId: actor.branchId ?? '',
-            teamCodes: actor.teamCodes ?? [],
-          };
-
-          this.notificationHub.emit( {
+          await this.notificationHub.emit( {
             eventKey: 'user:account.deleted',
-            actor: notificationActor,
+            actor: normalisedActor,
             audiences: [
               {
                 mode: 'User',
-                username: actor.username
+                username: normalisedActor.username
               },
               {
                 mode: 'Role',
@@ -2010,17 +2016,17 @@ export default class UserRoute {
             target: {
               category: 'User',
               module: 'User',
-              refId: userDoc.username ?? userDoc._id,
+              refId: userDoc.username,
               actionKey: 'user:account.deleted',
-              params: { username: userDoc.username }
+              params: { recycleItemRef: result.entry.entryId }
             },
             delivery: {
               audit: true,
               mq: true,
               email: true,
-              sms: false,
-              push: false,
-              external: false,
+              sms: true,
+              push: true,
+              external: true,
             },
             category: 'User',
           } );

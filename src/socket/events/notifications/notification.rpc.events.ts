@@ -101,8 +101,9 @@ export interface WsMarkAllReadRes {
  * WS RPC event keys
  */
 export class NotificationRpcEvents {
-  public static readonly INBOX_LIST = "notification:rpc:inbox:list";
-  public static readonly INBOX_COUNTS = "notification:rpc:inbox:counts";
-  public static readonly MARK_READ = "notification:rpc:mark:read";
-  public static readonly MARK_ALL_READ = "notification:rpc:mark:all-read";
+  public static readonly INBOX_LIST = "notify:rpc:inbox:list";
+  public static readonly INBOX_COUNTS = "notify:rpc:inbox:counts";
+  public static readonly MARK_READ = "notify:rpc:mark:read";
+  public static readonly MARK_ALL_READ = "notify:rpc:mark:all-read";
+  public static readonly ARCHIVE_ONE = "notify:rpc:archive:one";
 }

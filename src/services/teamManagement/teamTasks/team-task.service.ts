@@ -58,6 +58,7 @@ import {
 
 import { FileMetaPacketBuilder } from "../../../utils/files/file-meta-packet.builder";
 import { ApiGuardExport } from "../../../guard/api-router.guard";
+import type { RecycleRecordResult } from "../../recyclebin/recyclebin-engine.service";
 
 // ----------------------------------------------------------------------------
 // Local lean shapes used by service
@@ -575,9 +576,11 @@ export class TeamTaskService {
    * @param ctx
    * - Optional WS context for routing
    */
-  public async delete( taskMongoId: string, req: Request, ctx?: TeamTaskWsContext ): Promise<boolean> {
+  public async delete( taskMongoId: string, req: Request, ctx?: TeamTaskWsContext ): Promise<{
+    entry: RecycleRecordResult;
+  } | null> {
     const existing = await TeamTaskModel.findById( this.toObjectId( taskMongoId ) ).lean<LeanRow>().exec();
-    if ( !existing ) return false;
+    if ( !existing ) return null;
 
     const actor: AuthUser | null = await ApiGuardExport.GetAuthUser( req );
     if ( !actor ) {
@@ -603,18 +606,19 @@ export class TeamTaskService {
       refId: String( existing._id ?? existing.id ),
       snapshotData: this.toJsonSafeSnapshot( existing ),
       files: filesScan,
-      deleteDbRecord: async ( session: ClientSession ): Promise<void> => {
-        await TeamTaskModel.deleteOne( { _id: this.toObjectId( taskMongoId ) }, { session } ).exec();
+      deleteDbRecord: async ( session?: ClientSession ): Promise<void> => {
+        const opts = session ? { session } : {};
+        await TeamTaskModel.deleteOne( { _id: this.toObjectId( taskMongoId ) }, { opts } ).exec();
       },
     };
 
-    await this.recycleBinDomainDeleteService.deleteWithRecycleBin( actor, deletePlan );
+    const deleted = await this.recycleBinDomainDeleteService.deleteWithRecycleBin( actor, deletePlan );
 
     const dto = this.toDtoMinimal( existing );
     const ctxWithUsers = await this.withResolvedCtx( dto, ctx );
 
     this.socket.emitTaskDeleted( dto, ctxWithUsers );
-    return true;
+    return deleted;
   }
 
   // ──────────────────────────────────────────────────────────────────────────

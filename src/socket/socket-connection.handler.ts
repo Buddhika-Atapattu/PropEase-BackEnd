@@ -2,15 +2,13 @@
 // ============================================================================
 // SocketConnectionHandler (READ-ONLY SINGLETON)
 // ----------------------------------------------------------------------------
-// ✅ GOAL
-// - Centralize ALL room joins for the entire platform.
-// - Fix Notification role-room mismatch: join BOTH
-//     role:<ROLE>      (legacy)
-//     aud.role.<ROLE>  (notifications standard)
-//
-// FUTURE-PROOF
-// - If AuthUser later carries extra audience rooms (authUser.audRooms[]),
-//   handler auto-joins them without code changes.
+// ✅ Joins ONLY universal rooms:
+//     user:<username>
+//     role:<role>
+//     team:<teamCode>
+//     company
+// - Keeps session:<token> for auth/security kill switch.
+// - Keeps broadcast (optional global)
 // ============================================================================
 
 import { GuardTokenService } from "../services/guard-token.service";
@@ -32,6 +30,8 @@ import type {
 import type { AuthUser } from "../types/common";
 import { SocketRooms } from "./events/rooms/socket.rooms";
 import type { NotificationPayload } from "./socket-types.type";
+import { NotificationRoomsJoinHelper } from "./helpers/notification-room-join.helper";
+
 
 // WsTokenPushPayload (BE → FE) after wsToken rotation
 type WsTokenPushPayload = {
@@ -71,7 +71,6 @@ export class SocketConnectionHandler {
     this.wsTokenRegistry = wsTokenRegistry;
   }
 
-  // Bootstrap-only singleton init
   public static Init(
     nsp: TypedNamespace,
     authHelper: SocketAuthHelper,
@@ -89,9 +88,7 @@ export class SocketConnectionHandler {
     const handler = new SocketConnectionHandler( nsp, authHelper, guardTokenService, wsTokenRegistry );
     SocketConnectionHandler._instance = handler;
 
-    // eslint-disable-next-line no-console
     console.log( "[Success:] [SocketConnectionHandler] Instance initialized by system (Init).\n" );
-
     return handler;
   }
 
@@ -139,7 +136,6 @@ export class SocketConnectionHandler {
       const authUser = socket.data.authUser as AuthUser | undefined;
 
       if ( !authUser?.username || !authUser.role ) {
-        // eslint-disable-next-line no-console
         console.warn(
           "[Warning:] [SocketConnectionHandler] Missing authUser on connection – disconnecting socket:",
           socket.id,
@@ -149,98 +145,72 @@ export class SocketConnectionHandler {
         return;
       }
 
-      // 1) Join KPI / audience rooms (aud.*.*)
-      this.joinAudienceRoomsFromAuth( socket, authUser );
-
-      // 2) Validate wsToken (your existing security)
+      // 1) Validate wsToken (security)
       await this.tryConsumeWsToken( socket, authUser );
 
-      // 3) Join base rooms (user/session/role/broadcast + aud.role)
-      this.joinBaseRooms( socket, authUser );
+      // 2) Join universal rooms
+      this.joinUniversalRooms( socket, authUser );
 
-      // eslint-disable-next-line no-console
+      NotificationRoomsJoinHelper.joinForAuth( socket, authUser );
+
       console.log(
         "[Success:] ✅ Socket connected:",
         authUser.username,
         `(role=${ authUser.role }) id=${ socket.id }\n`
       );
 
-      // 4) Start lifecycle engine
+      // 3) Start lifecycle engine
       this.handleConnectionLifecycle( socket, authUser );
     } );
   }
 
   // ==========================================================================
-  // Audience join (KPI + Notifications + future modules)
+  // Universal rooms join
   // ==========================================================================
-  private joinAudienceRoomsFromAuth( socket: TypedSocket, authUser: AuthUser ): void {
-    // KPI baseline (your runtime expects these)
-    socket.join( SocketRooms.audOrg( "org" ) );
-
-    if ( typeof authUser.sub === "string" && authUser.sub.trim() ) {
-      socket.join( SocketRooms.audMember( authUser.sub.trim() ) );
-    }
-
-    if ( Array.isArray( authUser.teamCodes ) && authUser.teamCodes.length > 0 ) {
-      for ( const t of authUser.teamCodes ) {
-        if ( typeof t === "string" && t.trim() ) {
-          socket.join( SocketRooms.audTeam( t.trim() ) );
-        }
-      }
-    }
-
-    if ( typeof authUser.branchId === "string" && authUser.branchId.trim() ) {
-      socket.join( SocketRooms.audBranch( authUser.branchId.trim() ) );
-    }
-
-    /**
-     * FUTURE: auto-join additional audience rooms (HR/Finance/etc.)
-     * - Backward compatible: only used if the property exists.
-     * - You can add these later into AuthUser JWT without editing this handler.
-     */
-    const extraRooms = ( authUser as unknown as { audRooms?: unknown; } ).audRooms;
-    if ( Array.isArray( extraRooms ) ) {
-      for ( const r of extraRooms ) {
-        const room = typeof r === "string" ? r.trim() : "";
-        if ( room && SocketAuthHelper.isValidRoomName( room ) ) {
-          socket.join( room );
-        }
-      }
-    }
-
-    // eslint-disable-next-line no-console
-    console.log( "[Info:] [SocketConnectionHandler] Audience rooms joined.\n" );
-  }
-
-  // ==========================================================================
-  // Base rooms (MUST include aud.role.<ROLE> for notification delivery)
-  // ==========================================================================
-  private joinBaseRooms( socket: TypedSocket, user: AuthUser ): void {
+  private joinUniversalRooms( socket: TypedSocket, user: AuthUser ): void {
     socket.join( SocketRooms.user( user.username ) );
-    socket.join( SocketRooms.role( String( user.role ) ) );       // legacy
-    socket.join( SocketRooms.audRole( String( user.role ) ) );    // ✅ notifications
+    socket.join( SocketRooms.role( String( user.role ) ) );
+    socket.join( SocketRooms.COMPANY );
+
+    if ( Array.isArray( user.teamCodes ) ) {
+      for ( const t of user.teamCodes ) {
+        const teamCode = typeof t === "string" ? t.trim() : "";
+        if ( teamCode ) socket.join( SocketRooms.team( teamCode ) );
+      }
+    }
+
     socket.join( SocketRooms.BROADCAST );
 
+    // Security / session room
     const sessionToken = socket.data.sessionToken as string | undefined;
-    if ( sessionToken && sessionToken.trim().length > 0 ) {
+    if ( sessionToken && sessionToken.trim() ) {
       socket.join( SocketRooms.session( sessionToken.trim() ) );
     }
+
+    console.log( "[Info:] [SocketConnectionHandler] Universal rooms joined.\n" );
   }
 
-  private leaveBaseRooms( socket: TypedSocket, user: AuthUser ): void {
+  private leaveUniversalRooms( socket: TypedSocket, user: AuthUser ): void {
     socket.leave( SocketRooms.user( user.username ) );
     socket.leave( SocketRooms.role( String( user.role ) ) );
-    socket.leave( SocketRooms.audRole( String( user.role ) ) );
+    socket.leave( SocketRooms.COMPANY );
     socket.leave( SocketRooms.BROADCAST );
 
+    if ( Array.isArray( user.teamCodes ) ) {
+      for ( const t of user.teamCodes ) {
+        const teamCode = typeof t === "string" ? t.trim() : "";
+        if ( teamCode ) socket.leave( SocketRooms.team( teamCode ) );
+      }
+    }
+
     const sessionToken = socket.data.sessionToken as string | undefined;
-    if ( sessionToken && sessionToken.trim().length > 0 ) {
+    if ( sessionToken && sessionToken.trim() ) {
       socket.leave( SocketRooms.session( sessionToken.trim() ) );
     }
   }
 
   // ==========================================================================
-  // wsToken consume logic (extracted from your big method for cleanliness)
+  // wsToken consume logic (unchanged)
   // ==========================================================================
   private async tryConsumeWsToken( socket: TypedSocket, authUser: AuthUser ): Promise<void> {
     const rawAuth: unknown = socket.handshake.auth;
@@ -250,7 +220,6 @@ export class SocketConnectionHandler {
     const wsToken = typeof authMeta.wsToken === "string" ? authMeta.wsToken.trim() : "";
     const sessionTokenFallback = socket.data.sessionToken as string | undefined;
 
-    // eslint-disable-next-line no-console
     console.log(
       "[Info:] [SocketConnectionHandler] Handshake wsToken:",
       wsToken || "(none)",
@@ -267,10 +236,9 @@ export class SocketConnectionHandler {
       const record = await this.wsTokenRegistry.consumeToken( wsToken );
 
       if ( !record ) {
-        // fallback validation
         let sessionStillValid = false;
 
-        if ( sessionTokenFallback && sessionTokenFallback.trim().length > 0 ) {
+        if ( sessionTokenFallback && sessionTokenFallback.trim() ) {
           try {
             const resolvedUser = await this.guardTokenService.resolveUserBySessionToken(
               sessionTokenFallback.trim()
@@ -279,7 +247,6 @@ export class SocketConnectionHandler {
               sessionStillValid = true;
             }
           } catch ( innerError: unknown ) {
-            // eslint-disable-next-line no-console
             console.error(
               "[Error:] [SocketConnectionHandler] Session re-check failed after wsToken failure:",
               innerError,
@@ -289,7 +256,6 @@ export class SocketConnectionHandler {
         }
 
         if ( !sessionStillValid ) {
-          // eslint-disable-next-line no-console
           console.error(
             "[Error:] [SocketConnectionHandler] wsToken invalid AND session invalid – terminating user sockets.\n"
           );
@@ -317,23 +283,159 @@ export class SocketConnectionHandler {
           return;
         }
 
-        // soft fallback: keep connection, anchor wsSessionId on sessionToken
-        if ( sessionTokenFallback && sessionTokenFallback.trim().length > 0 ) {
-          ( socket.data as unknown as { wsSessionId?: string; } ).wsSessionId =
-            sessionTokenFallback.trim();
+        if ( sessionTokenFallback && sessionTokenFallback.trim() ) {
+          ( socket.data as unknown as { wsSessionId?: string; } ).wsSessionId = sessionTokenFallback.trim();
         }
         return;
       }
 
       ( socket.data as unknown as { wsSessionId?: string; } ).wsSessionId = record.sessionId;
     } catch ( error: unknown ) {
-      // eslint-disable-next-line no-console
       console.error( "[Error:] [SocketConnectionHandler] consumeToken failed:", error, "\n" );
     }
   }
 
+  /* ===========================================================================
+  * Method: forceDisconnectSession()
+  * ===========================================================================
+  * 01) Introduction / usage
+  * - Force-disconnects ALL sockets that belong to a specific session token.
+  * - Used for logout, token revocation, or security termination.
+  *
+  * 02) Important matters
+  * - Uses the session room convention: SocketRooms.session(<sessionToken>)
+  * - Emits a termination event BEFORE disconnecting sockets (best UX).
+  * - Never throws; if token invalid/empty → no-op.
+  *
+  * 03) Why we make this method
+  * - Gives REST flows (logout, token rotate, MFA step-up) a server-side kill switch.
+  *
+  * 04) Parameters
+  * @param sessionToken
+  * - Expected: non-empty string
+  * - Usage: identifies the session room to terminate (session:<token>)
+  *
+  * @param reason
+  * - Expected: short reason label (ex: "logout", "security", "revoked")
+  * - Usage: helps FE show correct UX and helps audit logs
+  *
+  * 05) Usage hint
+  * - `handler.forceDisconnectSession(sessionToken, "logout")`
+  *
+  * 06) Keep in mind
+  * - This disconnects ALL sockets in that session room (multi-tab/device).
+  * ========================================================================= */
+  public forceDisconnectSession( sessionToken: string, reason: string ): void {
+    try {
+      const token = this.safeTokenOrEmpty( sessionToken );
+      if ( !token ) return;
+
+      const why = this.safeReasonOrDefault( reason, "forced_disconnect" );
+      const room = SocketRooms.session( token );
+
+      // 1) Notify UI (optional, but safest UX)
+      this.nsp.to( room ).emit( "session:terminated", {
+        mode: "server",
+        reason: why,
+        sessionToken: token,
+        ts: Date.now(),
+      } );
+
+      // 2) Hard disconnect
+      this.nsp.to( room ).disconnectSockets( true );
+
+      console.log(
+        "[Info:] [SocketConnectionHandler] forceDisconnectSession executed:",
+        `session=${ token }`,
+        `reason=${ why }\n`
+      );
+    } catch ( error: unknown ) {
+      console.error( "[Error:] [SocketConnectionHandler] forceDisconnectSession failed:", error, "\n" );
+    }
+  }
+
+  /* ===========================================================================
+   * Method: forceDisconnectUser()
+   * ===========================================================================
+   * 01) Introduction / usage
+   * - Force-disconnects ALL sockets that belong to a username.
+   * - Used for logout by username, admin kick, security termination, etc.
+   *
+   * 02) Important matters
+   * - Uses the user room convention: SocketRooms.user(<username>)
+   * - Emits a termination event BEFORE disconnecting sockets.
+   * - Never throws; if username invalid/empty → no-op.
+   *
+   * 03) Why we make this method
+   * - Some flows only know username (ex: admin panel, account disable).
+   *
+   * 04) Parameters
+   * @param username
+   * - Expected: non-empty string
+   * - Usage: identifies the user room to terminate (user:<username>)
+   *
+   * @param reason
+   * - Expected: short label (ex: "logout", "admin_kick", "disabled")
+   *
+   * 05) Usage hint
+   * - `handler.forceDisconnectUser("john", "logout")`
+   *
+   * 06) Keep in mind
+   * - Disconnects ALL sockets in the user room (multi-tab/device).
+   * ========================================================================= */
+  public forceDisconnectUser( username: string, reason: string ): void {
+    try {
+      const u = this.safeUsernameOrEmpty( username );
+      if ( !u ) return;
+
+      const why = this.safeReasonOrDefault( reason, "forced_disconnect" );
+      const room = SocketRooms.user( u );
+
+      // 1) Notify UI
+      this.nsp.to( room ).emit( "session:terminated", {
+        mode: "server",
+        reason: why,
+        username: u,
+        ts: Date.now(),
+      } );
+
+      // 2) Hard disconnect
+      this.nsp.to( room ).disconnectSockets( true );
+
+      console.log(
+        "[Info:] [SocketConnectionHandler] forceDisconnectUser executed:",
+        `user=${ u }`,
+        `reason=${ why }\n`
+      );
+    } catch ( error: unknown ) {
+      console.error( "[Error:] [SocketConnectionHandler] forceDisconnectUser failed:", error, "\n" );
+    }
+  }
+
+  // ========================================================================
+  // Internal sanitizers (strict, no throwing to callers)
+  // ========================================================================
+
+  private safeUsernameOrEmpty( v: unknown ): string {
+    const s = typeof v === "string" ? v.trim() : "";
+    return s;
+  }
+
+  private safeTokenOrEmpty( v: unknown ): string {
+    const s = typeof v === "string" ? v.trim() : "";
+    // keep it permissive; session tokens can be JWT-like or random strings
+    if ( !s ) return "";
+    if ( s === "undefined" || s === "null" ) return "";
+    return s;
+  }
+
+  private safeReasonOrDefault( v: unknown, fallback: string ): string {
+    const s = typeof v === "string" ? v.trim() : "";
+    return s ? s : fallback;
+  }
+
   // ==========================================================================
-  // Lifecycle (your existing logic preserved)
+  // Lifecycle: rejoin universal rooms on auth:update
   // ==========================================================================
   private handleConnectionLifecycle( socket: TypedSocket, auth: AuthUser ): void {
     let lastClientPongAt = Date.now();
@@ -349,14 +451,16 @@ export class SocketConnectionHandler {
     socket.on( "client:hello", ( _payload: unknown, ack?: ( resp: { ok: boolean; serverTime: number; } ) => void ) => {
       const serverTime = Date.now();
       if ( ack ) ack( { ok: true, serverTime } );
-
       socket.emit( "server:welcome", { ok: true, user: socket.data.authUser as AuthUser, serverTime } );
     } );
 
-    socket.on( "client:ping", ( payload: { t0?: number; } | undefined, ack?: ( resp: { pong: true; ts: number; serverTs: number; } ) => void ) => {
-      const t0 = typeof payload?.t0 === "number" ? payload.t0 : Date.now();
-      if ( ack ) ack( { pong: true, ts: t0, serverTs: Date.now() } );
-    } );
+    socket.on(
+      "client:ping",
+      ( payload: { t0?: number; } | undefined, ack?: ( resp: { pong: true; ts: number; serverTs: number; } ) => void ) => {
+        const t0 = typeof payload?.t0 === "number" ? payload.t0 : Date.now();
+        if ( ack ) ack( { pong: true, ts: t0, serverTs: Date.now() } );
+      }
+    );
 
     const heartbeatTimer: NodeJS.Timeout = setInterval( () => {
       const startedAt = Date.now();
@@ -365,7 +469,6 @@ export class SocketConnectionHandler {
         if ( !err ) lastClientPongAt = Date.now();
 
         if ( Date.now() - lastClientPongAt > 60_000 ) {
-          // eslint-disable-next-line no-console
           console.warn(
             "[Warning:] [SocketConnectionHandler] Heartbeat timeout – disconnecting socket:",
             socket.id,
@@ -382,12 +485,10 @@ export class SocketConnectionHandler {
       lastClientPongAt = Date.now();
     } );
 
-    // Guard token rotation (fast)
     const pushGuardToken = async (): Promise<void> => {
       try {
         const currentUser = socket.data.authUser as AuthUser | undefined;
         const sessionToken = socket.data.sessionToken as string | undefined;
-
         if ( !currentUser || !sessionToken ) return;
 
         const newGuardToken = await this.guardTokenService.rotateGuardToken( sessionToken );
@@ -397,9 +498,9 @@ export class SocketConnectionHandler {
         const expiresAt = issuedAt + 10_000;
 
         const payload: GuardTokenPayload = { token: newGuardToken, issuedAt, expiresAt };
+
         socket.emit( "guard:update", payload );
       } catch ( error: unknown ) {
-        // eslint-disable-next-line no-console
         console.error( "[Error:] [guard:update] rotation failed:", error, "\n" );
       }
     };
@@ -407,7 +508,7 @@ export class SocketConnectionHandler {
     void pushGuardToken();
     const guardTimer: NodeJS.Timeout = setInterval( () => void pushGuardToken(), 5_000 );
 
-    const wsTokenTimer: NodeJS.Timeout | null = this.registerWsTokenRotation( socket, auth );
+    const wsTokenTimer: NodeJS.Timeout | null = this.registerWsTokenRotation( socket );
 
     socket.on( "client:subscribe", ( rooms?: unknown ) => {
       for ( const room of SocketAuthHelper.safeRooms( rooms ) ) socket.join( room );
@@ -425,8 +526,6 @@ export class SocketConnectionHandler {
       clearInterval( heartbeatTimer );
       clearInterval( guardTimer );
       if ( wsTokenTimer ) clearInterval( wsTokenTimer );
-
-      // eslint-disable-next-line no-console
       console.log( "[Info:] ↘️  Socket disconnecting:", auth.username, `(${ reason }) id=${ socket.id }\n` );
     } );
 
@@ -434,19 +533,16 @@ export class SocketConnectionHandler {
       clearInterval( heartbeatTimer );
       clearInterval( guardTimer );
       if ( wsTokenTimer ) clearInterval( wsTokenTimer );
-
-      // eslint-disable-next-line no-console
       console.log( "[Info:] ↘️  Socket disconnected:", auth.username, `(${ reason }) id=${ socket.id }\n` );
     } );
   }
 
-  private registerWsTokenRotation( socket: TypedSocket, auth: AuthUser ): NodeJS.Timeout | null {
+  private registerWsTokenRotation( socket: TypedSocket ): NodeJS.Timeout | null {
     let lastWsTokenPayload: WsTokenPushPayload | null = null;
 
     const pushWsToken = async (): Promise<void> => {
       try {
         const wsSessionId = ( socket.data as unknown as { wsSessionId?: string; } ).wsSessionId;
-
         if ( !wsSessionId ) return;
 
         const newRecord = await this.wsTokenRegistry.rotateToken( wsSessionId );
@@ -463,7 +559,6 @@ export class SocketConnectionHandler {
 
         socket.emit( "ws:token:update", payload );
       } catch ( error: unknown ) {
-        // eslint-disable-next-line no-console
         console.error( "[Error:] [ws:token:update] rotation failed:", error, "\n" );
       }
     };
@@ -487,16 +582,16 @@ export class SocketConnectionHandler {
         const nextUser = this.authHelper.decodeAuthUser( token );
 
         const previousUser = socket.data.authUser as AuthUser | undefined;
-        if ( previousUser ) this.leaveBaseRooms( socket, previousUser );
+        if ( previousUser ) this.leaveUniversalRooms( socket, previousUser );
 
         socket.data.authUser = nextUser;
-        this.joinAudienceRoomsFromAuth( socket, nextUser );
-        this.joinBaseRooms( socket, nextUser );
+        this.joinUniversalRooms( socket, nextUser );
+
+        NotificationRoomsJoinHelper.joinForAuth( socket, nextUser );
 
         if ( ack ) ack( { ok: true } );
         socket.emit( "auth:updated", { ok: true, user: nextUser } );
       } catch ( error: unknown ) {
-        // eslint-disable-next-line no-console
         console.error( "[Error:] [auth:update] Failed:", error, "\n" );
         if ( ack ) ack( { ok: false, reason: "invalid token" } );
         socket.emit( "auth:updated", { ok: false, reason: "invalid token" } );
@@ -504,6 +599,9 @@ export class SocketConnectionHandler {
     } );
   }
 
+  // ==========================================================================
+  // Chat events (RESTORED)
+  // ==========================================================================
   private registerChatEvents( socket: TypedSocket ): void {
     socket.on( "chat:send", ( msg: ChatMessagePayload, ack?: ( res: { ok: boolean; } ) => void ) => {
       try {
@@ -517,20 +615,24 @@ export class SocketConnectionHandler {
         };
 
         if ( normalized.to ) this.emitToUser( normalized.to, "chat:new", normalized );
+
+        // optional room-based chat
         if ( normalized.roomId && SocketAuthHelper.isValidRoomName( normalized.roomId ) ) {
-          this.emitToRooms( [ normalized.roomId ], "chat:new", normalized );
+          this.emitToRoom( normalized.roomId, "chat:new", normalized );
         }
 
         socket.emit( "chat:sent", normalized );
         if ( ack ) ack( { ok: true } );
       } catch ( error: unknown ) {
-        // eslint-disable-next-line no-console
         console.error( "[Error:] [chat:send] failed:", error, "\n" );
         if ( ack ) ack( { ok: false } );
       }
     } );
   }
 
+  // ==========================================================================
+  // Call events (RESTORED)
+  // ==========================================================================
   private registerCallEvents( socket: TypedSocket ): void {
     socket.on( "call:offer", ( payload: CallOfferPayload, ack?: ( res: { ok: boolean; } ) => void ) => {
       this.relayCallEvent( socket, "call:offer", payload, ack );
@@ -564,14 +666,13 @@ export class SocketConnectionHandler {
 
       if ( ack ) ack( { ok: true } );
     } catch ( error: unknown ) {
-      // eslint-disable-next-line no-console
       console.error( "[Error:]", `[${ eventName }] failed:`, error, "\n" );
       if ( ack ) ack( { ok: false } );
     }
   }
 
   // ==========================================================================
-  // Emission helpers (namespace-scoped)
+  // Emission helpers
   // ==========================================================================
   public emitToUser( username: string, event: string, payload: unknown ): void {
     this.nsp.to( SocketRooms.user( username ) ).emit( event, payload );
@@ -581,25 +682,24 @@ export class SocketConnectionHandler {
     this.nsp.to( SocketRooms.role( String( role ) ) ).emit( event, payload );
   }
 
-  public emitToRooms( rooms: string[], event: string, payload: unknown ): void {
-    const safeEvent = this.safeSocketEvent( event );
-    const safeRooms = this.safeRoomList( rooms );
-
-    if ( !safeEvent || safeRooms.length === 0 ) return;
-    this.nsp.to( safeRooms ).emit( safeEvent, payload );
+  public emitToTeam( teamCode: string, event: string, payload: unknown ): void {
+    this.nsp.to( SocketRooms.team( teamCode ) ).emit( event, payload );
   }
 
   public emitToRoom( room: string, event: string, payload: unknown ): void {
     const safeEvent = this.safeSocketEvent( event );
     const safeRoom = this.safeRoom( room );
-
     if ( !safeEvent || !safeRoom ) return;
     this.nsp.to( safeRoom ).emit( safeEvent, payload );
   }
 
-  // ==========================================================================
-  // Safety helpers
-  // ==========================================================================
+  public emitToRooms( rooms: string[], event: string, payload: unknown ): void {
+    const safeEvent = this.safeSocketEvent( event );
+    const safeRooms = this.safeRoomList( rooms );
+    if ( !safeEvent || safeRooms.length === 0 ) return;
+    this.nsp.to( safeRooms ).emit( safeEvent, payload );
+  }
+
   private safeSocketEvent( v: unknown ): string {
     const s = typeof v === "string" ? v.trim() : "";
     return s.length > 0 ? s : "";
@@ -623,186 +723,51 @@ export class SocketConnectionHandler {
   }
 
   // ==========================================================================
-  // Forced disconnect helpers (logout / security / admin kick)
+  // Notifications (UNIVERSAL rooms only)
   // ==========================================================================
-
-/**
- * Force-disconnect all sockets that belong to a session token.
- *
- * Typical use:
- * - Logout by session token
- * - Session invalidation
- * - Security termination
- *
- * NOTE:
- * - Public API is void so callers don't need to await.
- * - Internally we do async resolution to also terminate the user's room.
- */
-  public forceDisconnectSession( sessionToken: string, reason: string ): void {
-    const token = typeof sessionToken === "string" ? sessionToken.trim() : "";
-    const why = typeof reason === "string" ? reason.trim() : "forced_disconnect";
-
-  if ( !token ) return;
-
-  // fire-and-forget (caller doesn't await)
-  void this.forceDisconnectSessionAsync( token, why );
-}
-
-  private async forceDisconnectSessionAsync( sessionToken: string, reason: string ): Promise<void> {
-    try {
-      const token = sessionToken.trim();
-      const why = reason.trim() || "forced_disconnect";
-
-    // 1) Kill all sockets in the session room (fast + direct)
-    const sessionRoom = SocketRooms.session( token );
-
-    this.nsp.to( sessionRoom ).emit( "session:terminated", {
-      mode: "logout",
-      reason: why,
-      sessionToken: token,
-      ts: Date.now(),
-    } );
-
-    this.nsp.to( sessionRoom ).disconnectSockets( true );
-
-    // 2) Optional: also terminate all sockets for the resolved user (covers multi-tabs, other sessions)
-    //    This makes logout behave consistently even if some sockets didn't join the session room yet.
-    const resolvedUser = await this.guardTokenService.resolveUserBySessionToken( token );
-    const username = typeof resolvedUser?.username === "string" ? resolvedUser.username.trim() : "";
-
-    if ( username ) {
-      this.forceDisconnectUser( username, why );
-    }
-
-    // eslint-disable-next-line no-console
-    console.log(
-      "[Info:] [SocketConnectionHandler] forceDisconnectSession executed:",
-      token,
-      `(user=${ username || "unknown" }) reason=${ why }\n`
-    );
-  } catch ( error: unknown ) {
-    // eslint-disable-next-line no-console
-    console.error(
-      "[Error:] [SocketConnectionHandler] forceDisconnectSessionAsync failed:",
-      error,
-      "\n"
-    );
-  }
-}
-
-  /**
-   * Force-disconnect all sockets that belong to a username (user room).
-   *
-   * Typical use:
-   * - Logout by username
-   * - Admin kick
-   * - Security termination
-   */
-  public forceDisconnectUser( username: string, reason: string ): void {
-    const user = typeof username === "string" ? username.trim() : "";
-    const why = typeof reason === "string" ? reason.trim() : "forced_disconnect";
-
-    if ( !user ) return;
-
-  const userRoom = SocketRooms.user( user );
-
-  this.nsp.to( userRoom ).emit( "session:terminated", {
-    mode: "logout",
-    reason: why,
-    username: user,
-    ts: Date.now(),
-  } );
-
-  this.nsp.to( userRoom ).disconnectSockets( true );
-
-  // eslint-disable-next-line no-console
-  console.log(
-    "[Info:] [SocketConnectionHandler] forceDisconnectUser executed:",
-    user,
-    `reason=${ why }\n`
-  );
-  }
-
-  // ==========================================================================
-  // Notifications (central dispatch)
-  // ==========================================================================
-
-  /**
-   * Emit a notification payload to all intended audiences.
-   *
-   * WHY THIS EXISTS:
-   * - Controllers/services should NOT know room naming conventions.
-   * - Handler already guarantees role room joins:
-   *     role:<ROLE>      (legacy)
-   *     aud.role.<ROLE>  (notifications standard)
-   * - This method keeps delivery consistent across the whole platform.
-   */
   public emitNotification( notif: NotificationPayload ): void {
     if ( !notif ) return;
 
-    // Default event name (change here if your FE listens on a different one)
-    const event = this.safeSocketEvent(
-      ( notif as unknown as { event?: unknown; } ).event ?? "notification:new",
-    );
+    // Default push event is notify:new unless caller includes notif.event
+    const event = this.safeSocketEvent( ( notif as unknown as { event?: unknown; } ).event ?? "notify:new" );
     if ( !event ) return;
 
     const usernames = this.extractUsernamesFromNotification( notif );
-    const rooms = this.extractRoomsFromNotification( notif );
     const roles = this.extractRolesFromNotification( notif );
+    const teams = this.extractTeamsFromNotification( notif );
     const broadcast = this.extractBroadcastFlag( notif );
+    const company = this.extractCompanyFlag( notif );
 
-    // 1) Direct users
-    for ( const u of usernames ) {
-      this.emitToUser( u, event, notif );
-    }
+    for ( const u of usernames ) this.emitToUser( u, event, notif );
+    for ( const r of roles ) this.nsp.to( SocketRooms.role( r ) ).emit( event, notif );
+    for ( const t of teams ) this.nsp.to( SocketRooms.team( t ) ).emit( event, notif );
 
-    // 2) Direct rooms (supports aud.team.*, aud.member.*, custom rooms, etc.)
-    for ( const r of rooms ) {
-      this.emitToRoom( r, event, notif );
-    }
-
-    // 3) Roles (emit to BOTH legacy + aud.role)
-    for ( const role of roles ) {
-      const safeRole = this.safeRoom( role );
-      if ( !safeRole ) continue;
-
-      // legacy role room
-      this.nsp.to( SocketRooms.role( safeRole ) ).emit( event, notif );
-      // notifications standard
-      this.nsp.to( SocketRooms.audRole( safeRole ) ).emit( event, notif );
-    }
-
-    // 4) Broadcast (if explicitly requested)
-    if ( broadcast ) {
-      this.nsp.to( SocketRooms.BROADCAST ).emit( event, notif );
-    }
+    if ( company ) this.nsp.to( SocketRooms.COMPANY ).emit( event, notif );
+    if ( broadcast ) this.nsp.to( SocketRooms.BROADCAST ).emit( event, notif );
   }
-
-  // --------------------------------------------------------------------------
-  // Notification target extraction (tolerant to payload shape changes)
-  // --------------------------------------------------------------------------
 
   private extractBroadcastFlag( notif: NotificationPayload ): boolean {
     const v = ( notif as unknown as { broadcast?: unknown; } ).broadcast;
     return v === true;
   }
 
+  private extractCompanyFlag( notif: NotificationPayload ): boolean {
+    const v = ( notif as unknown as { company?: unknown; } ).company;
+    return v === true;
+  }
+
   private extractUsernamesFromNotification( notif: NotificationPayload ): string[] {
     const out: string[] = [];
-
-    // common fields
     const one = ( notif as unknown as { username?: unknown; } ).username;
     const many = ( notif as unknown as { usernames?: unknown; } ).usernames;
 
     this.pushSafeString( out, one );
     this.pushSafeStringArray( out, many );
 
-    // audiences[]
     const audiences = ( notif as unknown as { audiences?: unknown; } ).audiences;
     if ( Array.isArray( audiences ) ) {
       for ( const a of audiences ) {
         if ( !a || typeof a !== "object" ) continue;
-
         const kind = this.safeRoom( ( a as { kind?: unknown; } ).kind );
         if ( kind !== "user" ) continue;
 
@@ -814,63 +779,55 @@ export class SocketConnectionHandler {
     return this.dedupe( out );
   }
 
-  private extractRoomsFromNotification( notif: NotificationPayload ): string[] {
-    const out: string[] = [];
-
-    // common fields
-    const one = ( notif as unknown as { room?: unknown; } ).room;
-    const many = ( notif as unknown as { rooms?: unknown; } ).rooms;
-
-    this.pushSafeRoom( out, one );
-    this.pushSafeRoomArray( out, many );
-
-    // audiences[]
-    const audiences = ( notif as unknown as { audiences?: unknown; } ).audiences;
-    if ( Array.isArray( audiences ) ) {
-      for ( const a of audiences ) {
-        if ( !a || typeof a !== "object" ) continue;
-
-        const kind = this.safeRoom( ( a as { kind?: unknown; } ).kind );
-        if ( kind !== "room" ) continue;
-
-        this.pushSafeRoom( out, ( a as { room?: unknown; } ).room );
-        this.pushSafeRoomArray( out, ( a as { rooms?: unknown; } ).rooms );
-      }
-    }
-
-    return this.dedupe( out );
-  }
-
   private extractRolesFromNotification( notif: NotificationPayload ): string[] {
     const out: string[] = [];
-
-    // common fields
     const one = ( notif as unknown as { role?: unknown; } ).role;
     const many = ( notif as unknown as { roles?: unknown; } ).roles;
 
-    this.pushSafeRole( out, one );
-    this.pushSafeRoleArray( out, many );
+    this.pushSafeString( out, one );
+    this.pushSafeStringArray( out, many );
 
-    // audiences[]
     const audiences = ( notif as unknown as { audiences?: unknown; } ).audiences;
     if ( Array.isArray( audiences ) ) {
       for ( const a of audiences ) {
         if ( !a || typeof a !== "object" ) continue;
-
         const kind = this.safeRoom( ( a as { kind?: unknown; } ).kind );
         if ( kind !== "role" ) continue;
 
-        this.pushSafeRole( out, ( a as { role?: unknown; } ).role );
-        this.pushSafeRoleArray( out, ( a as { roles?: unknown; } ).roles );
+        this.pushSafeString( out, ( a as { role?: unknown; } ).role );
+        this.pushSafeStringArray( out, ( a as { roles?: unknown; } ).roles );
       }
     }
 
     return this.dedupe( out );
   }
 
-  // --------------------------------------------------------------------------
-  // Small helpers (safe + dedupe)
-  // --------------------------------------------------------------------------
+  private extractTeamsFromNotification( notif: NotificationPayload ): string[] {
+    const out: string[] = [];
+
+    // Accept either:
+    // - team / teams
+    // - audiences[] kind === "team"
+    const one = ( notif as unknown as { team?: unknown; } ).team;
+    const many = ( notif as unknown as { teams?: unknown; } ).teams;
+
+    this.pushSafeString( out, one );
+    this.pushSafeStringArray( out, many );
+
+    const audiences = ( notif as unknown as { audiences?: unknown; } ).audiences;
+    if ( Array.isArray( audiences ) ) {
+      for ( const a of audiences ) {
+        if ( !a || typeof a !== "object" ) continue;
+        const kind = this.safeRoom( ( a as { kind?: unknown; } ).kind );
+        if ( kind !== "team" ) continue;
+
+        this.pushSafeString( out, ( a as { team?: unknown; } ).team );
+        this.pushSafeStringArray( out, ( a as { teams?: unknown; } ).teams );
+      }
+    }
+
+    return this.dedupe( out );
+  }
 
   private pushSafeString( out: string[], v: unknown ): void {
     const s = typeof v === "string" ? v.trim() : "";
@@ -882,27 +839,6 @@ export class SocketConnectionHandler {
     for ( const x of v ) this.pushSafeString( out, x );
   }
 
-  private pushSafeRoom( out: string[], v: unknown ): void {
-    const r = this.safeRoom( v );
-    if ( r && SocketAuthHelper.isValidRoomName( r ) ) out.push( r );
-  }
-
-  private pushSafeRoomArray( out: string[], v: unknown ): void {
-    if ( !Array.isArray( v ) ) return;
-    for ( const x of v ) this.pushSafeRoom( out, x );
-  }
-
-  private pushSafeRole( out: string[], v: unknown ): void {
-    // role rooms are built by SocketRooms.role()/audRole(), so we only need a safe string
-    const s = this.safeRoom( v );
-    if ( s ) out.push( s );
-  }
-
-  private pushSafeRoleArray( out: string[], v: unknown ): void {
-    if ( !Array.isArray( v ) ) return;
-    for ( const x of v ) this.pushSafeRole( out, x );
-  }
-
   private dedupe( list: string[] ): string[] {
     const set = new Set<string>();
     for ( const x of list ) {
@@ -911,5 +847,4 @@ export class SocketConnectionHandler {
     }
     return Array.from( set );
   }
-
 }

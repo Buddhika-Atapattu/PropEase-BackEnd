@@ -31,6 +31,7 @@ import { MilestoneWsService, type MilestoneWsContext } from "./milestone.ws.serv
 import { type DomainDeletePlan, RecycleBinDomainDeleteService } from '../../../services/recyclebin/recyclebin-domain-delete.service';
 import type { FileMetaPacket } from "../../../types/common";
 import { FileMetaPacketBuilder } from "../../../utils/files/file-meta-packet.builder";
+import type { RecycleRecordResult } from "../../recyclebin/recyclebin-engine.service";
 
 // ----------------------------------------------------------------------------
 // Filters / Paging / Inputs
@@ -274,7 +275,9 @@ export class MilestoneRestService {
         return dto;
     }
 
-    public async deleteById( ctx: MilestoneWsContext, milestoneId: string ): Promise<void> {
+    public async deleteById( ctx: MilestoneWsContext, milestoneId: string ): Promise<{
+        entry: RecycleRecordResult;
+    }> {
         const _id = this.toObjectId( milestoneId );
 
         const existing = await MilestoneModel.findById( _id ).lean<MilestoneDto>().exec();
@@ -301,7 +304,7 @@ export class MilestoneRestService {
         };
 
         // ✅ Call ONCE (durability-first)
-        await this.deleteSvc.deleteWithRecycleBin( ctx.actor, plan );
+        const deleted = await this.deleteSvc.deleteWithRecycleBin( ctx.actor, plan );
 
         // WS emit (best-effort; must not break REST)
         try {
@@ -328,6 +331,8 @@ export class MilestoneRestService {
             // eslint-disable-next-line no-console
             console.warn( `[Warning:] [MilestoneRestService] WS emitMilestoneDeleted failed: ${ msg }\n` );
         }
+
+        return deleted;
     }
 
     // =========================================================================

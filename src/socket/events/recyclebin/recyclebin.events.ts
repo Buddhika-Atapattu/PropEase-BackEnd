@@ -12,11 +12,12 @@
 
 import type {
   RecycleBinListItemDto,
-  RecycleBinMeta,
-  RecycleBinPermanentDeleteResult,
-  RecycleBinRestoreResult,
-  RecycleBinSoftDeleteResult,
+  RecycleBinPurgeResult,
+  RecycleBinRestorePrepareDto,
+  RecycleBinRecordResult,
 } from "../../../types/recyclebin/recyclebin.types";
+
+import { SocketRooms } from '../rooms/socket.rooms';
 
 /* =============================================================================
  * A) Rooms (Stable Forever)
@@ -29,24 +30,24 @@ export class RecycleBinRooms {
    * Company-level room.
    * Use for admin recycle-bin dashboards (global view).
    */
-  public static readonly COMPANY: string = "aud.company";
+  public static readonly COMPANY: string = " company";
 
   /**
    * Role-level room.
-   * Example: aud.role.Admin
+   * Example:  role.admin
    */
   public static role(roleKey: string): string {
     const r = typeof roleKey === "string" ? roleKey.trim() : "";
-    return `aud.role.${r || "Unknown"}`;
+    return SocketRooms.role( r.toLowerCase() );
   }
 
   /**
    * Team-level room.
-   * Example: aud.team.TEAM001
+   * Example:  team.TEAM001
    */
   public static team(teamCode: string): string {
     const t = typeof teamCode === "string" ? teamCode.trim() : "";
-    return `aud.team.${t || "Unknown"}`;
+    return SocketRooms.team( t );
   }
 
   /**
@@ -55,7 +56,7 @@ export class RecycleBinRooms {
    */
   public static user(username: string): string {
     const u = typeof username === "string" ? username.trim() : "";
-    return `user:${u || "unknown"}`;
+    return SocketRooms.user( u );
   }
 }
 
@@ -121,16 +122,9 @@ export interface RecycleBinSoftDeletedPayload {
   entryId: string;
 
   /**
-   * Optional meta for UI preview (if you want to show immediate modal/toast)
-   * NOTE: Meta includes _id as ObjectId in your types; when sending to FE,
-   * always convert it to string at controller/gateway level.
-   */
-  meta?: RecycleBinMeta;
-
-  /**
    * Result returned from engine (optional)
    */
-  result?: RecycleBinSoftDeleteResult;
+  result?: RecycleBinRecordResult;
 }
 
 /**
@@ -143,7 +137,7 @@ export interface RecycleBinRestoredPayload {
 
   restoredRefId?: string;
 
-  result?: RecycleBinRestoreResult;
+  result?: RecycleBinRestorePrepareDto;
 }
 
 /**
@@ -154,7 +148,7 @@ export interface RecycleBinPermanentDeletedPayload {
   sourceKey: string;
   refId: string;
 
-  result?: RecycleBinPermanentDeleteResult;
+  result?: RecycleBinPurgeResult;
 }
 
 /**

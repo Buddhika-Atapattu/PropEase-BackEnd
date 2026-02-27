@@ -1,139 +1,276 @@
 // Path: src/services/notifications/notification.socket.service.ts
-// =============================================================================
-// Notification Hub — WebSocket Service (Emitter / Gateway Helper)
-// -----------------------------------------------------------------------------
-// PURPOSE:
-// - Emits WS events for Notification Hub using SocketConnectionHandler
-// - ✅ Uses NotificationEvents + NotificationRooms as single source of truth
-//
-// RULES (your rules):
-// - 100% class-based
-// - No `any`
-// - exactOptionalPropertyTypes-safe
-// - Console logs prefixed and end with '\n'
-// - ✅ No constructor parameters (your preference)
-// =============================================================================
 
-import { SocketConnectionHandler } from "../../socket/socket-connection.handler";
+import type { IWsEmitter } from "../../socket/ws-emitter.interface";
+import { NotificationEvents, NotificationRooms } from "../../socket/events/notifications/notification.events";
+import type {
+  NotificationCountResponse,
+  NotificationInboxItemDto,
+} from "../../types/notification/notification.types";
 
-import {
-  NotificationEvents,
-  NotificationRooms,
-  type NotifyNewPayload,
-  type NotifyPatchPayload,
-  type NotifyCountPayload,
-  type NotifyBulkPayload,
-  type DomainRestoredPayload,
-  type DomainPurgedPayload,
-} from "../../socket/events/notifications/notification.events";
+export type RecipientTargets = {
+  usernames?: string[];
+  roles?: string[];
+  teamCodes?: string[];
+  company?: boolean;
+};
 
+/**
+ * Bulk refresh payload (WS)
+ * - UI uses this to re-fetch inbox list safely (server-side truth).
+ */
+export interface NotificationBulkPayload {
+  reason: "bulk-update" | "bulk-refresh" | "sync" | "unknown";
+}
+
+/**
+ * NotificationSocketService
+ * -----------------------------------------------------------------------------
+ * 01) Introduction
+ * - Single, stable WebSocket emission API for notifications.
+ * - Emits to your universal rooms:
+ *    user:<username>, role:<roleKey>, team:<teamCode>, company
+ *
+ * 02) Important matters
+ * - Methods NEVER throw (invalid recipients are ignored safely).
+ * - All payloads are UI-ready:
+ *    NEW/PATCH => { item, ...(count?) }
+ *    DELETE    => { notificationId }
+ *    BULK      => { reason }
+ * - exactOptionalPropertyTypes-safe: optionals are omitted unless present.
+ *
+ * 03) Why we make this class
+ * - Centralize WS routing rules so Hub/Controllers never re-implement room logic.
+ *
+ * 04) Constructor
+ * @param emitter
+ * - Expected: implementation of IWsEmitter (Socket.IO wrapper)
+ * - Usage: low-level room emission
+ */
 export class NotificationSocketService {
-  private handler: SocketConnectionHandler | null;
-
-  public constructor() {
-    this.handler = null;
-  }
+  public constructor ( private readonly emitter: IWsEmitter ) {}
 
   /* ===========================================================================
-   * 1) Core notification UI events
-   * ======================================================================== */
-
-  public emitNewToUser(username: string, payload: NotifyNewPayload): void {
-    const u = this.safeUsername(username);
-    const room = NotificationRooms.user(u);
-    this.emitToRoom(room, NotificationEvents.NEW, payload);
-  }
-
-  public emitPatchToUser(username: string, payload: NotifyPatchPayload): void {
-    const u = this.safeUsername(username);
-    const room = NotificationRooms.user(u);
-    this.emitToRoom(room, NotificationEvents.PATCH, payload);
-  }
-
-  public emitCountToUser(username: string, payload: NotifyCountPayload): void {
-    const u = this.safeUsername(username);
-    const room = NotificationRooms.user(u);
-    this.emitToRoom(room, NotificationEvents.COUNT, payload);
-  }
-
-  public emitBulkToUser(username: string, payload: NotifyBulkPayload): void {
-    const u = this.safeUsername(username);
-    const room = NotificationRooms.user(u);
-    this.emitToRoom(room, NotificationEvents.BULK, payload);
-  }
-
-  /* ===========================================================================
-   * 2) Optional audience broadcasts (admin/team dashboards)
-   * ======================================================================== */
-
-  public emitNewToCompany(payload: NotifyNewPayload): void {
-    this.emitToRoom(NotificationRooms.COMPANY, NotificationEvents.NEW, payload);
-  }
-
-  public emitNewToRole(roleKey: string, payload: NotifyNewPayload): void {
-    this.emitToRoom(NotificationRooms.role(roleKey), NotificationEvents.NEW, payload);
-  }
-
-  public emitNewToTeam(teamCode: string, payload: NotifyNewPayload): void {
-    this.emitToRoom(NotificationRooms.team(teamCode), NotificationEvents.NEW, payload);
-  }
-
-  /* ===========================================================================
-   * 3) Optional RecycleBin hub integration events
-   * ======================================================================== */
-
-  public emitDomainRestoredToCompany(payload: DomainRestoredPayload): void {
-    this.emitToRoom(NotificationRooms.COMPANY, NotificationEvents.DOMAIN_RESTORED, payload);
-  }
-
-  public emitDomainPurgedToCompany(payload: DomainPurgedPayload): void {
-    this.emitToRoom(NotificationRooms.COMPANY, NotificationEvents.DOMAIN_PURGED, payload);
-  }
-
-  /* =============================================================================
-   * Internal: emit wrapper
-   * ========================================================================== */
-
-  private emitToRoom<TPayload>(room: string, event: string, payload: TPayload): void {
-    try {
-      const handler = this.getHandler();
-      handler.emitToRoom(room, event, payload);
-    } catch (err: unknown) {
-      // eslint-disable-next-line no-console
-      console.error(
-        `[Error:] NotificationSocketService.emitToRoom failed: ${
-          err instanceof Error ? err.message : "Unknown error"
-        }\n`
-      );
-    }
-  }
-
+   * Method: emitToUserNew()
+   * =========================================================================== */
   /**
-   * Lazy handler resolver:
-   * - avoids constructor params
-   * - avoids boot-order issues if you later switch to WaitForInstance()
+   * Emit notify:new to a single user room.
+   *
+   * @param username
+   * - Expected: target username
+   *
+   * @param item
+   * - Expected: NotificationInboxItemDto (UI list-ready inbox row)
+   *
+   * @param count
+   * - Optional: NotificationCountResponse
    */
-  private getHandler(): SocketConnectionHandler {
-    if (this.handler) return this.handler;
+  public emitToUserNew( username: string, item: NotificationInboxItemDto, count?: NotificationCountResponse ): void {
+    const u = this.safeUsernameOrEmpty( username );
+    if ( !u ) return;
 
-    // If your project has a strict singleton pattern, switch this to:
-    // this.handler = SocketConnectionHandler.GetInstance();
-    // OR:
-    // this.handler = await SocketConnectionHandler.WaitForInstance(); (then make async)
-    //
-    // For now, keep it simple and aligned to your existing usage.
-    this.handler = (SocketConnectionHandler as unknown as {
-      GetInstance: () => SocketConnectionHandler;
-    }).GetInstance();
-
-    return this.handler;
+    this.emitNotifyNew( { usernames: [ u ] }, item, count );
   }
 
-  private safeUsername(v: string): string {
-    const u = typeof v === "string" ? v.trim() : "";
-    if (!u) {
-      throw new Error("NotificationSocketService: username is required.");
+  /* ===========================================================================
+   * Method: emitNotifyPatch()
+   * =========================================================================== */
+  /**
+   * Emit notify:patch to recipients.
+   *
+   * 01) Introduction
+   * - Used when an existing notification content is updated (title/body).
+   * - Payload is the same as NEW: inbox item DTO (Fix A principle).
+   *
+   * 02) Important matters
+   * - Does NOT throw.
+   * - Skips empty/invalid usernames/keys.
+   *
+   * @param recipients
+   * - Expected: usernames/roles/teamCodes/company targets
+   *
+   * @param item
+   * - Expected: NotificationInboxItemDto (updated view)
+   *
+   * @param count
+   * - Optional: NotificationCountResponse (if you decide to recompute)
+   */
+  public emitNotifyPatch(
+    recipients: RecipientTargets,
+    item: NotificationInboxItemDto,
+    count?: NotificationCountResponse
+  ): void {
+    const payload = count ? { item, count } : { item };
+
+    for ( const u of recipients.usernames ?? [] ) {
+      const user = this.safeUsernameOrEmpty( u );
+      if ( !user ) continue;
+      this.emitter.emitToRoom( NotificationRooms.user( user ), NotificationEvents.PATCH, payload );
     }
-    return u;
+
+    for ( const r of recipients.roles ?? [] ) {
+      const role = this.safeKeyOrEmpty( r );
+      if ( !role ) continue;
+      this.emitter.emitToRoom( NotificationRooms.role( role ), NotificationEvents.PATCH, payload );
+    }
+
+    for ( const t of recipients.teamCodes ?? [] ) {
+      const team = this.safeKeyOrEmpty( t );
+      if ( !team ) continue;
+      this.emitter.emitToRoom( NotificationRooms.team( team ), NotificationEvents.PATCH, payload );
+    }
+
+    if ( recipients.company === true ) {
+      this.emitter.emitToRoom( NotificationRooms.COMPANY, NotificationEvents.PATCH, payload );
+    }
+  }
+
+  /* ===========================================================================
+   * Method: emitNotifyDelete()
+   * =========================================================================== */
+  /**
+   * Emit notify:delete to recipients.
+   *
+   * Purpose
+   * - Used when a notification is removed (hard delete / purge).
+   * - UI should remove any inbox rows that reference this notificationId.
+   *
+   * @param recipients
+   * - Expected: usernames/roles/teamCodes/company targets
+   *
+   * @param notificationId
+   * - Expected: MongoId string for notifications._id
+   */
+  public emitNotifyDelete( recipients: RecipientTargets, notificationId: string ): void {
+    const id = this.safeKeyOrEmpty( notificationId );
+    if ( !id ) return;
+
+    const payload = { notificationId: id };
+
+    for ( const u of recipients.usernames ?? [] ) {
+      const user = this.safeUsernameOrEmpty( u );
+      if ( !user ) continue;
+      this.emitter.emitToRoom( NotificationRooms.user( user ), NotificationEvents.DELETE, payload );
+    }
+
+    for ( const r of recipients.roles ?? [] ) {
+      const role = this.safeKeyOrEmpty( r );
+      if ( !role ) continue;
+      this.emitter.emitToRoom( NotificationRooms.role( role ), NotificationEvents.DELETE, payload );
+    }
+
+    for ( const t of recipients.teamCodes ?? [] ) {
+      const team = this.safeKeyOrEmpty( t );
+      if ( !team ) continue;
+      this.emitter.emitToRoom( NotificationRooms.team( team ), NotificationEvents.DELETE, payload );
+    }
+
+    if ( recipients.company === true ) {
+      this.emitter.emitToRoom( NotificationRooms.COMPANY, NotificationEvents.DELETE, payload );
+    }
+  }
+
+  /* ===========================================================================
+   * Method: emitNotifyNew()
+   * =========================================================================== */
+  public emitNotifyNew(
+    recipients: RecipientTargets,
+    item: NotificationInboxItemDto,
+    count?: NotificationCountResponse
+  ): void {
+    const payload = count ? { item, count } : { item };
+
+    for ( const u of recipients.usernames ?? [] ) {
+      const user = this.safeUsernameOrEmpty( u );
+      if ( !user ) continue;
+      this.emitter.emitToRoom( NotificationRooms.user( user ), NotificationEvents.NEW, payload );
+    }
+
+    for ( const r of recipients.roles ?? [] ) {
+      const role = this.safeKeyOrEmpty( r );
+      if ( !role ) continue;
+      this.emitter.emitToRoom( NotificationRooms.role( role ), NotificationEvents.NEW, payload );
+    }
+
+    for ( const t of recipients.teamCodes ?? [] ) {
+      const team = this.safeKeyOrEmpty( t );
+      if ( !team ) continue;
+      this.emitter.emitToRoom( NotificationRooms.team( team ), NotificationEvents.NEW, payload );
+    }
+
+    if ( recipients.company === true ) {
+      this.emitter.emitToRoom( NotificationRooms.COMPANY, NotificationEvents.NEW, payload );
+    }
+  }
+
+  /* ===========================================================================
+   * Method: emitCountUpdate()
+   * =========================================================================== */
+  public emitCountUpdate( recipients: RecipientTargets, count: NotificationCountResponse ): void {
+    for ( const u of recipients.usernames ?? [] ) {
+      const user = this.safeUsernameOrEmpty( u );
+      if ( !user ) continue;
+      this.emitter.emitToRoom( NotificationRooms.user( user ), NotificationEvents.COUNT, count );
+    }
+
+    for ( const r of recipients.roles ?? [] ) {
+      const role = this.safeKeyOrEmpty( r );
+      if ( !role ) continue;
+      this.emitter.emitToRoom( NotificationRooms.role( role ), NotificationEvents.COUNT, count );
+    }
+
+    for ( const t of recipients.teamCodes ?? [] ) {
+      const team = this.safeKeyOrEmpty( t );
+      if ( !team ) continue;
+      this.emitter.emitToRoom( NotificationRooms.team( team ), NotificationEvents.COUNT, count );
+    }
+
+    if ( recipients.company === true ) {
+      this.emitter.emitToRoom( NotificationRooms.COMPANY, NotificationEvents.COUNT, count );
+    }
+  }
+
+  /* ===========================================================================
+   * Method: emitBulkToUser()
+   * =========================================================================== */
+  public emitBulkToUser( username: string, payload: NotificationBulkPayload ): void {
+    const u = this.safeUsernameOrEmpty( username );
+    if ( !u ) return;
+
+    this.emitter.emitToRoom( NotificationRooms.user( u ), NotificationEvents.BULK, payload );
+  }
+
+  /* ===========================================================================
+   * Method: emitCountToUser()
+   * =========================================================================== */
+  public emitCountToUser( username: string, count: NotificationCountResponse ): void {
+    const u = this.safeUsernameOrEmpty( username );
+    if ( !u ) return;
+
+    this.emitter.emitToRoom( NotificationRooms.user( u ), NotificationEvents.COUNT, count );
+  }
+
+  /* ===========================================================================
+   * Backwards-compatible aliases (DO NOT REMOVE)
+   * =========================================================================== */
+  public emitCountToRecipients( recipients: RecipientTargets, count: NotificationCountResponse ): void {
+    this.emitCountUpdate( recipients, count );
+  }
+
+  public emitBulkRefreshToUser( username: string, reason?: NotificationBulkPayload[ "reason" ] ): void {
+    this.emitBulkToUser( username, { reason: reason ?? "bulk-refresh" } );
+  }
+
+  // ========================================================================
+  // Internal sanitizers (no throwing)
+  // ========================================================================
+
+  private safeUsernameOrEmpty( v: unknown ): string {
+    const s = typeof v === "string" ? v.trim() : "";
+    return s;
+  }
+
+  private safeKeyOrEmpty( v: unknown ): string {
+    const s = typeof v === "string" ? v.trim() : "";
+    return s;
   }
 }

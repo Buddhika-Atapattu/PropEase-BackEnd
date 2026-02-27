@@ -254,7 +254,7 @@ export class MemberActivitiesController {
       const dto = await this.service.create(ctx, input);
 
       // ✅ notify (best-effort)
-      this.tryEmitMemberActivityNotification(auth, "memberActivity.create", dto, {
+      this.tryEmitMemberActivityNotification(auth, "team:member.activities.added", dto, {
         actionKeyRaw: "team:member.activities.added",
         actionKeyFallback: "team:member.activities.added",
         title: "Member activity created",
@@ -290,7 +290,7 @@ export class MemberActivitiesController {
       const dto = await this.service.updateById(ctx, activityId, input);
 
       // ✅ notify (best-effort)
-      this.tryEmitMemberActivityNotification(auth, "memberActivity.update", dto, {
+      this.tryEmitMemberActivityNotification(auth, "team:member.activities.updated", dto, {
         actionKeyRaw: "team:member.activities.updated",
         actionKeyFallback: "team:member.activities.updated",
         title: "Member activity updated",
@@ -332,7 +332,7 @@ export class MemberActivitiesController {
       await this.service.deleteById(ctx, activityId);
 
       if (before) {
-        this.tryEmitMemberActivityNotification(auth, "memberActivity.delete", before, {
+        this.tryEmitMemberActivityNotification(auth, "team:member.activities.removed", before, {
           actionKeyRaw: "team:member.activities.removed",
           actionKeyFallback: "team:member.activities.removed",
           title: "Member activity deleted",
@@ -340,7 +340,7 @@ export class MemberActivitiesController {
         });
       } else {
         // fallback (still union-safe)
-        this.tryEmitNotification(auth, "memberActivity.delete", {
+        this.tryEmitNotification(auth, "team:member.activities.removed", {
           tags: ["teamManagement", "memberActivity", "delete"],
           target: this.buildTarget({
             category: "TeamManagement",
@@ -368,7 +368,7 @@ export class MemberActivitiesController {
   /* ====================================================================== *
    * NOTIFICATION (audiences ALWAYS array) — best-effort
    * ====================================================================== */
-  private tryEmitNotification(author: AuthUser, eventKey: string, input: MemberActivityNotificationInput): void {
+  private tryEmitNotification(author: AuthUser, eventKey: NotificationActionKey, input: MemberActivityNotificationInput): void {
     try {
       const actor: NotificationActorDto = {
         userId: String(author.userId),
@@ -400,7 +400,7 @@ export class MemberActivitiesController {
    */
   private tryEmitMemberActivityNotification(
     author: AuthUser,
-    eventKey: string,
+    eventKey: NotificationActionKey,
     dto: MemberActivityDto,
     info: {
       actionKeyRaw: string;
@@ -497,7 +497,7 @@ export class MemberActivitiesController {
 
       const dto = await this.service.appendEvidence(ctx, activityId, input);
 
-      this.tryEmitMemberActivityNotification(auth, "memberActivity.evidence.append", dto, {
+      this.tryEmitMemberActivityNotification(auth, "team:member.activities.updated", dto, {
         actionKeyRaw: "team:member.activities.updated",
         actionKeyFallback: "team:member.activities.updated",
         title: "Evidence added to activity",
@@ -543,9 +543,9 @@ export class MemberActivitiesController {
 
       const dto = await this.service.removeEvidence(ctx, activityId, input);
 
-      this.tryEmitMemberActivityNotification(auth, "memberActivity.evidence.remove", dto, {
-        actionKeyRaw: "team:member.activities.updated",
-        actionKeyFallback: "team:member.activities.updated",
+      this.tryEmitMemberActivityNotification(auth, "team:member.activities.evidence.removed", dto, {
+        actionKeyRaw: "team:member.activities.evidence.removed",
+        actionKeyFallback: "team:member.activities.evidence.removed",
         title: "Evidence removed from activity",
         message: dto.title,
       });
@@ -585,9 +585,9 @@ export class MemberActivitiesController {
 
       const dto = await this.service.replaceEvidence(ctx, activityId, input);
 
-      this.tryEmitMemberActivityNotification(auth, "memberActivity.evidence.replace", dto, {
-        actionKeyRaw: "team:member.activities.updated",
-        actionKeyFallback: "team:member.activities.updated",
+      this.tryEmitMemberActivityNotification(auth, "team:member.activities.evidence.updated", dto, {
+        actionKeyRaw: "team:member.activities.evidence.updated",
+        actionKeyFallback: "team:member.activities.evidence.updated",
         title: "Evidence replaced on activity",
         message: dto.title,
       });
@@ -632,9 +632,9 @@ export class MemberActivitiesController {
 
       const dto = await this.service.appendBlocker(ctx, activityId, input);
 
-      this.tryEmitMemberActivityNotification(auth, "memberActivity.blocker.append", dto, {
-        actionKeyRaw: "team:member.activities.updated",
-        actionKeyFallback: "team:member.activities.updated",
+      this.tryEmitMemberActivityNotification(auth, "team:member.activities.blocker.appended", dto, {
+        actionKeyRaw: "team:member.activities.blocker.appended",
+        actionKeyFallback: "team:member.activities.blocker.appended",
         title: "Blocker added",
         message: dto.title,
       });
@@ -682,9 +682,9 @@ export class MemberActivitiesController {
 
       const dto = await this.service.updateBlocker(ctx, activityId, input);
 
-      this.tryEmitMemberActivityNotification(auth, "memberActivity.blocker.update", dto, {
-        actionKeyRaw: "team:member.activities.updated",
-        actionKeyFallback: "team:member.activities.updated",
+      this.tryEmitMemberActivityNotification(auth, "team:member.activities.blocker.updated", dto, {
+        actionKeyRaw: "team:member.activities.blocker.updated",
+        actionKeyFallback: "team:member.activities.blocker.updated",
         title: "Blocker updated",
         message: dto.title,
       });
@@ -731,9 +731,9 @@ export class MemberActivitiesController {
 
       const dto = await this.service.resolveBlocker(ctx, activityId, input);
 
-      this.tryEmitMemberActivityNotification(auth, "memberActivity.blocker.resolve", dto, {
-        actionKeyRaw: "team:member.activities.updated",
-        actionKeyFallback: "team:member.activities.updated",
+      this.tryEmitMemberActivityNotification(auth, "team:member.activities.blocker.resolved", dto, {
+        actionKeyRaw: "team:member.activities.blocker.resolved",
+        actionKeyFallback: "team:member.activities.blocker.resolved",
         title: "Blocker resolved",
         message: dto.title,
       });
@@ -778,9 +778,9 @@ export class MemberActivitiesController {
 
       const dto = await this.service.removeBlocker(ctx, activityId, input);
 
-      this.tryEmitMemberActivityNotification(auth, "memberActivity.blocker.remove", dto, {
-        actionKeyRaw: "team:member.activities.updated",
-        actionKeyFallback: "team:member.activities.updated",
+      this.tryEmitMemberActivityNotification(auth, "team:member.activities.blocker.removed", dto, {
+        actionKeyRaw: "team:member.activities.blocker.removed",
+        actionKeyFallback: "team:member.activities.blocker.removed",
         title: "Blocker removed",
         message: dto.title,
       });

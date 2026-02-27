@@ -134,6 +134,9 @@ export interface NotificationDeliveryResult {
 
   results: DeliveryAttemptResult[];
 
+  notification?: NotificationCoreDto;
+  notifications?: NotificationCoreDto[];
+
   other: {
     attemptedTotal: number;
     deliveredTotal: number;

@@ -438,7 +438,7 @@ export class CommentsEngineRouter {
           await this.cleanupTmpDirSafe( req );
 
           this.notificationHub.emit( {
-            eventKey: 'comment:create',
+            eventKey: 'comment:added',
             actor,
             audiences: [
               {

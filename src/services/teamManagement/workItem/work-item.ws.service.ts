@@ -12,8 +12,8 @@
 // - Handler is resolved lazily at emit time. If not ready => NO-OP + warning log.
 // ----------------------------------------------------------------------------
 // ✅ ROOM STRATEGY
-// - aud.team.<teamCode>        -> team-wide updates
-// - aud.member.<userId>        -> per-member stream
+// - team.<teamCode>        -> team-wide updates
+// - member.<userId>        -> per-member stream
 // - workItem.<workItemId>      -> work item detail listeners (use Mongo _id, not code)
 // ============================================================================
 
@@ -37,6 +37,7 @@ export interface WorkItemWsContext {
   requestId: string;
 
   teamCode?: string;
+  taskId?: string;
   workItemId?: string;
 
   memberUserIds?: string[];
@@ -114,11 +115,11 @@ export class WorkItemWsService {
   // =========================================================================
 
   private buildTeamRoom(teamCode: string): string {
-    return `aud.team.${teamCode}`;
+    return `team.${ teamCode }`;
   }
 
   private buildMemberRoom(userId: string): string {
-    return `aud.member.${userId}`;
+    return `member.${ userId }`;
   }
 
   private buildWorkItemRoom(workItemId: string): string {
@@ -277,8 +278,8 @@ export class WorkItemWsService {
       teamCode,
       workItemId: wid,
       memberUserIds: rooms
-        .filter((r) => r.startsWith("aud.member."))
-        .map((r) => r.replace("aud.member.", "")),
+        .filter( ( r ) => r.startsWith( " member." ) )
+        .map( ( r ) => r.replace( " member.", "" ) ),
     };
 
     this.emitReloadHint(rooms, nextCtx);

@@ -348,7 +348,7 @@ export class RoutesBootstrap {
     this.app.use( "/api-user", apiGuard, this.user.route );
     this.app.use( "/api-tracking", apiGuard, this.tracking.route );
     this.app.use( "/api-validator", apiGuard, this.validator.route );
-    this.app.use( "/api-recycle-bin", apiGuard, this.recycleBin.router );
+    this.app.use( "/api-recyclebin", apiGuard, this.recycleBin.router );
 
     // ─────────────────────────────────────────────────────────────────────────
     // Property + Places

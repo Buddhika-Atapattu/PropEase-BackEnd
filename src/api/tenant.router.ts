@@ -226,8 +226,8 @@ export default class Tenant {
         try {
           const actor = this.buildNotificationActor( author );
 
-          this.notificationHub.emit( {
-            eventKey: "tenant.create",
+          await this.notificationHub.emit( {
+            eventKey: "tenant:account.created",
             actor,
             audiences: [
               { mode: "User", username: tenantDoc.username },
@@ -545,13 +545,14 @@ export default class Tenant {
             entity: "Tenant",
             tags: [ "tenant", "lease", "cascade" ],
 
-            deleteDbRecord: async ( session: ClientSession ): Promise<void> => {
+            deleteDbRecord: async ( session?: ClientSession ): Promise<void> => {
+              const opts = session ? { session } : {};
               await LeaseModel.deleteMany(
                 { "tenantInformation.tenantUsername": username },
-                { session }
+                { opts }
               ).exec();
 
-              await TenantModel.deleteOne( { username }, { session } ).exec();
+              await TenantModel.deleteOne( { username }, { opts } ).exec();
             },
           };
 
@@ -561,8 +562,8 @@ export default class Tenant {
           try {
             const actor = this.buildNotificationActor( author );
 
-            this.notificationHub.emit( {
-              eventKey: "tenant.delete",
+            await this.notificationHub.emit( {
+              eventKey: "tenant:account.deleted",
               actor,
               audiences: [
                 { mode: "Role", roleKey: "admin" },
@@ -749,8 +750,8 @@ export default class Tenant {
         try {
           const actor = this.buildNotificationActor( author );
 
-          this.notificationHub.emit( {
-            eventKey: "complaint.create",
+          await this.notificationHub.emit( {
+            eventKey: "tenant:complaint.created",
             actor,
             audiences: [
               { mode: "User", username: String( ( userTenantDoc as any )?._id ?? userTenantDoc.username ?? tenantId ) },

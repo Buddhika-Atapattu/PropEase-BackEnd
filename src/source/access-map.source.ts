@@ -616,6 +616,7 @@ export const ACCESS_OPTIONS = [
       { id: "broadcast", label: "Broadcast", icon: "campaign" },
       { id: "configure", label: "Config", icon: "tune" },
       { id: "audit", label: "Audit", icon: "fact_check" },
+      { id: "archive", label: "Archive", icon: "archive" },
       { id: "export", label: "Export", icon: "file_download" },
     ] as const,
   },

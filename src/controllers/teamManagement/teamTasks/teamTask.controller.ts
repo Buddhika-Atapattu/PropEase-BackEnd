@@ -725,7 +725,7 @@ export class TeamTaskController {
 
             const audiencesMembers = await this.organiseAudienceForTeamMembers( memberOids );
 
-            this.notificationHub.emit( {
+            await this.notificationHub.emit( {
                 eventKey: 'team:task.created',
                 actor,
                 audiences: [
@@ -955,7 +955,7 @@ export class TeamTaskController {
 
             const audiencesMembers = await this.organiseAudienceForTeamMembers( memberOids );
 
-            this.notificationHub.emit( {
+            await this.notificationHub.emit( {
                 eventKey: 'team:task.updated',
                 actor,
                 audiences: [
@@ -1021,7 +1021,12 @@ export class TeamTaskController {
             const wsCtx = await this.buildWsContext( req );
             const ok = await this.service.delete( taskMongoId, req, wsCtx );
 
-            this.notificationHub.emit( {
+            if ( !ok ) {
+                ApiResponseBuilder.fail( res, 'Team task deletion failed!' );
+                return;
+            }
+
+            await this.notificationHub.emit( {
                 eventKey: 'team:task.deleted',
                 actor,
                 audiences: [
@@ -1050,10 +1055,7 @@ export class TeamTaskController {
                     actionKey: 'team:task.deleted',
                     category: 'teamTask',
                     module: 'teamManagement',
-                    params: {
-                        teamCode: this.safeStr( existing.teamCode ),
-                        taskId: this.safeStr( existing.id ?? existing.taskMongoId ),
-                    },
+                    params: { recycleItemRef: ok.entry.entryId },
                     refId: this.safeStr( existing.id ?? existing.taskMongoId ),
                 }
             } );

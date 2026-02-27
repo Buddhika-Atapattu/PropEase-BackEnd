@@ -97,11 +97,11 @@ export class MilestoneWsService {
   // =========================================================================
 
   private buildTeamRoom(teamCode: string): string {
-    return `aud.team.${teamCode}`;
+    return ` team.${ teamCode }`;
   }
 
   private buildMemberRoom(userId: string): string {
-    return `aud.member.${userId}`;
+    return ` member.${ userId }`;
   }
 
   private buildWorkItemRoom(workItemId: string): string {

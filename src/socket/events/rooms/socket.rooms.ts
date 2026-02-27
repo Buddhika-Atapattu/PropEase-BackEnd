@@ -2,25 +2,18 @@
 // =============================================================================
 // SocketRooms — Global Room Registry (SINGLE SOURCE OF TRUTH)
 // -----------------------------------------------------------------------------
-// PURPOSE
-// - One canonical room naming convention for the entire platform.
-// - Notifications, Team modules, future HR/Finance modules MUST reuse this.
-//
-// DESIGN
+// Universal rooms (system-wide):
 // - "user:<username>"          => per-user (multi-tab safe)
-// - "session:<sessionToken>"   => per-session
-// - "role:<role>"              => legacy role room (kept for backward compat)
-// - "broadcast"                => global
+// - "role:<role>"              => role audience
+// - "team:<teamCode>"          => team audience
+// - "company"                  => whole company / tenant
 //
-// - "aud.role.<role>"          => audience-role (notifications standard)
-// - "aud.team.<teamCode>"      => audience-team (kpi + team modules)
-// - "aud.member.<userId>"      => audience-member (kpi / personal)
-// - "aud.branch.<branchId>"    => audience-branch
-// - "aud.org.<orgId>"          => audience-org (default org)
+// Security / infra rooms:
+// - "session:<sessionToken>"   => per-session (logout/security termination)
+// - "broadcast"                => optional global broadcast (rare)
 //
-// FUTURE SAFE
-// - add new audiences without touching handler logic by putting them into token:
-//   authUser.audRooms = ["aud.hr.dept.SALES", "aud.finance.approver", ...]
+// Backward-compat (temporary):
+// - audRole/audTeam/audOrg map into universal rooms (to avoid breakage)
 // =============================================================================
 
 export class SocketRooms {
@@ -30,6 +23,7 @@ export class SocketRooms {
   // Base rooms
   // --------------------------------------------------------------------------
   public static readonly BROADCAST: string = "broadcast";
+  public static readonly COMPANY: string = "company";
 
   public static user(username: string): string {
     const u = this.safeKey(username);
@@ -41,50 +35,32 @@ export class SocketRooms {
     return `session:${s || "unknown"}`;
   }
 
-  /** Legacy role room (kept because other modules may still emit to role:<role>) */
   public static role(roleKey: string): string {
     const r = this.safeKey(roleKey);
     return `role:${r || "Unknown"}`;
   }
 
+  public static team( teamCode: string ): string {
+    const t = this.safeKey( teamCode );
+    return `team:${ t || "Unknown" }`;
+  }
+
   // --------------------------------------------------------------------------
-  // Audience rooms (enterprise standard)
+  // Backward compat: map old “ *” calls into universal rooms
   // --------------------------------------------------------------------------
+  /** @deprecated use SocketRooms.role() */
   public static audRole(roleKey: string): string {
-    const r = this.safeKey(roleKey);
-    return `aud.role.${r || "Unknown"}`;
+    return SocketRooms.role( roleKey );
   }
 
+  /** @deprecated use SocketRooms.team() */
   public static audTeam(teamCode: string): string {
-    const t = this.safeKey(teamCode);
-    return `aud.team.${t || "Unknown"}`;
+    return SocketRooms.team( teamCode );
   }
 
-  public static audMember(userId: string): string {
-    const m = this.safeKey(userId);
-    return `aud.member.${m || "Unknown"}`;
-  }
-
-  public static audBranch(branchId: string): string {
-    const b = this.safeKey(branchId);
-    return `aud.branch.${b || "Unknown"}`;
-  }
-
-  public static audOrg(orgId: string): string {
-    const o = this.safeKey(orgId);
-    return `aud.org.${o || "org"}`;
-  }
-
-  /**
-   * Future extension (HR/Finance/etc.)
-   * Example:
-   *  SocketRooms.aud("hr.dept", "SALES")   -> "aud.hr.dept.SALES"
-   *  SocketRooms.aud("finance", "approver")-> "aud.finance.approver"
-   */
-  public static aud(scope: string, key: string): string {
-    const s = this.safeKey(scope).replace(/:/g, "."); // prevent colon creating "user:" style
-    const k = this.safeKey(key);
-    return `aud.${s || "Unknown"}.${k || "Unknown"}`;
+  /** @deprecated use SocketRooms.COMPANY */
+  public static audOrg( _orgId: string ): string {
+    return SocketRooms.COMPANY;
   }
 
   // --------------------------------------------------------------------------

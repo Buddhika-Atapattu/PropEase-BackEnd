@@ -1,18 +1,19 @@
 // Path: src/controller/teamManagement/workItems/workItem.controller.ts
 // ============================================================================
-// WorkItemController (REST + FileUploader helper) — 100% CLASS-BASED
+// WorkItemController (REST + FileUploader helper) — 100% CLASS-BASED (STRICT)
 // ----------------------------------------------------------------------------
 // ✅ PURPOSE
 // - Exposes REST endpoints for WorkItem domain (CRUD + atomic ops + activity)
-// - Uses your SECURITY-CRITICAL FileUploader helper for uploads
+// - Owns ALL upload handling (service is pure domain logic now)
 // - Upload fields supported: files / attachments / evidence
 //
 // ✅ Upload flow (TEMP -> FINAL)
 // 1) uploadMiddleware uploads to TEMP:
-//      uploads/teamManagement/workItems/__tmp/<token>/<field>/<storedName>
-// 2) create/update does DB write FIRST (REST source of truth)
+//      uploads/team-management/workItems/__tmp/<token>/<field>/<storedName>
+// 2) create/update/evidenceUpload does DB write FIRST (REST source of truth)
 // 3) controller moves TEMP -> FINAL:
-//      uploads/teamManagement/workItems/<teamId>/<workItemId>/<field>/<storedName>
+//      uploads/team-management/workItems/<teamId>/<workItemId>/<field>/<storedName>
+//   OR uploads/team-management/<teamId>/<taskId>workItems/<workItemId>/evidence/<field>/<storedName> (for evidence endpoint)
 // 4) controller rebuilds FileMetaPacket[] with updated relativePath/publicUrl
 // 5) controller patches WorkItemModel by appending meta arrays (best-effort)
 //    ✅ uploads must NEVER break REST response
@@ -23,6 +24,7 @@
 // - exactOptionalPropertyTypes safe: omit optional props, never set to undefined
 // - ApiResponseBuilder uses ok/error (and your existing internalError/validationError)
 // - ApiGuardExport.GetAuthUser(req) is async and MUST be awaited
+// - No `as any`
 // ============================================================================
 
 import type { Request, Response, NextFunction, RequestHandler } from "express";
@@ -44,12 +46,21 @@ import {
     type WorkItemCreateInput,
     type WorkItemUpdateInput,
     type WorkItemAppendActivityInput,
+    type WorkItemUploadEvidenceInput,
 } from "../../../services/teamManagement/workItem/work-item.rest.service";
 
 import type { WorkItemWsContext } from "../../../services/teamManagement/workItem/work-item.ws.service";
 
-import type { WorkItemStatus, WorkItemPriority } from "../../../types/teamManagement/workItem/workItem.types";
+import type { WorkItemStatus, WorkItemPriority, WorkItemDto } from "../../../types/teamManagement/workItem/workItem.types";
 import type { AuthUser } from "../../../types/common";
+
+import { NotificationHubEngineService } from "../../../services/notifications/notification-hub-engine.service";
+import { FileMetaDataBuilder } from "../../../utils/api-data.builder";
+import { FileMetaPacketBuilder } from "../../../utils/files/file-meta-packet.builder";
+
+/* =============================================================================
+ * Types
+ * ========================================================================== */
 
 type UploadField = "files" | "attachments" | "evidence";
 
@@ -60,16 +71,23 @@ interface UploadContextBag {
 
 export type AuthUserNormalized = Omit<AuthUser, "userId"> & { userId: string; };
 
+interface EvidenceUploadBody {
+    teamId: string; // ObjectId string (used for final path + validation)
+    taskId: string; // ObjectId string (used for final path)
+}
+
+interface EvidenceUploadResponseOther {
+    uploads: UploadResultPacket;
+}
+
+/* =============================================================================
+ * Controller
+ * ========================================================================== */
+
 export class WorkItemController {
     private static _instance: WorkItemController | null = null;
 
-    public static GetInstance(): WorkItemController {
-        if ( !WorkItemController._instance ) {
-            WorkItemController._instance = new WorkItemController();
-        }
-        return WorkItemController._instance;
-    }
-
+    private readonly notificationHub: NotificationHubEngineService = new NotificationHubEngineService();
     private readonly service: WorkItemRestService;
 
     // ----------------------------
@@ -96,11 +114,18 @@ export class WorkItemController {
         // Text
         "text/plain",
 
-        // Office (optional)
+        // Office
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ] );
+
+    public static GetInstance(): WorkItemController {
+        if ( !WorkItemController._instance ) {
+            WorkItemController._instance = new WorkItemController();
+        }
+        return WorkItemController._instance;
+    }
 
     private constructor () {
         this.service = new WorkItemRestService();
@@ -122,51 +147,61 @@ export class WorkItemController {
         this.setAssignedMembers = this.setAssignedMembers.bind( this );
 
         this.appendActivity = this.appendActivity.bind( this );
+
+        this.uploadEvidence = this.uploadEvidence.bind( this );
     }
 
-    // ===========================================================================
-    // Upload middleware (TEMP stage)
-    // ===========================================================================
+    /* ===========================================================================
+     * Upload middleware (TEMP stage)
+     * ======================================================================== */
+
+    /**
+     * Multer runs INSIDE FileUploader.handleMultiFieldUpload.
+     * This middleware executes the upload into TEMP and stores the packet on req.
+     */
+    private async runUploadIntoTemp( req: Request ): Promise<UploadContextBag> {
+        const token = this.makeToken();
+
+        const tempSubPath = `team-management/workItems/__tmp/${ token }`;
+
+        const fields: Array<{ name: string; maxCount?: number; }> = [
+            { name: "files", maxCount: this.FIELD_MAX.files },
+            { name: "attachments", maxCount: this.FIELD_MAX.attachments },
+            { name: "evidence", maxCount: this.FIELD_MAX.evidence },
+        ];
+
+        const packet = await FileUploader.handleMultiFieldUpload( tempSubPath, fields, req, {
+            maxFileSizeMb: this.MAX_FILE_SIZE_MB,
+            maxFiles: this.MAX_FILES_TOTAL,
+            allowedMimeTypesByField: {
+                files: this.ALLOWED_MIME,
+                attachments: this.ALLOWED_MIME,
+                evidence: this.ALLOWED_MIME,
+            },
+        } );
+
+        const bag: UploadContextBag = { token, packet };
+        this.setUploadBag( req, bag );
+
+        return bag;
+    }
+
     public async uploadMiddleware( req: Request, res: Response, next: NextFunction ): Promise<void> {
         try {
-            const token = this.makeToken();
-
-            // TEMP subPath under uploads root (FileUploader enforces /public/uploads)
-            // Example:
-            //   /public/uploads/teamManagement/workItems/__tmp/<token>/files/<storedName>
-            const tempSubPath = `teamManagement/workItems/__tmp/${ token }`;
-
-            const fields = [
-                { name: "files", maxCount: this.FIELD_MAX.files },
-                { name: "attachments", maxCount: this.FIELD_MAX.attachments },
-                { name: "evidence", maxCount: this.FIELD_MAX.evidence },
-            ];
-
-            const packet = await FileUploader.handleMultiFieldUpload( tempSubPath, fields, req, {
-                maxFileSizeMb: this.MAX_FILE_SIZE_MB,
-                maxFiles: this.MAX_FILES_TOTAL,
-                allowedMimeTypesByField: {
-                    files: this.ALLOWED_MIME,
-                    attachments: this.ALLOWED_MIME,
-                    evidence: this.ALLOWED_MIME,
-                },
-            } );
-
-            // Store upload info on req for create/update to move into FINAL
-            this.setUploadBag( req, { token, packet } );
-
+            await this.runUploadIntoTemp( req );
             next();
             return;
-        } catch ( err ) {
+        } catch ( err: unknown ) {
             const msg = err instanceof Error ? err.message : "Upload failed.";
             ApiResponseBuilder.internalError( res, msg );
             return;
         }
     }
 
-    // ===========================================================================
-    // GET
-    // ===========================================================================
+    /* ===========================================================================
+     * GET
+     * ======================================================================== */
+
     public async getById( req: Request, res: Response ): Promise<void> {
         try {
             const id = String( req.params.workItemId || "" ).trim();
@@ -174,7 +209,7 @@ export class WorkItemController {
 
             ApiResponseBuilder.ok( res, "workItem", dto, `Work item ${ dto._id } fetched successful!` );
             return;
-        } catch ( err ) {
+        } catch ( err: unknown ) {
             this.sendError( res, req, err );
             return;
         }
@@ -188,10 +223,9 @@ export class WorkItemController {
             const result = await this.service.list( filters, paging );
 
             const pagination: PaginationMeta = { total: result.other.total };
-
             ApiResponseBuilder.ok( res, "workItems", result.items, "Data fetch successful!", { pagination } );
             return;
-        } catch ( err ) {
+        } catch ( err: unknown ) {
             this.sendError( res, req, err );
             return;
         }
@@ -203,19 +237,18 @@ export class WorkItemController {
             const total = await this.service.count( filters );
 
             const pagination: PaginationMeta = { total };
-
-            // If your FE expects count in pagination, keep it there.
             ApiResponseBuilder.ok( res, "other", {}, "Work Items total count fetched successful!", { pagination } );
             return;
-        } catch ( err ) {
+        } catch ( err: unknown ) {
             this.sendError( res, req, err );
             return;
         }
     }
 
-    // ===========================================================================
-    // CREATE / UPDATE / DELETE (FINAL stage file move happens here)
-    // ===========================================================================
+    /* ===========================================================================
+     * CREATE / UPDATE / DELETE (FINAL stage file move happens here)
+     * ======================================================================== */
+
     public async create( req: Request, res: Response ): Promise<void> {
         try {
             const auth = await ApiGuardExport.GetAuthUser( req );
@@ -223,36 +256,44 @@ export class WorkItemController {
                 ApiResponseBuilder.error( res, 401, "Unauthorized" );
                 return;
             }
-            const authNormalised: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser(req);
+
+            const authNormalised: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser( req );
             if ( !authNormalised ) {
                 ApiResponseBuilder.error( res, 401, "Unauthorized" );
                 return;
             }
 
-            // ✅ Build WS ctx with resolved single teamCode (optional)
             const ctx = this.buildWsContext( req, auth );
-
-            // ✅ Now readCreateInput can safely require string userId
             const input = this.readCreateInput( req, authNormalised );
 
-            // 1) DB write first (REST is source of truth)
+            // 1) DB write first
             const dto = await this.service.create( ctx, input );
 
-            // 2) Move TEMP -> FINAL and patch DB (best-effort)
+            // 2) TEMP -> FINAL (best-effort) for general fields (files/attachments/evidence)
             const workItemId = this.extractIdFromDto( dto );
-            const uploads = await this.finalizeUploads( req, input.teamId, workItemId );
+            const uploads = await this.finalizeUploadsToWorkItemFields( req, input.teamId, input.taskId, workItemId );
 
-            const payload = {
-                dto,
-                ...( uploads ? { uploads } : {} ),
-            };
+            // NOTE: teamCode vs teamId mismatch for Notification audiences:
+            // Here we keep it safe: send to current user only (or company) unless you resolve teamCode properly.
+            // Adjust later when you have teamCode for the teamId.
+            this.notificationHub.emit( {
+                eventKey: "team:work-item.created",
+                actor: authNormalised,
+                audiences: [ { mode: "User", username: authNormalised.username } ],
+                target: {
+                    actionKey: "team:work-item.created",
+                    category: "Team",
+                    module: "Team management",
+                    params: { workItemId: dto.workItemCode },
+                    refId: String( dto.workItemCode ),
+                },
+            } );
 
-            // Keep your response style (ok/error family)
-            ApiResponseBuilder.ok( res, "workItem", payload.dto, "Work item created successful!", {
+            ApiResponseBuilder.ok( res, "workItem", dto, "Work item created successful!", {
                 ...( uploads ? { other: { uploads } } : {} ),
             } );
             return;
-        } catch ( err ) {
+        } catch ( err: unknown ) {
             this.sendError( res, req, err );
             return;
         }
@@ -265,7 +306,8 @@ export class WorkItemController {
                 ApiResponseBuilder.error( res, 401, "Unauthorized" );
                 return;
             }
-            const authNormalised: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser(req);
+
+            const authNormalised: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser( req );
             if ( !authNormalised ) {
                 ApiResponseBuilder.error( res, 401, "Unauthorized" );
                 return;
@@ -285,13 +327,27 @@ export class WorkItemController {
 
             // 2) TEMP -> FINAL (best-effort)
             const teamId = this.extractTeamIdFromDto( dto );
-            const uploads = await this.finalizeUploads( req, teamId, workItemId );
+            const taskId = this.extractTaskIdFromDto( dto );
+            const uploads = await this.finalizeUploadsToWorkItemFields( req, teamId, taskId, workItemId );
+
+            this.notificationHub.emit( {
+                eventKey: "team:work-item.updated",
+                actor: authNormalised,
+                audiences: [ { mode: "User", username: authNormalised.username } ],
+                target: {
+                    actionKey: "team:work-item.updated",
+                    category: "Team",
+                    module: "Team management",
+                    params: { workItemId: dto.workItemCode },
+                    refId: String( dto.workItemCode ),
+                },
+            } );
 
             ApiResponseBuilder.ok( res, "workItem", dto, "Work item updated successful!", {
                 ...( uploads ? { other: { uploads } } : {} ),
             } );
             return;
-        } catch ( err ) {
+        } catch ( err: unknown ) {
             this.sendError( res, req, err );
             return;
         }
@@ -304,11 +360,14 @@ export class WorkItemController {
                 ApiResponseBuilder.error( res, 401, "Unauthorized" );
                 return;
             }
-            const authNormalised: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser(req);
+
+            const authNormalised: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser( req );
             if ( !authNormalised ) {
                 ApiResponseBuilder.error( res, 401, "Unauthorized" );
                 return;
             }
+
+
 
             const workItemId = String( req.params.workItemId || "" ).trim();
             if ( !workItemId ) {
@@ -317,19 +376,32 @@ export class WorkItemController {
             }
 
             const ctx = this.buildWsContext( req, auth );
-            await this.service.deleteById( ctx, workItemId );
+            await this.service.deleteById( ctx, workItemId, auth );
 
+            this.notificationHub.emit( {
+                eventKey: "team:work-item.deleted",
+                actor: authNormalised,
+                audiences: [ { mode: "User", username: authNormalised.username } ],
+                target: {
+                    actionKey: "team:work-item.deleted",
+                    category: "Team",
+                    module: "Team management",
+                    params: { workItemId },
+                    refId: workItemId,
+                },
+            } );
             ApiResponseBuilder.ok( res, "other", { deleted: true }, "Work item deleted successful!" );
             return;
-        } catch ( err ) {
+        } catch ( err: unknown ) {
             this.sendError( res, req, err );
             return;
         }
     }
 
-    // ===========================================================================
-    // ATOMIC OPS
-    // ===========================================================================
+    /* ===========================================================================
+     * ATOMIC OPS
+     * ======================================================================== */
+
     public async setStatus( req: Request, res: Response ): Promise<void> {
         try {
             const auth = await ApiGuardExport.GetAuthUser( req );
@@ -337,7 +409,8 @@ export class WorkItemController {
                 ApiResponseBuilder.error( res, 401, "Unauthorized" );
                 return;
             }
-            const authNormalised: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser(req);
+
+            const authNormalised: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser( req );
             if ( !authNormalised ) {
                 ApiResponseBuilder.error( res, 401, "Unauthorized" );
                 return;
@@ -358,9 +431,22 @@ export class WorkItemController {
             const ctx = this.buildWsContext( req, auth );
             const dto = await this.service.setStatus( ctx, workItemId, status, authNormalised.userId );
 
+            this.notificationHub.emit( {
+                eventKey: "team:work-item.updated",
+                actor: authNormalised,
+                audiences: [ { mode: "User", username: authNormalised.username } ],
+                target: {
+                    actionKey: "team:work-item.updated",
+                    category: "Team",
+                    module: "Team management",
+                    params: { workItemId },
+                    refId: workItemId,
+                },
+            } );
+
             ApiResponseBuilder.ok( res, "workItem", dto, "Status updated successful!" );
             return;
-        } catch ( err ) {
+        } catch ( err: unknown ) {
             this.sendError( res, req, err );
             return;
         }
@@ -373,7 +459,8 @@ export class WorkItemController {
                 ApiResponseBuilder.error( res, 401, "Unauthorized" );
                 return;
             }
-            const authNormalised: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser(req);
+
+            const authNormalised: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser( req );
             if ( !authNormalised ) {
                 ApiResponseBuilder.error( res, 401, "Unauthorized" );
                 return;
@@ -394,9 +481,22 @@ export class WorkItemController {
             const ctx = this.buildWsContext( req, auth );
             const dto = await this.service.setPriority( ctx, workItemId, priority, authNormalised.userId );
 
+            this.notificationHub.emit( {
+                eventKey: "team:work-item.updated",
+                actor: authNormalised,
+                audiences: [ { mode: "User", username: authNormalised.username } ],
+                target: {
+                    actionKey: "team:work-item.updated",
+                    category: "Team",
+                    module: "Team management",
+                    params: { workItemId },
+                    refId: workItemId,
+                },
+            } );
+
             ApiResponseBuilder.ok( res, "workItem", dto, "Priority updated successful!" );
             return;
-        } catch ( err ) {
+        } catch ( err: unknown ) {
             this.sendError( res, req, err );
             return;
         }
@@ -409,7 +509,8 @@ export class WorkItemController {
                 ApiResponseBuilder.error( res, 401, "Unauthorized" );
                 return;
             }
-            const authNormalised: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser(req);
+
+            const authNormalised: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser( req );
             if ( !authNormalised ) {
                 ApiResponseBuilder.error( res, 401, "Unauthorized" );
                 return;
@@ -430,9 +531,22 @@ export class WorkItemController {
             const ctx = this.buildWsContext( req, auth );
             const dto = await this.service.setDueAt( ctx, workItemId, expectedCompleteAt, authNormalised.userId );
 
+            this.notificationHub.emit( {
+                eventKey: "team:work-item.updated",
+                actor: authNormalised,
+                audiences: [ { mode: "User", username: authNormalised.username } ],
+                target: {
+                    actionKey: "team:work-item.updated",
+                    category: "Team",
+                    module: "Team management",
+                    params: { workItemId },
+                    refId: workItemId,
+                },
+            } );
+
             ApiResponseBuilder.ok( res, "workItem", dto, "Due date updated successful!" );
             return;
-        } catch ( err ) {
+        } catch ( err: unknown ) {
             this.sendError( res, req, err );
             return;
         }
@@ -445,7 +559,8 @@ export class WorkItemController {
                 ApiResponseBuilder.error( res, 401, "Unauthorized" );
                 return;
             }
-            const authNormalised: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser(req);
+
+            const authNormalised: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser( req );
             if ( !authNormalised ) {
                 ApiResponseBuilder.error( res, 401, "Unauthorized" );
                 return;
@@ -466,21 +581,41 @@ export class WorkItemController {
             const ctx = this.buildWsContext( req, auth );
             const dto = await this.service.setAssignedMembers( ctx, workItemId, assignedToUserIds, authNormalised.userId );
 
+            this.notificationHub.emit( {
+                eventKey: "team:work-item.updated",
+                actor: authNormalised,
+                audiences: [ { mode: "User", username: authNormalised.username } ],
+                target: {
+                    actionKey: "team:work-item.updated",
+                    category: "Team",
+                    module: "Team management",
+                    params: { workItemId },
+                    refId: workItemId,
+                },
+            } );
+
             ApiResponseBuilder.ok( res, "workItem", dto, "Assigned members updated successful!" );
             return;
-        } catch ( err ) {
+        } catch ( err: unknown ) {
             this.sendError( res, req, err );
             return;
         }
     }
 
-    // ===========================================================================
-    // MEMBER ACTIVITY
-    // ===========================================================================
+    /* ===========================================================================
+     * MEMBER ACTIVITY
+     * ======================================================================== */
+
     public async appendActivity( req: Request, res: Response ): Promise<void> {
         try {
             const auth = await ApiGuardExport.GetAuthUser( req );
             if ( !auth ) {
+                ApiResponseBuilder.error( res, 401, "Unauthorized" );
+                return;
+            }
+
+            const authNormalised: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser( req );
+            if ( !authNormalised ) {
                 ApiResponseBuilder.error( res, 401, "Unauthorized" );
                 return;
             }
@@ -496,18 +631,229 @@ export class WorkItemController {
 
             const activity = await this.service.appendActivity( ctx, workItemId, input );
 
+            this.notificationHub.emit( {
+                eventKey: "team:work-item.updated",
+                actor: authNormalised,
+                audiences: [ { mode: "User", username: authNormalised.username } ],
+                target: {
+                    actionKey: "team:work-item.updated",
+                    category: "Team",
+                    module: "Team management",
+                    params: { workItemId },
+                    refId: workItemId,
+                },
+            } );
+
             ApiResponseBuilder.ok( res, "memberActivity", activity, "Activity appended successful!" );
             return;
-        } catch ( err ) {
+        } catch ( err: unknown ) {
             this.sendError( res, req, err );
             return;
         }
     }
 
-    // ===========================================================================
-    // FINALIZE UPLOADS (TEMP -> FINAL) + patch WorkItemModel
-    // ===========================================================================
-    private async finalizeUploads( req: Request, teamId: string, workItemId: string ): Promise<UploadResultPacket | null> {
+    /* ===========================================================================
+     * EVIDENCE UPLOAD (Controller-owned upload + DB patch only)
+     * ======================================================================== */
+
+    /**
+     * Upload ONLY evidence files for an existing WorkItem.
+     *
+     * Flow:
+     * 1) uploadMiddleware -> TEMP
+     * 2) validate body teamId/taskId + fetch WorkItem (safety)
+     * 3) move TEMP -> FINAL under:
+     *      uploads/team-management/<teamId>/<taskId>/workItems/<workItemId>/evidence/<field>/<storedName>
+     * 4) patch WorkItemModel.$push evidence packets (best-effort)
+     * 5) return updated WorkItemDto + other.uploads
+     */
+    public async uploadEvidence( req: Request<{ workItemId: string; }, unknown, EvidenceUploadBody>, res: Response, next: NextFunction ): Promise<void> {
+        try {
+            const auth = await ApiGuardExport.GetAuthUser( req );
+            if ( !auth ) {
+                ApiResponseBuilder.error( res, 401, "Unauthorized" );
+                return;
+            }
+
+            const authNormalised: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser( req );
+            if ( !authNormalised ) {
+                ApiResponseBuilder.error( res, 401, "Unauthorized" );
+                return;
+            }
+
+            const workItemId = String( req.params.workItemId || "" ).trim();
+            if ( !workItemId ) {
+                ApiResponseBuilder.error( res, 400, "workItemId is required." );
+                return;
+            }
+
+            const teamId = String( req.body?.teamId || "" ).trim();
+            const taskId = String( req.body?.taskId || "" ).trim();
+
+            if ( !teamId || !Types.ObjectId.isValid( teamId ) ) {
+                ApiResponseBuilder.error( res, 400, "teamId is required (ObjectId string)." );
+                return;
+            }
+            if ( !taskId || !Types.ObjectId.isValid( taskId ) ) {
+                ApiResponseBuilder.error( res, 400, "taskId is required (ObjectId string)." );
+                return;
+            }
+
+            // 0) Ensure WorkItem exists + belongs to provided taskId (folder safety)
+            const existing = await WorkItemModel.findById( this.toObjectId( workItemId ) ).lean<{ _id: Types.ObjectId; taskId?: Types.ObjectId; }>().exec();
+            if ( !existing ) {
+                ApiResponseBuilder.error( res, 404, "WorkItem not found." );
+                return;
+            }
+            if ( existing.taskId && existing.taskId.toString() !== taskId ) {
+                ApiResponseBuilder.error( res, 409, "TASK_MISMATCH: WorkItem does not belong to provided taskId." );
+                return;
+            }
+
+            // 1) run upload into TEMP (call middleware logic inline, not via next())
+            //    We must execute here because this endpoint may not be wired with UploadMiddleware in router.
+            await this.runUploadIntoTemp(req);
+
+            const bag = this.getUploadBag( req );
+            if ( !bag ) {
+                ApiResponseBuilder.error( res, 400, "Upload bag missing (upload did not run)." );
+                return;
+            }
+
+            const evidencePackets = this.getPacketsForField( bag.packet, "evidence" );
+
+            if ( evidencePackets.length === 0 ) {
+                ApiResponseBuilder.error( res, 400, "No evidence files were uploaded." );
+                return;
+            }
+
+
+            const uploadEvidenceInput = this.buildUploadEvidenceInput( req, authNormalised.userId );
+            const input: WorkItemUploadEvidenceInput = {
+                ...uploadEvidenceInput,
+                files: evidencePackets
+            };
+
+            const ctx = this.buildWsContext( req, auth );
+
+            await this.service.uploadEvidence( ctx, workItemId, input );
+
+            // 2) move TEMP -> FINAL and patch evidence field only
+            const uploads = await this.finalizeUploadsToEvidenceOnly( req, teamId, taskId, workItemId );
+
+            if ( !uploads ) {
+                ApiResponseBuilder.error( res, 400, "No evidence files were uploaded." );
+                return;
+            }
+
+            // 3) return latest DTO (source of truth)
+            const dto = await this.service.getById( workItemId );
+
+            this.notificationHub.emit( {
+                eventKey: "team:work-item.updated",
+                actor: authNormalised,
+                audiences: [ { mode: "User", username: authNormalised.username } ],
+                target: {
+                    actionKey: "team:work-item.updated",
+                    category: "Team",
+                    module: "Team management",
+                    params: { workItemId },
+                    refId: workItemId,
+                },
+            } );
+
+
+            ApiResponseBuilder.ok( res, "workItem", dto, "Evidence uploaded successfully!", {
+                other: {
+                    uploads
+                }
+            } );
+            return;
+        } catch ( err: unknown ) {
+            this.sendError( res, req, err );
+            return;
+        }
+    }
+
+
+    public async removeEvidence( req: Request<{ workItemId: string; }, unknown, EvidenceUploadBody>, res: Response, next: NextFunction ): Promise<void> {
+        try {
+            const auth = await ApiGuardExport.GetAuthUser( req );
+            if ( !auth ) {
+                ApiResponseBuilder.error( res, 401, "Unauthorized" );
+                return;
+            }
+
+            const authNormalised: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser( req );
+            if ( !authNormalised ) {
+                ApiResponseBuilder.error( res, 401, "Unauthorized" );
+                return;
+            }
+
+            const workItemId = String( req.params.workItemId || "" ).trim();
+            if ( !workItemId ) {
+                ApiResponseBuilder.error( res, 400, "workItemId is required." );
+                return;
+            }
+
+            const teamId = String( req.body?.teamId || "" ).trim();
+            const taskId = String( req.body?.taskId || "" ).trim();
+
+            if ( !teamId || !Types.ObjectId.isValid( teamId ) ) {
+                ApiResponseBuilder.error( res, 400, "teamId is required (ObjectId string)." );
+                return;
+            }
+            if ( !taskId || !Types.ObjectId.isValid( taskId ) ) {
+                ApiResponseBuilder.error( res, 400, "taskId is required (ObjectId string)." );
+                return;
+            }
+
+            const existing = await WorkItemModel.findById( this.toObjectId( workItemId ) ).lean<{ _id: Types.ObjectId; taskId?: Types.ObjectId; workItemCode: string; }>().exec();
+            if ( !existing ) {
+                ApiResponseBuilder.error( res, 404, "WorkItem not found." );
+                return;
+            }
+            if ( existing.taskId && existing.taskId.toString() !== taskId ) {
+                ApiResponseBuilder.error( res, 409, "TASK_MISMATCH: WorkItem does not belong to provided taskId." );
+                return;
+            }
+
+            const ctx = this.buildWsContext( req, auth );
+
+            const root: string[] = [
+                'uploads',
+                'team-management',
+                teamId,
+                'tasks',
+                taskId,
+                'workItems',
+                existing.workItemCode
+            ];
+            // `uploads/team-management/${teamId}/tasks/${taskId}/workItems/${existing.workItemCode}`
+
+
+            await this.service.removeEvidence( ctx, workItemId, {
+                relPaths: root,
+                updatedByUserId: this.normalizeAuthUser( auth ).userId
+            } );
+
+        }
+        catch ( err: unknown ) {
+            this.sendError( res, req, err );
+            return;
+        }
+    }
+
+    /* ===========================================================================
+     * FINALIZE UPLOADS
+     * ======================================================================== */
+
+    /**
+     * Used by create/update.
+     * FINAL path:
+     *  uploads/team-management/<teamId>/tasks/<taskId>/workItems/<workItemId>/<field>/<storedName>
+     */
+    private async finalizeUploadsToWorkItemFields( req: Request, teamId: string, taskId: string, workItemId: string ): Promise<UploadResultPacket | null> {
         const bag = this.getUploadBag( req );
         if ( !bag ) return null;
 
@@ -522,9 +868,7 @@ export class WorkItemController {
 
         if ( !hasAny ) return null;
 
-        // FINAL base subPath
-        // uploads/teamManagement/workItems/<teamId>/<workItemId>/<field>/<storedName>
-        const finalSubPath = `teamManagement/workItems/${ teamId }/${ workItemId }`;
+        const finalSubPath = `team-management/${ teamId }/tasks/${ taskId }/workItems/${ workItemId }`;
 
         const movedByField: Record<string, FileMetaPacket[]> = {
             files: [],
@@ -536,11 +880,7 @@ export class WorkItemController {
             const arr = this.safeGetByField( packet, field );
             if ( arr.length === 0 ) continue;
 
-            // Each packet.relativePath should be "uploads/<tempSubPath>/<field>/<storedName>"
-            const sources = arr
-                .map( ( p ) => this.readRelativePath( p ) )
-                .filter( ( x ) => x.length > 0 );
-
+            const sources = arr.map( ( p ) => this.readRelativePath( p ) ).filter( ( x ) => x.length > 0 );
             if ( sources.length === 0 ) continue;
 
             const destinationDir = `uploads/${ finalSubPath }/${ field }`;
@@ -554,14 +894,13 @@ export class WorkItemController {
 
                 const rebuilt = this.rebuildPacketsAfterMove( req, arr, moveRes.moved );
                 movedByField[ field ] = rebuilt;
-            } catch ( e ) {
-                console.warn(
-                    `[Warning:] [WorkItemController] movePublicFiles failed for ${ field }: ${ ( e as Error ).message }\n`
-                );
+            } catch ( e: unknown ) {
+                const msg = e instanceof Error ? e.message : String( e );
+                console.warn( `[Warning:] [WorkItemController] movePublicFiles failed for ${ field }: ${ msg }\n` );
             }
         }
 
-        // Patch WorkItemModel with newly moved meta packets (append, not replace)
+        // Patch WorkItemModel (append)
         try {
             const $push: Record<string, unknown> = {};
 
@@ -572,17 +911,91 @@ export class WorkItemController {
             if ( Object.keys( $push ).length > 0 ) {
                 await WorkItemModel.updateOne( { _id: this.toObjectId( workItemId ) }, { $push } ).exec();
             }
-        } catch ( e ) {
-            console.warn( `[Warning:] [WorkItemController] WorkItem upload meta patch failed: ${ ( e as Error ).message }\n` );
+        } catch ( e: unknown ) {
+            const msg = e instanceof Error ? e.message : String( e );
+            console.warn( `[Warning:] [WorkItemController] WorkItem upload meta patch failed: ${ msg }\n` );
         }
 
-        // Build FINAL-shaped UploadResultPacket (contract-compatible)
+        return this.buildUploadPacketFromMoved( req, finalSubPath, movedByField );
+    }
+
+    /**
+     * Used by uploadEvidence endpoint.
+     * FINAL path:
+     *  uploads/teamManagement/workItems/<teamId>/<taskId>/<workItemId>/evidence/<field>/<storedName>
+     *
+     * Here we only accept "evidence" field (so FE cannot sneak in attachments/files).
+     */
+    private async finalizeUploadsToEvidenceOnly(
+        req: Request,
+        teamId: string,
+        taskId: string,
+        workItemId: string
+    ): Promise<UploadResultPacket | null> {
+        const bag = this.getUploadBag( req );
+        if ( !bag ) return null;
+
+        const packet = bag.packet;
+        if ( !packet || !packet.byField ) return null;
+
+        const evidencePackets = this.safeGetByField( packet, "evidence" );
+        if ( evidencePackets.length === 0 ) return null;
+
+        const finalSubPath = `teamManagement/workItems/${ teamId }/${ taskId }/${ workItemId }/evidence`;
+
+        const movedByField: Record<string, FileMetaPacket[]> = {
+            files: [],
+            attachments: [],
+            evidence: [],
+        };
+
+        const sources = evidencePackets.map( ( p ) => this.readRelativePath( p ) ).filter( ( x ) => x.length > 0 );
+        if ( sources.length === 0 ) return null;
+
+        const destinationDir = `uploads/${ finalSubPath }/evidence`;
+
+        try {
+            const moveRes = await FileUploader.movePublicFiles( {
+                sources,
+                destinationDir,
+                overwrite: true,
+            } );
+
+            movedByField.evidence = this.rebuildPacketsAfterMove( req, evidencePackets, moveRes.moved );
+        } catch ( e: unknown ) {
+            const msg = e instanceof Error ? e.message : String( e );
+            console.warn( `[Warning:] [WorkItemController] movePublicFiles failed for evidence: ${ msg }\n` );
+            return null;
+        }
+
+        // Patch only evidence field
+        try {
+            if ( movedByField.evidence.length > 0 ) {
+                await WorkItemModel.updateOne(
+                    { _id: this.toObjectId( workItemId ) },
+                    { $push: { evidence: { $each: movedByField.evidence } } }
+                ).exec();
+            }
+        } catch ( e: unknown ) {
+            const msg = e instanceof Error ? e.message : String( e );
+            console.warn( `[Warning:] [WorkItemController] Evidence meta patch failed: ${ msg }\n` );
+        }
+
+        return this.buildUploadPacketFromMoved( req, finalSubPath, movedByField );
+    }
+
+    private buildUploadPacketFromMoved(
+        req: Request,
+        finalSubPath: string,
+        movedByField: Record<string, FileMetaPacket[]>
+    ): UploadResultPacket {
         const origin = this.buildOrigin( req );
+
         const baseRelativeDir = `uploads/${ finalSubPath }`;
         const basePublicUrl = `${ origin }/${ baseRelativeDir }`;
-        const totalFiles: number = ( movedByField.files ? movedByField.files.length : 0 ) +
-            ( movedByField.attachments ? movedByField.attachments.length : 0 ) +
-            ( movedByField.evidence ? movedByField.evidence.length : 0 );
+
+        const totalFiles =
+            ( movedByField.files?.length ?? 0 ) + ( movedByField.attachments?.length ?? 0 ) + ( movedByField.evidence?.length ?? 0 );
 
         const out: UploadResultPacket = {
             baseRelativeDir,
@@ -607,14 +1020,12 @@ export class WorkItemController {
         }
 
         const origin = this.buildOrigin( req );
-
         const rebuilt: FileMetaPacket[] = [];
 
         for ( const p of original ) {
             const oldRel = this.readRelativePath( p );
             const base = this.basename( oldRel );
             const movedRel = base ? movedByBase.get( base ) : undefined;
-
             if ( !movedRel ) continue;
 
             const next = this.clonePacket( p, {
@@ -628,9 +1039,16 @@ export class WorkItemController {
         return rebuilt;
     }
 
-    // ===========================================================================
-    // Input readers (REST -> Service inputs)
-    // ===========================================================================
+    private getPacketsForField( packet: UploadResultPacket, field: UploadField ): FileMetaPacket[] {
+        const byField = packet.byField ?? {};
+        const hit = byField[ field ];
+        return Array.isArray( hit ) ? hit : [];
+    }
+
+    /* ===========================================================================
+     * Input readers (REST -> Service inputs)
+     * ======================================================================== */
+
     private readListFilters( req: Request ): WorkItemListFilters {
         const teamId = String( req.query.teamId || "" ).trim();
         if ( !teamId ) throw new WorkItemServiceError( "VALIDATION_ERROR", "teamId is required." );
@@ -669,6 +1087,8 @@ export class WorkItemController {
         const workItemCode = String( req.body?.workItemCode || "" ).trim();
         const teamId = String( req.body?.teamId || "" ).trim();
 
+        const taskId = String( req.body?.taskId || "" ).trim(); // ✅ required
+
         const assignedByUserId = String( req.body?.assignedByUserId || "" ).trim();
         const assignedToUserIds = this.readStringArray( req.body?.assignedToUserIds );
 
@@ -681,12 +1101,17 @@ export class WorkItemController {
 
         const progressCurrent = Number( req.body?.progressCurrent ?? 0 );
 
-        const taskIdRaw = String( req.body?.taskId || "" ).trim();
         const expectedStartAtRaw = String( req.body?.expectedStartAt || "" ).trim();
         const graceMinutesRaw = req.body?.graceMinutes;
 
+        // -------------------------
+        // Required validations
+        // -------------------------
         if ( !workItemCode ) throw new WorkItemServiceError( "VALIDATION_ERROR", "workItemCode is required." );
         if ( !teamId ) throw new WorkItemServiceError( "VALIDATION_ERROR", "teamId is required." );
+        if ( !taskId ) throw new WorkItemServiceError( "VALIDATION_ERROR", "taskId is required." );
+        if ( !Types.ObjectId.isValid( taskId ) ) throw new WorkItemServiceError( "INVALID_OBJECT_ID", "taskId must be a valid ObjectId string." );
+
         if ( !assignedByUserId ) throw new WorkItemServiceError( "VALIDATION_ERROR", "assignedByUserId is required." );
         if ( !assignedAt ) throw new WorkItemServiceError( "VALIDATION_ERROR", "assignedAt is required." );
         if ( !expectedCompleteAt ) throw new WorkItemServiceError( "VALIDATION_ERROR", "expectedCompleteAt is required." );
@@ -695,8 +1120,7 @@ export class WorkItemController {
         const input: WorkItemCreateInput = {
             workItemCode,
             teamId,
-
-            ...( taskIdRaw ? { taskId: taskIdRaw } : {} ),
+            taskId, // ✅ ALWAYS present now
 
             assignedByUserId,
             assignedToUserIds,
@@ -705,7 +1129,6 @@ export class WorkItemController {
             expectedCompleteAt,
 
             ...( expectedStartAtRaw ? { expectedStartAt: expectedStartAtRaw } : {} ),
-
             deadlinePolicy: deadlinePolicy as WorkItemCreateInput[ "deadlinePolicy" ],
             ...( typeof graceMinutesRaw === "number" ? { graceMinutes: graceMinutesRaw } : {} ),
 
@@ -719,49 +1142,44 @@ export class WorkItemController {
         return input;
     }
 
-    private readUpdateInput(req: Request, auth: AuthUserNormalized): WorkItemUpdateInput {
-        const expectedStartAtRaw = String(req.body?.expectedStartAt || "").trim();
-        const expectedCompleteAtRaw = String(req.body?.expectedCompleteAt || "").trim();
-      
-        const deadlinePolicyRaw = String(req.body?.deadlinePolicy || "").trim();
+    private readUpdateInput( req: Request, auth: AuthUserNormalized ): WorkItemUpdateInput {
+        const expectedStartAtRaw = String( req.body?.expectedStartAt || "" ).trim();
+        const expectedCompleteAtRaw = String( req.body?.expectedCompleteAt || "" ).trim();
+
+        const deadlinePolicyRaw = String( req.body?.deadlinePolicy || "" ).trim();
         const graceMinutesRaw = req.body?.graceMinutes;
-      
-        const statusCurrentRaw = String(req.body?.statusCurrent || "").trim();
-        const priorityRaw = String(req.body?.priority || "").trim();
-      
+
+        const statusCurrentRaw = String( req.body?.statusCurrent || "" ).trim();
+        const priorityRaw = String( req.body?.priority || "" ).trim();
+
         const progressCurrentRaw = req.body?.progressCurrent;
-        const completedAtRaw = String(req.body?.completedAt || "").trim();
-        const completedByUserIdRaw = String(req.body?.completedByUserId || "").trim();
-      
-        // ✅ validate deadlinePolicy (no "as WorkItemUpdateInput['deadlinePolicy']")
-        const deadlinePolicy =
-          deadlinePolicyRaw === "soft" || deadlinePolicyRaw === "hard"
-            ? (deadlinePolicyRaw as WorkItemUpdateInput["deadlinePolicy"] extends infer T
-                ? Exclude<T, undefined>
-                : never)
-            : null;
-      
+        const completedAtRaw = String( req.body?.completedAt || "" ).trim();
+        const completedByUserIdRaw = String( req.body?.completedByUserId || "" ).trim();
+
+        // ✅ validate deadlinePolicy safely
+        const deadlinePolicy: WorkItemUpdateInput[ "deadlinePolicy" ] | null =
+            deadlinePolicyRaw === "soft" || deadlinePolicyRaw === "hard" ? deadlinePolicyRaw : null;
+
         const input: WorkItemUpdateInput = {
-          ...(expectedStartAtRaw ? { expectedStartAt: expectedStartAtRaw } : {}),
-          ...(expectedCompleteAtRaw ? { expectedCompleteAt: expectedCompleteAtRaw } : {}),
-      
-          ...(deadlinePolicy ? { deadlinePolicy } : {}),
-          ...(typeof graceMinutesRaw === "number" ? { graceMinutes: graceMinutesRaw } : {}),
-      
-          ...(statusCurrentRaw ? { statusCurrent: statusCurrentRaw as WorkItemStatus } : {}),
-          ...(priorityRaw ? { priority: priorityRaw as WorkItemPriority } : {}),
-      
-          ...(typeof progressCurrentRaw === "number" ? { progressCurrent: progressCurrentRaw } : {}),
-      
-          ...(completedAtRaw ? { completedAt: completedAtRaw } : {}),
-          ...(completedByUserIdRaw ? { completedByUserId: completedByUserIdRaw } : {}),
-      
-          updatedByUserId: auth.userId,
+            ...( expectedStartAtRaw ? { expectedStartAt: expectedStartAtRaw } : {} ),
+            ...( expectedCompleteAtRaw ? { expectedCompleteAt: expectedCompleteAtRaw } : {} ),
+
+            ...( deadlinePolicy ? { deadlinePolicy } : {} ),
+            ...( typeof graceMinutesRaw === "number" ? { graceMinutes: graceMinutesRaw } : {} ),
+
+            ...( statusCurrentRaw ? { statusCurrent: statusCurrentRaw as WorkItemStatus } : {} ),
+            ...( priorityRaw ? { priority: priorityRaw as WorkItemPriority } : {} ),
+
+            ...( typeof progressCurrentRaw === "number" ? { progressCurrent: progressCurrentRaw } : {} ),
+
+            ...( completedAtRaw ? { completedAt: completedAtRaw } : {} ),
+            ...( completedByUserIdRaw ? { completedByUserId: completedByUserIdRaw } : {} ),
+
+            updatedByUserId: auth.userId,
         };
-      
+
         return input;
-      }
-      
+    }
 
     private readAppendActivityInput( req: Request ): WorkItemAppendActivityInput {
         const userId = String( req.body?.userId || "" ).trim();
@@ -816,7 +1234,10 @@ export class WorkItemController {
             const s = raw.trim();
             if ( !s ) return [];
             if ( s.includes( "," ) ) {
-                return s.split( "," ).map( ( x ) => x.trim() ).filter( ( x ) => x.length > 0 );
+                return s
+                    .split( "," )
+                    .map( ( x ) => x.trim() )
+                    .filter( ( x ) => x.length > 0 );
             }
             return [ s ];
         }
@@ -824,42 +1245,109 @@ export class WorkItemController {
         return [];
     }
 
-    // ===========================================================================
-    // WS Context (teamCodes -> single teamCode)
-    // ===========================================================================
+    /**
+     * ============================================================================
+     * buildUploadEvidenceInput()
+     * ----------------------------------------------------------------------------
+     * PURPOSE
+     * - Extracts and validates non-file fields required for evidence upload.
+     * - Files are handled separately by uploadMiddleware + finalizeUploads().
+     *
+     * IMPORTANT
+     * - updatedByUserId MUST come from authenticated user, not request body.
+     * - teamCode is optional for WS emission but must be validated if provided.
+     *
+     * @param req - Express request object
+     * @param authUserId - Normalized authenticated userId (string)
+     *
+     * @returns Omit<WorkItemUploadEvidenceInput, "files">
+     * ============================================================================
+     */
+    private buildUploadEvidenceInput(
+        req: Request,
+        authUserId: string
+    ): Omit<WorkItemUploadEvidenceInput, "files"> {
+
+        const body = req.body as {
+            teamCode?: unknown;
+            teamId?: unknown;
+            taskId?: unknown;
+        };
+
+        // ----------------------------------------
+        // 1) Resolve teamCode (NOT teamId)
+        // ----------------------------------------
+        const rawTeamCode =
+            typeof body.teamCode === "string"
+                ? body.teamCode.trim()
+                : "";
+
+        // If you truly need teamCode for WS rooms, require it:
+        if ( !rawTeamCode ) {
+            throw new WorkItemServiceError(
+                "VALIDATION_ERROR",
+                "teamCode is required for evidence upload."
+            );
+        }
+
+        // ----------------------------------------
+        // 2) Validate taskId
+        // ----------------------------------------
+        const rawTaskId =
+            typeof body.taskId === "string"
+                ? body.taskId.trim()
+                : "";
+
+        if ( !rawTaskId || !Types.ObjectId.isValid( rawTaskId ) ) {
+            throw new WorkItemServiceError(
+                "INVALID_OBJECT_ID",
+                "Invalid or missing taskId."
+            );
+        }
+
+        // ----------------------------------------
+        // 3) Build output (secure userId)
+        // ----------------------------------------
+        const out: Omit<WorkItemUploadEvidenceInput, "files"> = {
+            teamCode: rawTeamCode,
+            taskId: rawTaskId,
+            updatedByUserId: authUserId, // ✅ NEVER from body
+        };
+
+        return out;
+    }
+
+    /* ===========================================================================
+     * WS Context
+     * ======================================================================== */
+
     private buildWsContext( req: Request, auth: AuthUser ): WorkItemWsContext {
         const requestId = this.getRequestId( req ) || this.makeToken();
         const teamCode = this.resolveTeamCode( req, auth );
 
         return {
-            actor: auth, // ✅ required username/role present (fixes exactOptionalPropertyTypes error)
+            actor: auth,
             requestId,
             ...( teamCode ? { teamCode } : {} ),
         };
     }
 
     private resolveTeamCode( req: Request, auth: AuthUser ): string | null {
-        // Allow explicit teamCode from request (body/query/header), but validate against auth.teamCodes if present.
         const fromBody = String( ( req.body as unknown as { teamCode?: unknown; } )?.teamCode || "" ).trim();
         const fromQuery = String( ( req.query as unknown as { teamCode?: unknown; } )?.teamCode || "" ).trim();
         const fromHeader = String( req.headers[ "x-team-code" ] || "" ).trim();
 
         const requested = fromBody || fromQuery || fromHeader;
-
         const allowed = Array.isArray( auth.teamCodes ) ? auth.teamCodes : [];
 
         if ( requested ) {
-            // If JWT provides teamCodes list, enforce membership.
             if ( allowed.length > 0 && !allowed.includes( requested ) ) {
                 throw new WorkItemServiceError( "FORBIDDEN_TEAM", `Forbidden teamCode: ${ requested }` );
             }
             return requested;
         }
 
-        // If only one team, auto pick (convenience)
         if ( allowed.length === 1 ) return allowed[ 0 ] ?? null;
-
-        // Ambiguous/no teamCodes -> allow REST, skip WS emits
         return null;
     }
 
@@ -873,10 +1361,11 @@ export class WorkItemController {
         return header ? header : null;
     }
 
-    // ===========================================================================
-    // Error mapper
-    // ===========================================================================
-    private sendError( res: Response, req: Request, err: unknown ): void {
+    /* ===========================================================================
+     * Error mapper
+     * ======================================================================== */
+
+    private sendError( res: Response, _req: Request, err: unknown ): void {
         if ( err instanceof WorkItemServiceError ) {
             const status =
                 err.code === "WORK_ITEM_NOT_FOUND"
@@ -901,9 +1390,10 @@ export class WorkItemController {
         ApiResponseBuilder.internalError( res, msg );
     }
 
-    // ===========================================================================
-    // Upload bag storage (req-scoped)
-    // ===========================================================================
+    /* ===========================================================================
+     * Upload bag storage (req-scoped)
+     * ======================================================================== */
+
     private setUploadBag( req: Request, bag: UploadContextBag ): void {
         ( req as unknown as { __workItemUploadBag?: UploadContextBag; } ).__workItemUploadBag = bag;
     }
@@ -941,7 +1431,7 @@ export class WorkItemController {
     }
 
     private clonePacket( p: FileMetaPacket, patch: { relativePath: string; publicUrl: string; } ): FileMetaPacket {
-        const obj = { ...( p as unknown as Record<string, unknown> ) };
+        const obj: Record<string, unknown> = { ...( p as unknown as Record<string, unknown> ) };
 
         obj.relativePath = patch.relativePath;
         obj.publicUrl = patch.publicUrl;
@@ -956,8 +1446,8 @@ export class WorkItemController {
     private basename( rel: string ): string {
         const s = String( rel || "" ).replace( /\\/g, "/" );
         const parts = s.split( "/" ).filter( Boolean );
-        const basename: string | undefined = parts.length > 0 && parts[ parts.length - 1 ] ? parts[ parts.length - 1 ] : '';
-        return basename ? basename.trim() : '';
+        const base = parts.length > 0 ? parts[ parts.length - 1 ] : "";
+        return base ? base.trim() : "";
     }
 
     private buildOrigin( req: Request ): string {
@@ -981,9 +1471,10 @@ export class WorkItemController {
         return total;
     }
 
-    // ===========================================================================
-    // DTO helpers
-    // ===========================================================================
+    /* ===========================================================================
+     * DTO helpers
+     * ======================================================================== */
+
     private extractIdFromDto( dto: unknown ): string {
         const raw = ( dto as { _id?: unknown; id?: unknown; } )._id ?? ( dto as { id?: unknown; } ).id;
 
@@ -1012,6 +1503,20 @@ export class WorkItemController {
         throw new WorkItemServiceError( "DTO_MISSING_TEAM_ID", "WorkItemDto.teamId missing or invalid." );
     }
 
+    private extractTaskIdFromDto( dto: unknown ): string {
+        const raw = ( dto as { taskId?: unknown; } ).taskId;
+
+        if ( typeof raw === "string" && Types.ObjectId.isValid( raw ) ) return raw;
+        if ( raw instanceof Types.ObjectId ) return raw.toString();
+
+        if ( raw && typeof raw === "object" && "toString" in raw ) {
+            const s = String( ( raw as { toString: () => string; } ).toString() );
+            if ( Types.ObjectId.isValid( s ) ) return s;
+        }
+
+        throw new WorkItemServiceError( "DTO_MISSING_TASK_ID", "WorkItemDto.taskId missing or invalid." );
+    }
+
     private toObjectId( id: string ): Types.ObjectId {
         if ( !Types.ObjectId.isValid( id ) ) {
             throw new WorkItemServiceError( "INVALID_OBJECT_ID", `Invalid ObjectId: ${ id }` );
@@ -1023,9 +1528,10 @@ export class WorkItemController {
         return `${ Date.now() }_${ Math.random().toString( 16 ).slice( 2 ) }`.replace( /\./g, "_" );
     }
 
-    // ===========================================================================
-    // Auth normalization (ObjectId | string -> string)
-    // ===========================================================================
+    /* ===========================================================================
+     * Auth normalization (ObjectId | string -> string)
+     * ======================================================================== */
+
     private toIdString( id: Types.ObjectId | string ): string {
         if ( typeof id === "string" ) {
             const s = id.trim();
@@ -1043,16 +1549,14 @@ export class WorkItemController {
     }
 
     private normalizeAuthUser( auth: AuthUser ): AuthUserNormalized {
-        return {
-            ...auth,
-            userId: this.toIdString( auth.userId ),
-        };
+        return { ...auth, userId: this.toIdString( auth.userId ) };
     }
 }
 
-// ----------------------------------------------------------------------------
-// Router-friendly export (same pattern you used elsewhere)
-// ----------------------------------------------------------------------------
+/* =============================================================================
+ * Router-friendly export
+ * ========================================================================== */
+
 export class WorkItemControllerExport {
     public static readonly Controller = WorkItemController.GetInstance();
 
@@ -1072,4 +1576,7 @@ export class WorkItemControllerExport {
     public static readonly SetAssignedMembers: RequestHandler = WorkItemControllerExport.Controller.setAssignedMembers;
 
     public static readonly AppendActivity: RequestHandler = WorkItemControllerExport.Controller.appendActivity;
+
+    // ✅ NEW
+    public static readonly UploadEvidence: RequestHandler<{ workItemId: string; }, unknown, EvidenceUploadBody> = WorkItemControllerExport.Controller.uploadEvidence;
 }

@@ -49,7 +49,7 @@ export interface GuardedUser {
   permissions?: PermissionEntry[];
 }
 
-export type GuardedRequest = Request & { user?: GuardedUser };
+export type GuardedRequest = Request & { user?: GuardedUser; };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Global Express.Request augmentation
@@ -66,19 +66,19 @@ declare global {
 // Class wrapper (pattern builder)
 // ─────────────────────────────────────────────────────────────────────────────
 class GuardRoutesMapSource {
-  public static withOptionalQuery(base: RegExp): RegExp {
+  public static withOptionalQuery( base: RegExp ): RegExp {
     const src = base.source;
-    if (src.includes("\\?")) return base;
+    if ( src.includes( "\\?" ) ) return base;
 
-    const rebuilt = src.endsWith("$")
-      ? src.slice(0, -1) + "(?:\\?.*)?$"
+    const rebuilt = src.endsWith( "$" )
+      ? src.slice( 0, -1 ) + "(?:\\?.*)?$"
       : src + "(?:\\?.*)?$";
 
-    return new RegExp(rebuilt);
+    return new RegExp( rebuilt );
   }
 
-  public static p(rx: RegExp): RegExp {
-    return GuardRoutesMapSource.withOptionalQuery(rx);
+  public static p( rx: RegExp ): RegExp {
+    return GuardRoutesMapSource.withOptionalQuery( rx );
   }
 }
 
@@ -98,22 +98,22 @@ export const PUBLIC_ENDPOINTS: ReadonlyArray<PublicEndpoint> = [
   // =========================================================================
   {
     method: "POST",
-    pattern: GuardRoutesMapSource.p(/^\/api\/auth\/login$/),
+    pattern: GuardRoutesMapSource.p( /^\/api\/auth\/login$/ ),
     reason: "AuthController login",
   },
   {
     method: "POST",
-    pattern: GuardRoutesMapSource.p(/^\/api\/auth\/logout$/),
+    pattern: GuardRoutesMapSource.p( /^\/api\/auth\/logout$/ ),
     reason: "AuthController logout",
   },
   {
     method: "POST",
-    pattern: GuardRoutesMapSource.p(/^\/api\/auth\/regenerate-challenge$/),
+    pattern: GuardRoutesMapSource.p( /^\/api\/auth\/regenerate-challenge$/ ),
     reason: "Regenerate login challenge",
   },
   {
     method: "POST",
-    pattern: GuardRoutesMapSource.p(/^\/api\/auth\/ws-token\/rotate\/[^/]+$/),
+    pattern: GuardRoutesMapSource.p( /^\/api\/auth\/ws-token\/rotate\/[^/]+$/ ),
     reason: "Rotate WS token during auth flow",
   },
 
@@ -159,7 +159,7 @@ export const PUBLIC_ENDPOINTS: ReadonlyArray<PublicEndpoint> = [
   // =========================================================================
   {
     method: "POST",
-    pattern: GuardRoutesMapSource.p(/^\/api-user\/verify-user$/),
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/verify-user$/ ),
     reason: "Shared login entry route (UserRoute.verify-user)",
   },
 
@@ -168,7 +168,7 @@ export const PUBLIC_ENDPOINTS: ReadonlyArray<PublicEndpoint> = [
   // =========================================================================
   {
     method: "GET",
-    pattern: GuardRoutesMapSource.p(/^\/api-validator\/email-validator\/.+$/),
+    pattern: GuardRoutesMapSource.p( /^\/api-validator\/email-validator\/.+$/ ),
     reason: "Public email validation",
   },
 
@@ -177,7 +177,7 @@ export const PUBLIC_ENDPOINTS: ReadonlyArray<PublicEndpoint> = [
   // =========================================================================
   {
     method: "POST",
-    pattern: GuardRoutesMapSource.p(/^\/api-report\/security$/),
+    pattern: GuardRoutesMapSource.p( /^\/api-report\/security$/ ),
     reason: "Security incident reporting from FE",
   },
 
@@ -262,7 +262,7 @@ export const GUARD_ROUTES: ReadonlyArray<GuardRouteDefinition> = [
   {
     id: "user:delete",
     method: "DELETE",
-    pattern: GuardRoutesMapSource.p( /^\/api-user\/user-delete\/[^/]+\/[^/]+$/ ),
+    pattern: GuardRoutesMapSource.p( /^\/api-user\/user-delete\/[^/]+$/ ),
     module: "UserManagement",
     action: "delete",
     description: "UserManagement.delete → Legacy delete route mapped to delete permission",
@@ -359,85 +359,78 @@ export const GUARD_ROUTES: ReadonlyArray<GuardRouteDefinition> = [
   // =========================================================================
   // NOTIFICATION CENTER (/api-notification) → AccessMap: NotificationCenter
   // =========================================================================
+  // =============================================================================
+  // Notification Center — Guard Routes (match router paths exactly)
+  // Base mount assumed: /api-notification
+  // Endpoints (router):
+  //   POST /inbox/load
+  //   POST /inbox/count
+  //   POST /inbox/scope/load
+  //   POST /inbox/scope/count
+  //   POST /inbox/:inboxId/read
+  //   POST /inbox/read-all
+  //   POST /inbox/:inboxId/archive
+  // =============================================================================
+
   {
-    id: "notify:create",
+    id: "notify:inbox-load",
     method: "POST",
-    pattern: GuardRoutesMapSource.p( /^\/api-notification\/create$/ ),
+    pattern: GuardRoutesMapSource.p( /^\/api-notification\/inbox\/load$/ ),
     module: "NotificationCenter",
-    action: "create",
-    description: "NotificationCenter.create → Create a notification (server-side create)",
+    action: "list",
+    description: "NotificationCenter.list → Load inbox items (legacy load)",
   },
   {
-    id: "notify:update",
-    method: "PATCH",
-    pattern: GuardRoutesMapSource.p( /^\/api-notification\/update\/[^/]+$/ ),
-    module: "NotificationCenter",
-    action: "update",
-    description: "NotificationCenter.update → Update an existing notification",
-  },
-  {
-    id: "notify:delete",
+    id: "notify:inbox-count",
     method: "POST",
-    pattern: GuardRoutesMapSource.p( /^\/api-notification\/permanent-delete$/ ),
+    pattern: GuardRoutesMapSource.p( /^\/api-notification\/inbox\/count$/ ),
     module: "NotificationCenter",
-    action: "delete",
-    description: "NotificationCenter.delete → Permanently delete notification(s)",
+    action: "count",
+    description: "NotificationCenter.count → Count inbox items (legacy count)",
   },
+
+  // ✅ NEW: scope-based queries (user | role | company + priorityScope)
+  {
+    id: "notify:inbox-scope-load",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-notification\/inbox\/scope\/load$/ ),
+    module: "NotificationCenter",
+    action: "list",
+    description: "NotificationCenter.list → Load inbox items by scope",
+  },
+  {
+    id: "notify:inbox-scope-count",
+    method: "POST",
+    pattern: GuardRoutesMapSource.p( /^\/api-notification\/inbox\/scope\/count$/ ),
+    module: "NotificationCenter",
+    action: "count",
+    description: "NotificationCenter.count → Count inbox items by scope",
+  },
+
+  // Mutations
   {
     id: "notify:mark-read-one",
     method: "POST",
-    pattern: GuardRoutesMapSource.p( /^\/api-notification\/[^/]+\/read$/ ),
+    pattern: GuardRoutesMapSource.p( /^\/api-notification\/inbox\/[^/]+\/read$/ ),
     module: "NotificationCenter",
     action: "markRead",
-    description: "NotificationCenter.markRead → Mark a single notification as read",
-  },
-  {
-    id: "notify:mark-read-many",
-    method: "POST",
-    pattern: GuardRoutesMapSource.p( /^\/api-notification\/read-many$/ ),
-    module: "NotificationCenter",
-    action: "markRead",
-    description: "NotificationCenter.markRead → Mark many notifications as read",
+    description: "NotificationCenter.markRead → Mark one inbox item as read",
   },
   {
     id: "notify:mark-read-all",
     method: "POST",
-    pattern: GuardRoutesMapSource.p( /^\/api-notification\/read-all$/ ),
+    pattern: GuardRoutesMapSource.p( /^\/api-notification\/inbox\/read-all$/ ),
     module: "NotificationCenter",
     action: "markRead",
-    description: "NotificationCenter.markRead → Mark all notifications as read",
+    description: "NotificationCenter.markRead → Mark all inbox items as read",
   },
   {
-    id: "notify:restore",
+    id: "notify:archive-one",
     method: "POST",
-    pattern: GuardRoutesMapSource.p( /^\/api-notification\/restore$/ ),
+    pattern: GuardRoutesMapSource.p( /^\/api-notification\/inbox\/[^/]+\/archive$/ ),
     module: "NotificationCenter",
-    action: "update",
-    description: "NotificationCenter.update → Restore notification(s) (legacy semantics)",
-  },
-  {
-    id: "notify:broadcast",
-    method: "POST",
-    pattern: GuardRoutesMapSource.p( /^\/api-notification\/broadcast$/ ),
-    module: "NotificationCenter",
-    action: "broadcast",
-    description: "NotificationCenter.broadcast → Broadcast notification to audiences",
-  },
-  {
-    id: "notify:configure",
-    method: "POST",
-    pattern: GuardRoutesMapSource.p( /^\/api-notification\/configure$/ ),
-    module: "NotificationCenter",
-    action: "configure",
-    description: "NotificationCenter.configure → Configure notification delivery/settings",
-  },
-  {
-    id: "notify:list-mine",
-    method: "GET",
-    pattern: GuardRoutesMapSource.p( /^\/api-notification\/?$/ ),
-    module: "NotificationCenter",
-    action: "view",
-    description: "NotificationCenter.view → List current user's notifications",
+    action: "archive",
+    description: "NotificationCenter.archive → Archive one inbox item",
   },
 
   // =========================================================================

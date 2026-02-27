@@ -154,8 +154,8 @@ export class MilestonesController {
         return;
       }
 
-      this.notificationHub.emit( {
-        eventKey: 'milestone:created',
+      await this.notificationHub.emit( {
+        eventKey: 'team:member.milestone.created',
         actor,
         audiences: [
           {
@@ -225,8 +225,8 @@ export class MilestonesController {
       const input = this.readUpdateInput( req, authNormalised );
       const dto = await this.service.updateById( ctx, milestoneId, input );
 
-      this.notificationHub.emit( {
-        eventKey: 'milestone:updated',
+      await this.notificationHub.emit( {
+        eventKey: 'team:member.milestone.updated',
         actor,
         audiences: [
           {
@@ -295,10 +295,10 @@ export class MilestonesController {
 
 
 
-      await this.service.deleteById( ctx, milestoneId );
+      const deleted = await this.service.deleteById( ctx, milestoneId );
 
-      this.notificationHub.emit( {
-        eventKey: 'milestone:deleted',
+      await this.notificationHub.emit( {
+        eventKey: 'team:member.milestone.deleted',
         actor,
         audiences: [
           {
@@ -320,7 +320,7 @@ export class MilestonesController {
         ],
         target: {
           actionKey: 'team:member.milestone.deleted',
-          params: { milestoneId },
+          params: { recycleItemRef: deleted.entry.entryId },
           refId: milestoneId,
           module: 'Milestone module',
           category: 'Team',

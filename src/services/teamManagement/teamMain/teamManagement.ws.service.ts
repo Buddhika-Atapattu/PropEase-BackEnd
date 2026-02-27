@@ -8,8 +8,8 @@
 // - Use your SocketConnectionHandler pattern (emitToRoom/emitToRole/emitToUser).
 //
 // ROOM STRATEGY (recommended)
-// - Team details viewers:   aud.team.<teamCode>
-// - Team list viewers:      aud.role.Admin, aud.role.Operator (extend as needed)
+// - Team details viewers:    team.<teamCode>
+// - Team list viewers:       role.admin,  role.Operator (extend as needed)
 //
 // NOTE
 // - This service is DTO-only (do NOT pass mongoose docs).
@@ -110,7 +110,7 @@ export class TeamManagementWsService {
 
   private async emitToTeamRoom(teamCode: string, eventName: string, payload: unknown): Promise<void> {
     const h = await this.getHandler();
-    await h.emitToRoom(`aud.team.${teamCode}`, eventName, payload);
+    await h.emitToRoom( ` team.${ teamCode }`, eventName, payload );
   }
 
   // --------------------------------------------------------------------------

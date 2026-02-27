@@ -90,7 +90,7 @@ export const NOTIFICATION_AUDIENCE_MODE_VALUES = [
  *   once you migrate fully.
  * - For now keep string to avoid breaking old emitters.
  */
-export type NotificationEventKey = string;
+export type NotificationEventKey = NotificationActionKey;
 
 /* =============================================================================
  * 02) Audience model (who should receive the notification)
@@ -101,7 +101,7 @@ export type NotificationEventKey = string;
  * - Company: everyone
  * - Role   : users with a specific roleKey
  * - Team   : users under a teamCode
- * - User   : a specific user by userId
+ * - User   : a specific user by username
  */
 export type NotificationAudience =
   | { mode: "Company"; }
@@ -209,6 +209,7 @@ export interface NotificationEmitInput {
    */
   audiences: NotificationAudience[];
 
+
   /**
    * ⚠️ TEMP LEGACY
    * - kept only as a runtime fallback for older emitters
@@ -295,7 +296,7 @@ export interface NotificationUserStateDto {
    * Soft delete (trash)
    */
   isDeleted: boolean;
-  deletedAt?: Date;
+  deletedAt?: ISODateString;
 
   /**
    * Archive (hide without deleting)
@@ -321,15 +322,20 @@ export interface NotificationUserStateDto {
  * - isDeleted refers to trash state (not archived)
  */
 export interface NotificationInboxItemDto {
-  inboxId?: string;
+  inboxId: string;
 
-  userId?: string;
-  username?: string;
+  userId: string;
+  username: string;
 
   isRead?: boolean;
   readAt?: string;
 
   isDeleted?: boolean;
+
+  isArchived?: boolean;
+  archivedAt?: string;
+  deletedAt?: string;
+  deliveredAt?: string;
 
   notification?: NotificationCoreDto;
 }
@@ -337,31 +343,6 @@ export interface NotificationInboxItemDto {
 /* =============================================================================
  * 09) Load / filter contracts
  * ========================================================================== */
-
-export interface NotificationLoadFilters {
-  search?: string;
-  category?: NotificationCategory;
-  severity?: NotificationSeverity;
-
-  /**
-   * Optional audience filter (admin/tools).
-   * NOTE: since audiences is an array, query service must match on "n.audiences.mode".
-   */
-  mode?: NotificationAudience[ "mode" ];
-
-  unreadOnly?: boolean;
-
-  /**
-   * ✅ Correct semantics:
-   * - includeDeleted  -> controls isDeleted
-   * - includeArchived -> controls isArchived (inbox hide state)
-   */
-  includeDeleted?: boolean;
-  includeArchived?: boolean;
-
-  from?: string;
-  to?: string;
-}
 
 export interface NotificationLoadRequest {
   username: string;
@@ -378,6 +359,12 @@ export interface NotificationLoadResponse {
 export interface NotificationCountResponse {
   total: number;
   unread: number;
+  prioritized: number;
+  unprioritized: number;
 }
 
 
+export interface NotificationTitleBodyPatch {
+  title?: string;
+  body?: string;
+}

@@ -40,9 +40,12 @@ import type {
 } from "./notification-delivery.types";
 
 import { NotificationDeliveryDriverRegistry } from "./notification-delivery.registry.service";
+import type { ClientSession } from "mongoose";
+import { UserModel } from "../../../models/user.model";
+import { MongoIdUtil } from "../../../utils/mongo-id.util";
 
 export class NotificationDeliveryService {
-  public constructor() {}
+  public constructor () {}
 
   /* ===========================================================================
    * Method: deliver()
@@ -74,12 +77,12 @@ export class NotificationDeliveryService {
    *    - else driver.deliver(req) => "delivered/failed"
    * - Returns aggregated NotificationDeliveryResult
    * ========================================================================= */
-  public async deliver(req: NotificationDeliveryRequest): Promise<NotificationDeliveryResult> {
+  public async deliver( req: NotificationDeliveryRequest ): Promise<NotificationDeliveryResult> {
     // -------------------------------------------------------------------------
     // 1) Basic safety
     // -------------------------------------------------------------------------
-    if (!req) {
-      return this.summarize("", [
+    if ( !req ) {
+      return this.summarize( "", [
         {
           channel: "audit",
           status: "failed",
@@ -88,11 +91,11 @@ export class NotificationDeliveryService {
           failed: 0,
           errorMessage: "NotificationDeliveryService.deliver: request is missing",
         },
-      ]);
+      ] );
     }
 
     const notificationId = typeof req.notificationId === "string" ? req.notificationId.trim() : "";
-    const recipients = Array.isArray(req.recipients) ? req.recipients : [];
+    const recipients = Array.isArray( req.recipients ) ? req.recipients : [];
 
     // -------------------------------------------------------------------------
     // 2) Load globally enabled drivers (registry-level enable)
@@ -104,50 +107,75 @@ export class NotificationDeliveryService {
     // -------------------------------------------------------------------------
     const results: DeliveryAttemptResult[] = [];
 
-    for (const d of drivers) {
+    for ( const d of drivers ) {
       const channel = d.channel();
 
       try {
         // 3.1) Per-notification channel flag check (request-level enable)
-        if (!this.isChannelEnabled(req, channel)) {
-          results.push(this.asSkipped(channel));
+        if ( !this.isChannelEnabled( req, channel ) ) {
+          results.push( this.asSkipped( channel ) );
           continue;
         }
 
         // 3.2) If there are zero recipients, driver should skip
         //      (but we also handle it here so every driver behaves consistently)
-        if (recipients.length === 0) {
-          results.push({
+        if ( recipients.length === 0 ) {
+          results.push( {
             channel,
             status: "skipped",
             attempted: 0,
             delivered: 0,
             failed: 0,
             errorMessage: "No recipients",
-          });
+          } );
           continue;
         }
 
         // 3.3) Run driver
-        const r = await d.deliver(req);
-        results.push(r);
-      } catch (err: unknown) {
+        const r = await d.deliver( req );
+        results.push( r );
+      } catch ( err: unknown ) {
         // We DO NOT throw, we record failure and continue others.
-        results.push(this.asDriverFailure(channel, recipients.length, err));
+        results.push( this.asDriverFailure( channel, recipients.length, err ) );
       }
     }
 
     // -------------------------------------------------------------------------
     // 4) Summarize totals
     // -------------------------------------------------------------------------
-    return this.summarize(notificationId, results);
+    return this.summarize( notificationId, results );
+  }
+
+
+  private async findUserIdByUsernameOrThrow(
+    username: string,
+    session?: ClientSession
+  ): Promise<string> {
+    const uname = typeof username === "string" ? username.trim() : "";
+    if ( !uname ) {
+      throw new Error( "Invalid username." );
+    }
+
+    const doc = await UserModel.findOne(
+      { username: uname },
+      { _id: 1 },
+      session ? { session } : undefined
+    )
+      .lean()
+      .exec();
+
+    if ( !doc?._id ) {
+      throw new Error( `User not found for username: ${ uname }` );
+    }
+
+    return MongoIdUtil.toIdString( doc._id );
   }
 
   // ===========================================================================
   // Internal helpers
   // ===========================================================================
 
-  private summarize(notificationId: string, results: DeliveryAttemptResult[]): NotificationDeliveryResult {
+  private summarize( notificationId: string, results: DeliveryAttemptResult[] ): NotificationDeliveryResult {
     /**
      * 01) Why this method
      * - Aggregates results from all drivers into totals.
@@ -166,11 +194,11 @@ export class NotificationDeliveryService {
     let deliveredTotal = 0;
     let failedTotal = 0;
 
-    const list = Array.isArray(results) ? results : [];
-    for (const r of list) {
-      attemptedTotal += Number(r.attempted ?? 0);
-      deliveredTotal += Number(r.delivered ?? 0);
-      failedTotal += Number(r.failed ?? 0);
+    const list = Array.isArray( results ) ? results : [];
+    for ( const r of list ) {
+      attemptedTotal += Number( r.attempted ?? 0 );
+      deliveredTotal += Number( r.delivered ?? 0 );
+      failedTotal += Number( r.failed ?? 0 );
     }
 
     return {
@@ -180,7 +208,7 @@ export class NotificationDeliveryService {
     };
   }
 
-  private asSkipped(channel: DeliveryChannel): DeliveryAttemptResult {
+  private asSkipped( channel: DeliveryChannel ): DeliveryAttemptResult {
     /**
      * 01) Why this method
      * - Standard “skipped” result shape for disabled channels.
@@ -194,7 +222,7 @@ export class NotificationDeliveryService {
     };
   }
 
-  private asDriverFailure(channel: DeliveryChannel, attempted: number, err: unknown): DeliveryAttemptResult {
+  private asDriverFailure( channel: DeliveryChannel, attempted: number, err: unknown ): DeliveryAttemptResult {
     /**
      * 01) Why this method
      * - Normalizes any driver exception into a consistent failure result.
@@ -215,7 +243,7 @@ export class NotificationDeliveryService {
     };
   }
 
-  private isChannelEnabled(req: NotificationDeliveryRequest, channel: DeliveryChannel): boolean {
+  private isChannelEnabled( req: NotificationDeliveryRequest, channel: DeliveryChannel ): boolean {
     /**
      * 01) Why this method
      * - Enforces per-notification delivery switches.
@@ -234,14 +262,14 @@ export class NotificationDeliveryService {
     const d = req.drivers;
 
     // Safety if drivers object is missing (should not happen if hub normalizes)
-    if (!d) return false;
+    if ( !d ) return false;
 
-    if (channel === "audit") return !!d.audit;
-    if (channel === "email") return !!d.email;
-    if (channel === "external") return !!d.external;
-    if (channel === "mq") return !!d.mq;
-    if (channel === "push") return !!d.push;
-    if (channel === "sms") return !!d.sms;
+    if ( channel === "audit" ) return !!d.audit;
+    if ( channel === "email" ) return !!d.email;
+    if ( channel === "external" ) return !!d.external;
+    if ( channel === "mq" ) return !!d.mq;
+    if ( channel === "push" ) return !!d.push;
+    if ( channel === "sms" ) return !!d.sms;
 
     return false;
   }

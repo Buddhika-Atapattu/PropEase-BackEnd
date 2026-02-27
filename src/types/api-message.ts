@@ -30,7 +30,7 @@ import type { RecycleBinEntryDto } from './recyclebin/recyclebin.types';
 // ✅ TYPE-ONLY import (prevents runtime dependency problems)
 import type { CommentDto } from "./comment.types";
 import type { FileMetaPacket, PaginationMeta, ValidationUnit } from "./common";
-import type { NotificationInboxItemDto } from './notification/notification.types';
+import type { NotificationInboxItemDto, NotificationCoreDto } from './notification/notification.types';
 
 // ──────────────────────────────────────────────────────────────
 // 1) Core primitives
@@ -96,8 +96,8 @@ export interface SystemData {
   recycleBinItems?: RecycleBinEntryDto[];
 
   //Notifications
-  notification?: NotificationInboxItemDto;
-  notifications?: NotificationInboxItemDto[];
+  notification?: NotificationInboxItemDto | NotificationCoreDto;
+  notifications?: NotificationInboxItemDto[] | NotificationCoreDto[];
 
   // Dashboard summaries
   totalUsers?: number;

@@ -314,8 +314,8 @@ export class TeamManagementController {
       ];
 
 
-      this.notificationHub.emit( {
-        eventKey: 'teamManagement:create',
+      await this.notificationHub.emit( {
+        eventKey: 'team:created',
         actor,
         audiences,
         category: 'Team',
@@ -601,8 +601,8 @@ export class TeamManagementController {
       ];
 
 
-      this.notificationHub.emit( {
-        eventKey: 'teamManagement:update',
+      await this.notificationHub.emit( {
+        eventKey: 'team:updated',
         actor,
         audiences,
         category: 'Team',
@@ -731,7 +731,8 @@ export class TeamManagementController {
         tags: [ 'team', 'teamManagement', 'delete', 'deleteTeam' ],
         // (B) actual delete – MUST use session
         deleteDbRecord: async ( session ) => {
-          await TeamManagementModel.deleteOne( { teamCode } ).session( session ).exec();
+          const opts = session ? { session } : {};
+          await TeamManagementModel.deleteOne( { teamCode }, {opts} ).exec();
         },
 
         // (C) optional: public files to capture (depends on your RecycleBin engine design)
@@ -744,7 +745,7 @@ export class TeamManagementController {
 
       // ✅ Emit notification only after success (and await it)
       await this.notificationHub.emit( {
-        eventKey: "teamManagement:delete",
+        eventKey: "team:deleted",
         actor,
         audiences,
         category: "Team",

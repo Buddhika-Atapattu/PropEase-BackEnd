@@ -312,7 +312,7 @@ export class AutoDeleteUserService {
 
     await this.notificationService.emit(
       {
-        eventKey: meta.error ? "user:auto_delete.failed" : "user:auto_delete.executed",
+        eventKey: meta.error ? "user:account.auto_delete.failed" : "user:account.auto_delete.executed",
         actor,
         audiences: [
           ...this.createAudienceRoles( this.NOTIFY_ROLES as Role[] ),

@@ -98,7 +98,7 @@ export interface TeamTaskWsContext {
   actor?: AuthUser;
   requestId?: string;
 
-  // Optional: emit to `user:<username>` rooms in addition to aud.member.<id>
+  // Optional: emit to `user:<username>` rooms in addition to  member.<id>
   assignedMember?: string[];
 }
 
@@ -309,7 +309,7 @@ export class TeamTaskSocketService {
   /**
    * Team broadcast:
    * Uses emitter.emitToTeamRooms(teamCode, ...) which already emits to:
-   * - aud.team.<teamCode>
+   * -  team.<teamCode>
    * - team:<teamCode>
    */
   private emitToTeam(teamCode: string, payload: TeamTaskSocketEventPayload<unknown>): void {
@@ -333,7 +333,7 @@ export class TeamTaskSocketService {
 
   /**
    * Member broadcast:
-   * - aud.member.<userId> from dto.assignedMembers (preferred)
+   * -  member.<userId> from dto.assignedMembers (preferred)
    * - user:<username> from ctx.assignedMember (optional)
    */
   private emitToMembers(
@@ -347,7 +347,7 @@ export class TeamTaskSocketService {
     for (const memberId of memberIds) {
       const id = this.safeStr(memberId);
       if (!id) continue;
-      emitter.emitToRoom(`aud.member.${id}`, payload.event, payload);
+      emitter.emitToRoom( ` member.${ id }`, payload.event, payload );
     }
 
     const usernames = Array.isArray( ctx?.assignedMember ) ? ctx!.assignedMember : [];

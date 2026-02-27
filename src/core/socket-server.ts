@@ -259,29 +259,7 @@ export default class SocketServer {
         }
       }
     );
-  
-    // -------------------------------------------------------------------
-    // 2) Register all "after connection" handlers
-    // -------------------------------------------------------------------
-    const wsRegistry = await WsTokenRegistryProvider.getInstance();
-  
-    this.connectionHandler = new SocketConnectionHandler(
-      this.nsp,
-      this.authHelper,
-      this.guardTokenService,
-      wsRegistry
-    );
-  
-    // Register per-connection lifecycle handlers
-    this.connectionHandler.registerConnectionHandlers();
-  
-    // Expose connection handler globally for controllers/services
-    SocketServerProvider.register( this.connectionHandler );
-  
-    console.log(
-      '[Info:] [SocketServer] Socket.IO attached and connection handler registered.\n'
-    );
-  
+
     return this.nsp;
   }
   

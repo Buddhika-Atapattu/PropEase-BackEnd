@@ -63,8 +63,8 @@ interface UsernameRow {
 }
 
 interface TeamLeanRow {
-  captain?: { user?: Types.ObjectId };
-  members?: Array<{ user?: Types.ObjectId }>;
+  captain?: { user?: Types.ObjectId; };
+  members?: Array<{ user?: Types.ObjectId; }>;
 }
 
 /* =============================================================================
@@ -97,13 +97,13 @@ interface TeamLeanRow {
  * - Returns the SAME query object (for chain-friendly usage).
  * ============================================================================= */
 class MongooseSessionApplier {
-  private constructor() {}
+  private constructor () {}
 
-  public static applyQuerySession<TQuery>(query: TQuery, session?: ClientSession): TQuery {
-    if (!session) return query;
+  public static applyQuerySession<TQuery>( query: TQuery, session?: ClientSession ): TQuery {
+    if ( !session ) return query;
 
     // We avoid function-based helpers and keep this inside a class method.
-    (query as unknown as { session: (s: ClientSession) => unknown }).session(session);
+    ( query as unknown as { session: ( s: ClientSession ) => unknown; } ).session( session );
     return query;
   }
 }
@@ -132,7 +132,7 @@ class MongooseSessionApplier {
  * - Does not return values; it sets global resolver functions.
  * ============================================================================= */
 export class NotificationResolversBootstrap {
-  private constructor() {}
+  private constructor () {}
 
   /* ===========================================================================
    * Method: init()
@@ -165,21 +165,18 @@ export class NotificationResolversBootstrap {
     // -------------------------
     // Why:
     // - When audience.mode === "Company", we deliver to all users.
+    // Company => ALL users
     NotificationRecipientResolverRegistry.registerCompany(async (ctx) => {
-      // Why session:
-      // - If Hub Engine is running inside a transaction, we must read within same session.
-      const session = this.pickSession(ctx);
-
-      // How to use:
-      // - Query minimal fields only (username) for performance.
-      const q = UserModel.find({}, { username: 1 }).lean<UsernameRow[]>();
-      MongooseSessionApplier.applyQuerySession(q, session);
+      const session = ctx.session;
+      const q = UserModel.find( {}, { username: 1, _id: 0 } ).lean();
+      if ( session ) q.session( session );
 
       const rows = await q.exec();
+      const usernames = rows
+        .map( ( r ) => ( typeof ( r as any )?.username === "string" ? ( r as any ).username.trim() : "" ) )
+        .filter( ( x ) => !!x );
 
-      // Return:
-      // - Always { usernames: string[] }
-      return { usernames: this.pickUsernames(rows) };
+      return { usernames };
     });
 
     // -------------------------
@@ -188,19 +185,35 @@ export class NotificationResolversBootstrap {
     // Why:
     // - When audience.mode === "Role", we deliver to all users with that roleKey.
     NotificationRecipientResolverRegistry.registerRole(async (roleKey, ctx) => {
-      const cleanRole = this.safeStr(roleKey);
+      const rk = typeof roleKey === "string" ? roleKey.trim() : "";
+      if ( !rk ) return { usernames: [] };
 
-      // Defensive behavior:
-      // - If roleKey missing, do not throw; just return empty recipients.
-      if (!cleanRole) return { usernames: [] };
+      const session = ctx.session;
 
-      const session = this.pickSession(ctx);
+      const rx = new RegExp( `^${ rk.replace( /[.*+?^${}()|[\]\\]/g, "\\$&" ) }$`, "i" );
 
-      const q = UserModel.find({ role: cleanRole }, { username: 1 }).lean<UsernameRow[]>();
-      MongooseSessionApplier.applyQuerySession(q, session);
+      const q = UserModel.find(
+        {
+          $or: [
+            { roleKey: rk },
+            { roleKey: { $regex: rx } },
+
+            // legacy support if your user schema uses "role"
+            { role: rk },
+            { role: { $regex: rx } },
+          ],
+        },
+        { username: 1, _id: 0 }
+      ).lean();
+
+      if ( session ) q.session( session );
 
       const rows = await q.exec();
-      return { usernames: this.pickUsernames(rows) };
+      const usernames = rows
+        .map( ( r ) => ( typeof ( r as any )?.username === "string" ? ( r as any ).username.trim() : "" ) )
+        .filter( ( x ) => !!x );
+
+      return { usernames };
     });
 
     // -------------------------
@@ -208,11 +221,11 @@ export class NotificationResolversBootstrap {
     // -------------------------
     // Why:
     // - When audience.mode === "Team", deliver to captain + members of the team.
-    NotificationRecipientResolverRegistry.registerTeam(async (teamCode, ctx) => {
-      const code = this.safeStr(teamCode);
-      if (!code) return { usernames: [] };
+    NotificationRecipientResolverRegistry.registerTeam( async ( teamCode, ctx ) => {
+      const code = this.safeStr( teamCode );
+      if ( !code ) return { usernames: [] };
 
-      const session = this.pickSession(ctx);
+      const session = this.pickSession( ctx );
 
       // Step 1: load team user ObjectIds (captain + members)
       const teamQuery = TeamManagementModel.findOne(
@@ -220,52 +233,47 @@ export class NotificationResolversBootstrap {
         { captain: 1, members: 1 }
       ).lean<TeamLeanRow | null>();
 
-      MongooseSessionApplier.applyQuerySession(teamQuery, session);
+      MongooseSessionApplier.applyQuerySession( teamQuery, session );
 
       const team = await teamQuery.exec();
-      if (!team) return { usernames: [] };
+      if ( !team ) return { usernames: [] };
 
-      const userIds = this.collectTeamUserIds(team);
-      if (!userIds.length) return { usernames: [] };
+      const userIds = this.collectTeamUserIds( team );
+      if ( !userIds.length ) return { usernames: [] };
 
       // Step 2: map those ObjectIds -> usernames
-      const userQuery = UserModel.find({ _id: { $in: userIds } }, { username: 1 }).lean<
+      const userQuery = UserModel.find( { _id: { $in: userIds } }, { username: 1 } ).lean<
         UsernameRow[]
       >();
 
-      MongooseSessionApplier.applyQuerySession(userQuery, session);
+      MongooseSessionApplier.applyQuerySession( userQuery, session );
 
       const rows = await userQuery.exec();
-      return { usernames: this.pickUsernames(rows) };
-    });
+      return { usernames: this.pickUsernames( rows ) };
+    } );
 
     // -------------------------
     // User resolver
     // -------------------------
     // Why:
     // - When audience.mode === "User", deliver to exactly one user.
-    NotificationRecipientResolverRegistry.registerUser(async (userId, ctx) => {
-      const id = this.safeStr(userId);
+    NotificationRecipientResolverRegistry.registerUser( async ( username, ctx ) => {
+      const u = this.safeStr( username );
+      if ( !u ) return { usernames: [] };
 
-      // Security + safety:
-      // - Avoid ObjectId constructor on invalid input.
-      if (!id || !Types.ObjectId.isValid(id)) return { usernames: [] };
+      const session = this.pickSession( ctx );
 
-      const session = this.pickSession(ctx);
-
-      const q = UserModel.findById(new Types.ObjectId(id), { username: 1 }).lean<UsernameRow | null>();
-      MongooseSessionApplier.applyQuerySession(q, session);
+      const q = UserModel.findOne( { username: u }, { username: 1 } ).lean<UsernameRow | null>();
+      MongooseSessionApplier.applyQuerySession( q, session );
 
       const row = await q.exec();
-      const username = row?.username ? row.username.trim() : "";
+      const resolved = row?.username ? row.username.trim() : "";
 
-      // Return behavior:
-      // - Always array (even single) to keep the engine contract stable.
-      return { usernames: username ? [username] : [] };
-    });
+      return { usernames: resolved ? [ resolved ] : [] };
+    } );
 
     // eslint-disable-next-line no-console
-    console.log("[Success:] NotificationResolversBootstrap initialized.\n");
+    console.log( "[Success:] NotificationResolversBootstrap initialized.\n" );
   }
 
   // ===========================================================================
@@ -288,7 +296,7 @@ export class NotificationResolversBootstrap {
    * 04) Linkage / return
    * - Returns ClientSession | undefined
    * ========================================================================= */
-  private static pickSession(ctx: DbCtx): ClientSession | undefined {
+  private static pickSession( ctx: DbCtx ): ClientSession | undefined {
     return ctx.session;
   }
 
@@ -307,7 +315,7 @@ export class NotificationResolversBootstrap {
    * 04) Return
    * - returns trimmed string or ""
    * ========================================================================= */
-  private static safeStr(v: unknown): string {
+  private static safeStr( v: unknown ): string {
     return typeof v === "string" ? v.trim() : "";
   }
 
@@ -330,18 +338,18 @@ export class NotificationResolversBootstrap {
    * 04) Return
    * - returns unique, trimmed usernames[]
    * ========================================================================= */
-  private static pickUsernames(rows: UsernameRow[]): string[] {
+  private static pickUsernames( rows: UsernameRow[] ): string[] {
     const out: string[] = [];
     const seen = new Set<string>();
 
-    const list = Array.isArray(rows) ? rows : [];
-    for (const r of list) {
+    const list = Array.isArray( rows ) ? rows : [];
+    for ( const r of list ) {
       const u = typeof r.username === "string" ? r.username.trim() : "";
-      if (!u) continue;
-      if (seen.has(u)) continue;
+      if ( !u ) continue;
+      if ( seen.has( u ) ) continue;
 
-      seen.add(u);
-      out.push(u);
+      seen.add( u );
+      out.push( u );
     }
 
     return out;
@@ -366,29 +374,29 @@ export class NotificationResolversBootstrap {
    * 04) Return
    * - Returns unique ObjectId[] for later UserModel query.
    * ========================================================================= */
-  private static collectTeamUserIds(team: TeamLeanRow): Types.ObjectId[] {
+  private static collectTeamUserIds( team: TeamLeanRow ): Types.ObjectId[] {
     const out: Types.ObjectId[] = [];
     const seen = new Set<string>();
 
     const cap = team.captain?.user;
-    if (cap) {
-      const key = String(cap);
-      if (!seen.has(key)) {
-        seen.add(key);
-        out.push(cap);
+    if ( cap ) {
+      const key = String( cap );
+      if ( !seen.has( key ) ) {
+        seen.add( key );
+        out.push( cap );
       }
     }
 
-    const members = Array.isArray(team.members) ? team.members : [];
-    for (const m of members) {
+    const members = Array.isArray( team.members ) ? team.members : [];
+    for ( const m of members ) {
       const id = m?.user;
-      if (!id) continue;
+      if ( !id ) continue;
 
-      const key = String(id);
-      if (seen.has(key)) continue;
+      const key = String( id );
+      if ( seen.has( key ) ) continue;
 
-      seen.add(key);
-      out.push(id);
+      seen.add( key );
+      out.push( id );
     }
 
     return out;

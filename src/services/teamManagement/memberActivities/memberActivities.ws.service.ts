@@ -14,8 +14,8 @@
 // - If handler is not ready: no throw (REST must continue).
 // ----------------------------------------------------------------------------
 // ✅ ROOM STRATEGY (aligned with your platform)
-// - aud.team.<teamCode>          -> team-wide activity stream (captain dashboards)
-// - aud.member.<userId>          -> member personal timeline
+// - team.<teamCode>          -> team-wide activity stream (captain dashboards)
+// - member.<userId>          -> member personal timeline
 // - workItem.<workItemId>        -> work item detail watchers
 // - memberActivity.<activityId>  -> optional per-activity room (future)
 // ============================================================================
@@ -69,7 +69,7 @@ export interface MemberActivityWsBulkChangedPayload<T> {
   requestId: string;
   actor: AuthUser;
   items: T[];
-  other: { total: number };
+  other: { total: number; };
 }
 
 export interface MemberActivityWsCountsChangedPayload {
@@ -101,13 +101,13 @@ export class MemberActivitiesWsService {
   private static _instance: MemberActivitiesWsService | null = null;
 
   public static GetInstance(): MemberActivitiesWsService {
-    if (!MemberActivitiesWsService._instance) {
+    if ( !MemberActivitiesWsService._instance ) {
       MemberActivitiesWsService._instance = new MemberActivitiesWsService();
     }
     return MemberActivitiesWsService._instance;
   }
 
-  private constructor() {}
+  private constructor () {}
 
   // =========================================================================
   // Handler acquisition (lazy, safe)
@@ -128,23 +128,23 @@ export class MemberActivitiesWsService {
   // Room helpers
   // =========================================================================
 
-  private buildTeamRoom(teamCode: string): string {
-    return `aud.team.${teamCode}`;
+  private buildTeamRoom( teamCode: string ): string {
+    return ` team.${ teamCode }`;
   }
 
-  private buildMemberRoom(userId: string): string {
-    return `aud.member.${userId}`;
+  private buildMemberRoom( userId: string ): string {
+    return ` member.${ userId }`;
   }
 
-  private buildWorkItemRoom(workItemId: string): string {
-    return `workItem.${workItemId}`;
+  private buildWorkItemRoom( workItemId: string ): string {
+    return `workItem.${ workItemId }`;
   }
 
-  private buildActivityRoom(activityId: string): string {
-    return `memberActivity.${activityId}`;
+  private buildActivityRoom( activityId: string ): string {
+    return `memberActivity.${ activityId }`;
   }
 
-  private safeStringId(id: Types.ObjectId | string): string {
+  private safeStringId( id: Types.ObjectId | string ): string {
     return typeof id === "string" ? id : id.toString();
   }
 
@@ -152,123 +152,123 @@ export class MemberActivitiesWsService {
   // Emit primitives (never throw)
   // =========================================================================
 
-  private emitToRoom(room: string, event: MemberActivityServerEvent, payload: unknown): void {
+  private emitToRoom( room: string, event: MemberActivityServerEvent, payload: unknown ): void {
     const handler = this.tryGetHandler();
-    if (!handler) return;
+    if ( !handler ) return;
 
-    handler.emitToRoom(room, event, payload);
+    handler.emitToRoom( room, event, payload );
   }
 
-  private emitToRooms(rooms: string[], event: MemberActivityServerEvent, payload: unknown): void {
+  private emitToRooms( rooms: string[], event: MemberActivityServerEvent, payload: unknown ): void {
     const handler = this.tryGetHandler();
-    if (!handler) return;
+    if ( !handler ) return;
 
-    for (const room of rooms) {
-      handler.emitToRoom(room, event, payload);
+    for ( const room of rooms ) {
+      handler.emitToRoom( room, event, payload );
     }
   }
 
-  private buildRooms(ctx: MemberActivityWsContext): string[] {
+  private buildRooms( ctx: MemberActivityWsContext ): string[] {
     const rooms: string[] = [];
 
-    if (ctx.teamCode) rooms.push(this.buildTeamRoom(ctx.teamCode));
-    if (ctx.workItemId) rooms.push(this.buildWorkItemRoom(ctx.workItemId));
-    if (ctx.activityId) rooms.push(this.buildActivityRoom(ctx.activityId));
+    if ( ctx.teamCode ) rooms.push( this.buildTeamRoom( ctx.teamCode ) );
+    if ( ctx.workItemId ) rooms.push( this.buildWorkItemRoom( ctx.workItemId ) );
+    if ( ctx.activityId ) rooms.push( this.buildActivityRoom( ctx.activityId ) );
 
-    if (ctx.memberUserIds && ctx.memberUserIds.length > 0) {
-      for (const uid of ctx.memberUserIds) rooms.push(this.buildMemberRoom(uid));
+    if ( ctx.memberUserIds && ctx.memberUserIds.length > 0 ) {
+      for ( const uid of ctx.memberUserIds ) rooms.push( this.buildMemberRoom( uid ) );
     }
 
     // de-dupe
-    return Array.from(new Set(rooms));
+    return Array.from( new Set( rooms ) );
   }
 
   // =========================================================================
   // Ready / Error
   // =========================================================================
 
-  public emitReady(ctx: MemberActivityWsContext): void {
-    const rooms = this.buildRooms(ctx);
-    if (rooms.length === 0) return;
+  public emitReady( ctx: MemberActivityWsContext ): void {
+    const rooms = this.buildRooms( ctx );
+    if ( rooms.length === 0 ) return;
 
     const payload: MemberActivityWsReadyPayload = {
       requestId: ctx.requestId,
       serverTime: new Date().toISOString(),
     };
 
-    this.emitToRooms(rooms, MemberActivityWsEvents.Ready, payload);
+    this.emitToRooms( rooms, MemberActivityWsEvents.Ready, payload );
   }
 
-  public emitError(ctx: MemberActivityWsContext, message: string, code?: string, details?: unknown): void {
-    const rooms = this.buildRooms(ctx);
-    if (rooms.length === 0) {
+  public emitError( ctx: MemberActivityWsContext, message: string, code?: string, details?: unknown ): void {
+    const rooms = this.buildRooms( ctx );
+    if ( rooms.length === 0 ) {
       // eslint-disable-next-line no-console
-      console.warn(`[Warning:] [MemberActivitiesWsService] emitError called without routing info.\n`);
+      console.warn( `[Warning:] [MemberActivitiesWsService] emitError called without routing info.\n` );
       return;
     }
 
     const payload: MemberActivityWsErrorPayload = {
       requestId: ctx.requestId,
       message,
-      ...(code ? { code } : {}),
-      ...(details ? { details } : {}),
+      ...( code ? { code } : {} ),
+      ...( details ? { details } : {} ),
     };
 
-    this.emitToRooms(rooms, MemberActivityWsEvents.Error, payload);
+    this.emitToRooms( rooms, MemberActivityWsEvents.Error, payload );
   }
 
   // =========================================================================
   // CRUD emits
   // =========================================================================
 
-  public emitActivityCreated(ctx: MemberActivityWsContext, dto: MemberActivityDto): void {
+  public emitActivityCreated( ctx: MemberActivityWsContext, dto: MemberActivityDto ): void {
     const payload: MemberActivityWsChangedPayload<MemberActivityDto> = {
       requestId: ctx.requestId,
       actor: ctx.actor,
       data: dto,
     };
 
-    const rooms = this.buildRooms({
+    const rooms = this.buildRooms( {
       ...ctx,
-      activityId: ctx.activityId ?? this.safeStringId((dto as unknown as { _id?: Types.ObjectId | string })._id ?? ""),
-    });
+      activityId: ctx.activityId ?? this.safeStringId( ( dto as unknown as { _id?: Types.ObjectId | string; } )._id ?? "" ),
+    } );
 
-    this.emitToRooms(rooms, MemberActivityWsEvents.Created, payload);
-    this.emitReloadHint(rooms, ctx);
-    this.emitCountsChangedSignal(rooms, ctx);
+    this.emitToRooms( rooms, MemberActivityWsEvents.Created, payload );
+    this.emitReloadHint( rooms, ctx );
+    this.emitCountsChangedSignal( rooms, ctx );
   }
 
-  public emitActivityUpdated(ctx: MemberActivityWsContext, dto: MemberActivityDto): void {
+  public emitActivityUpdated( ctx: MemberActivityWsContext, dto: MemberActivityDto ): void {
     const payload: MemberActivityWsChangedPayload<MemberActivityDto> = {
       requestId: ctx.requestId,
       actor: ctx.actor,
       data: dto,
     };
 
-    const rooms = this.buildRooms(ctx);
-    this.emitToRooms(rooms, MemberActivityWsEvents.Updated, payload);
-    this.emitReloadHint(rooms, ctx);
-    this.emitCountsChangedSignal(rooms, ctx);
+    const rooms = this.buildRooms( ctx );
+    this.emitToRooms( rooms, MemberActivityWsEvents.Updated, payload );
+    this.emitReloadHint( rooms, ctx );
+    this.emitCountsChangedSignal( rooms, ctx );
   }
 
-  public emitActivityDeleted(ctx: MemberActivityWsContext, activityId: Types.ObjectId | string): void {
-    const id = this.safeStringId(activityId);
+  public emitActivityDeleted( ctx: MemberActivityWsContext, activityId: Types.ObjectId | string ): void {
+    const id = this.safeStringId( activityId );
 
-    const payload: MemberActivityWsChangedPayload<{ activityId: string }> = {
+    const payload: MemberActivityWsChangedPayload<{ activityId: string; }> = {
       requestId: ctx.requestId,
       actor: ctx.actor,
       data: { activityId: id },
     };
 
-    const rooms = this.buildRooms({ ...ctx, activityId: id });
-    this.emitToRooms(rooms, MemberActivityWsEvents.Deleted, payload);
-    this.emitReloadHint(rooms, ctx);
-    this.emitCountsChangedSignal(rooms, ctx);
+    const rooms = this.buildRooms( { ...ctx, activityId: id } );
+    this.emitToRooms( rooms, MemberActivityWsEvents.Deleted, payload );
+    this.emitReloadHint( rooms, ctx );
+    this.emitCountsChangedSignal( rooms, ctx );
   }
 
-  public emitBulkChanged(ctx: MemberActivityWsContext, items: MemberActivityDto[], total: number): void {
-    const rooms = this.buildRooms(ctx);
-    if (rooms.length === 0) return;
+  public emitBulkChanged( ctx: MemberActivityWsContext, items: MemberActivityDto[], total: number ): void {
+    const rooms = this.buildRooms( ctx );
+    if ( rooms.length === 0 ) return;
 
     const payload: MemberActivityWsBulkChangedPayload<MemberActivityDto> = {
       requestId: ctx.requestId,
@@ -277,16 +277,16 @@ export class MemberActivitiesWsService {
       other: { total },
     };
 
-    this.emitToRooms(rooms, MemberActivityWsEvents.BulkChanged, payload);
-    this.emitCountsChangedSignal(rooms, ctx);
+    this.emitToRooms( rooms, MemberActivityWsEvents.BulkChanged, payload );
+    this.emitCountsChangedSignal( rooms, ctx );
   }
 
   // =========================================================================
   // Evidence emits
   // =========================================================================
 
-  public emitEvidenceAppended(ctx: MemberActivityWsContext, activityId: Types.ObjectId | string, dto: MemberActivityDto): void {
-    const id = this.safeStringId(activityId);
+  public emitEvidenceAppended( ctx: MemberActivityWsContext, activityId: Types.ObjectId | string, dto: MemberActivityDto ): void {
+    const id = this.safeStringId( activityId );
 
     const payload: MemberActivityWsEvidenceChangedPayload = {
       requestId: ctx.requestId,
@@ -295,13 +295,13 @@ export class MemberActivitiesWsService {
       data: dto,
     };
 
-    const rooms = this.buildRooms({ ...ctx, activityId: id });
-    this.emitToRooms(rooms, MemberActivityWsEvents.EvidenceAppended, payload);
-    this.emitReloadHint(rooms, ctx);
+    const rooms = this.buildRooms( { ...ctx, activityId: id } );
+    this.emitToRooms( rooms, MemberActivityWsEvents.EvidenceAppended, payload );
+    this.emitReloadHint( rooms, ctx );
   }
 
-  public emitEvidenceRemoved(ctx: MemberActivityWsContext, activityId: Types.ObjectId | string, dto: MemberActivityDto): void {
-    const id = this.safeStringId(activityId);
+  public emitEvidenceRemoved( ctx: MemberActivityWsContext, activityId: Types.ObjectId | string, dto: MemberActivityDto ): void {
+    const id = this.safeStringId( activityId );
 
     const payload: MemberActivityWsEvidenceChangedPayload = {
       requestId: ctx.requestId,
@@ -310,13 +310,13 @@ export class MemberActivitiesWsService {
       data: dto,
     };
 
-    const rooms = this.buildRooms({ ...ctx, activityId: id });
-    this.emitToRooms(rooms, MemberActivityWsEvents.EvidenceRemoved, payload);
-    this.emitReloadHint(rooms, ctx);
+    const rooms = this.buildRooms( { ...ctx, activityId: id } );
+    this.emitToRooms( rooms, MemberActivityWsEvents.EvidenceRemoved, payload );
+    this.emitReloadHint( rooms, ctx );
   }
 
-  public emitEvidenceReplaced(ctx: MemberActivityWsContext, activityId: Types.ObjectId | string, dto: MemberActivityDto): void {
-    const id = this.safeStringId(activityId);
+  public emitEvidenceReplaced( ctx: MemberActivityWsContext, activityId: Types.ObjectId | string, dto: MemberActivityDto ): void {
+    const id = this.safeStringId( activityId );
 
     const payload: MemberActivityWsEvidenceChangedPayload = {
       requestId: ctx.requestId,
@@ -325,17 +325,17 @@ export class MemberActivitiesWsService {
       data: dto,
     };
 
-    const rooms = this.buildRooms({ ...ctx, activityId: id });
-    this.emitToRooms(rooms, MemberActivityWsEvents.EvidenceReplaced, payload);
-    this.emitReloadHint(rooms, ctx);
+    const rooms = this.buildRooms( { ...ctx, activityId: id } );
+    this.emitToRooms( rooms, MemberActivityWsEvents.EvidenceReplaced, payload );
+    this.emitReloadHint( rooms, ctx );
   }
 
   // =========================================================================
   // Blocker emits
   // =========================================================================
 
-  public emitBlockerAppended(ctx: MemberActivityWsContext, activityId: Types.ObjectId | string, dto: MemberActivityDto): void {
-    const id = this.safeStringId(activityId);
+  public emitBlockerAppended( ctx: MemberActivityWsContext, activityId: Types.ObjectId | string, dto: MemberActivityDto ): void {
+    const id = this.safeStringId( activityId );
 
     const payload: MemberActivityWsBlockerChangedPayload = {
       requestId: ctx.requestId,
@@ -344,13 +344,13 @@ export class MemberActivitiesWsService {
       data: dto,
     };
 
-    const rooms = this.buildRooms({ ...ctx, activityId: id });
-    this.emitToRooms(rooms, MemberActivityWsEvents.BlockerAppended, payload);
-    this.emitReloadHint(rooms, ctx);
+    const rooms = this.buildRooms( { ...ctx, activityId: id } );
+    this.emitToRooms( rooms, MemberActivityWsEvents.BlockerAppended, payload );
+    this.emitReloadHint( rooms, ctx );
   }
 
-  public emitBlockerUpdated(ctx: MemberActivityWsContext, activityId: Types.ObjectId | string, dto: MemberActivityDto): void {
-    const id = this.safeStringId(activityId);
+  public emitBlockerUpdated( ctx: MemberActivityWsContext, activityId: Types.ObjectId | string, dto: MemberActivityDto ): void {
+    const id = this.safeStringId( activityId );
 
     const payload: MemberActivityWsBlockerChangedPayload = {
       requestId: ctx.requestId,
@@ -359,13 +359,13 @@ export class MemberActivitiesWsService {
       data: dto,
     };
 
-    const rooms = this.buildRooms({ ...ctx, activityId: id });
-    this.emitToRooms(rooms, MemberActivityWsEvents.BlockerUpdated, payload);
-    this.emitReloadHint(rooms, ctx);
+    const rooms = this.buildRooms( { ...ctx, activityId: id } );
+    this.emitToRooms( rooms, MemberActivityWsEvents.BlockerUpdated, payload );
+    this.emitReloadHint( rooms, ctx );
   }
 
-  public emitBlockerResolved(ctx: MemberActivityWsContext, activityId: Types.ObjectId | string, dto: MemberActivityDto): void {
-    const id = this.safeStringId(activityId);
+  public emitBlockerResolved( ctx: MemberActivityWsContext, activityId: Types.ObjectId | string, dto: MemberActivityDto ): void {
+    const id = this.safeStringId( activityId );
 
     const payload: MemberActivityWsBlockerChangedPayload = {
       requestId: ctx.requestId,
@@ -374,13 +374,13 @@ export class MemberActivitiesWsService {
       data: dto,
     };
 
-    const rooms = this.buildRooms({ ...ctx, activityId: id });
-    this.emitToRooms(rooms, MemberActivityWsEvents.BlockerResolved, payload);
-    this.emitReloadHint(rooms, ctx);
+    const rooms = this.buildRooms( { ...ctx, activityId: id } );
+    this.emitToRooms( rooms, MemberActivityWsEvents.BlockerResolved, payload );
+    this.emitReloadHint( rooms, ctx );
   }
 
-  public emitBlockerRemoved(ctx: MemberActivityWsContext, activityId: Types.ObjectId | string, dto: MemberActivityDto): void {
-    const id = this.safeStringId(activityId);
+  public emitBlockerRemoved( ctx: MemberActivityWsContext, activityId: Types.ObjectId | string, dto: MemberActivityDto ): void {
+    const id = this.safeStringId( activityId );
 
     const payload: MemberActivityWsBlockerChangedPayload = {
       requestId: ctx.requestId,
@@ -389,49 +389,49 @@ export class MemberActivitiesWsService {
       data: dto,
     };
 
-    const rooms = this.buildRooms({ ...ctx, activityId: id });
-    this.emitToRooms(rooms, MemberActivityWsEvents.BlockerRemoved, payload);
-    this.emitReloadHint(rooms, ctx);
+    const rooms = this.buildRooms( { ...ctx, activityId: id } );
+    this.emitToRooms( rooms, MemberActivityWsEvents.BlockerRemoved, payload );
+    this.emitReloadHint( rooms, ctx );
   }
 
   // =========================================================================
   // UI hint emits
   // =========================================================================
 
-  private emitReloadHint(rooms: string[], ctx: MemberActivityWsContext): void {
-    if (rooms.length === 0) return;
+  private emitReloadHint( rooms: string[], ctx: MemberActivityWsContext ): void {
+    if ( rooms.length === 0 ) return;
 
-    this.emitToRooms(rooms, MemberActivityWsEvents.ReloadHint, {
+    this.emitToRooms( rooms, MemberActivityWsEvents.ReloadHint, {
       requestId: ctx.requestId,
-      ...(ctx.teamCode ? { teamCode: ctx.teamCode } : {}),
-      ...(ctx.workItemId ? { workItemId: ctx.workItemId } : {}),
-      ...(ctx.activityId ? { activityId: ctx.activityId } : {}),
-    });
+      ...( ctx.teamCode ? { teamCode: ctx.teamCode } : {} ),
+      ...( ctx.workItemId ? { workItemId: ctx.workItemId } : {} ),
+      ...( ctx.activityId ? { activityId: ctx.activityId } : {} ),
+    } );
   }
 
-  public emitCountsChanged(ctx: MemberActivityWsContext, counts: Record<string, number>): void {
-    const rooms = this.buildRooms(ctx);
-    if (rooms.length === 0) return;
+  public emitCountsChanged( ctx: MemberActivityWsContext, counts: Record<string, number> ): void {
+    const rooms = this.buildRooms( ctx );
+    if ( rooms.length === 0 ) return;
 
     const payload: MemberActivityWsCountsChangedPayload = {
       requestId: ctx.requestId,
-      ...(ctx.teamCode ? { teamCode: ctx.teamCode } : {}),
+      ...( ctx.teamCode ? { teamCode: ctx.teamCode } : {} ),
       counts,
     };
 
-    this.emitToRooms(rooms, MemberActivityWsEvents.CountsChanged, payload);
+    this.emitToRooms( rooms, MemberActivityWsEvents.CountsChanged, payload );
   }
 
-  private emitCountsChangedSignal(rooms: string[], ctx: MemberActivityWsContext): void {
-    if (rooms.length === 0) return;
+  private emitCountsChangedSignal( rooms: string[], ctx: MemberActivityWsContext ): void {
+    if ( rooms.length === 0 ) return;
 
     // Signal-only; FE can refetch counts via REST
     const payload: MemberActivityWsCountsChangedPayload = {
       requestId: ctx.requestId,
-      ...(ctx.teamCode ? { teamCode: ctx.teamCode } : {}),
+      ...( ctx.teamCode ? { teamCode: ctx.teamCode } : {} ),
       counts: {},
     };
 
-    this.emitToRooms(rooms, MemberActivityWsEvents.CountsChanged, payload);
+    this.emitToRooms( rooms, MemberActivityWsEvents.CountsChanged, payload );
   }
 }

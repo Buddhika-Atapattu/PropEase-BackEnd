@@ -1,35 +1,41 @@
 // Path: src/services/teamManagement/workItem/work-item.rest.service.ts
 // ============================================================================
-// WorkItem REST Service (Domain Engine) — 100% CLASS-BASED
+// WorkItem REST Service (Domain Engine) — 100% CLASS-BASED (STRICT)
 // ----------------------------------------------------------------------------
-// ✅ PURPOSE
-// - Implements the WorkItem engine (CRUD + atomic ops + activity stream)
-// - Uses WorkItemModel (thin snapshot) + MemberActivityModel (heavy calendar log)
-// - After successful DB writes: emits WS events via WorkItemWsService (best-effort)
-// ----------------------------------------------------------------------------
-// ✅ IMPORTANT DESIGN RULES (your architecture)
-// - REST is the source of truth for writes
-// - WS emits are optional (must never break REST)
-// - 1 WorkItem -> many MemberActivities
-// - Multiple members per WorkItem; activities are owned by a member (userId)
-// ----------------------------------------------------------------------------
-// ✅ TYPES / STRICTNESS
-// - No any
-// - exactOptionalPropertyTypes safe: we never assign optional props as undefined
-// - Class-only (no exported helper functions)
+// ✅ Added in this version
+// - Evidence upload using your FileUploader helper (TEMP -> FINAL move assumed inside helper)
+// - appendEvidence() / removeEvidence() methods
+// - Removed all `any` by introducing LeanWorkItem + evidence row types
+// - Fixed the bug: `updatedAt: ()=> ...` (timestamps handle updatedAt; never set it like that)
+//
+// ✅ Upload root (NO leading slash)
+// uploads/team-management/<teamCode>/<taskId>/<workItemId>/evidence
 // ============================================================================
 
 import { Types } from "mongoose";
+import { Request } from 'express';
 
 import { WorkItemModel } from "../../../models/teamManagement/workItems/workItem.model";
 import { MemberActivityModel } from "../../../models/teamManagement/memberActivities/memberActivity.model";
 
+import type { AuthUser, FileMetaPacket } from "../../../types/common";
 import type { WorkItemDto } from "../../../types/teamManagement/workItem/workItem.types";
 import type { MemberActivityDto } from "../../../types/teamManagement/memberActivities/memberActivities.types";
-
-import type { WorkItemStatus, WorkItemPriority, DeadlinePolicy } from "../../../types/teamManagement/workItem/workItem.types";
+import type {
+    WorkItemStatus,
+    WorkItemPriority,
+    DeadlinePolicy,
+} from "../../../types/teamManagement/workItem/workItem.types";
 
 import { WorkItemWsService, type WorkItemWsContext } from "./work-item.ws.service";
+
+import {
+    RecycleBinDomainDeleteService,
+    type DomainDeletePlan,
+} from "../../recyclebin/recyclebin-domain-delete.service";
+
+import FileUploader, { type UploadResultPacket } from "../../../utils/files/file-uploader.helper";
+import { ApiGuardExport } from "../../../guard/api-router.guard";
 
 // ----------------------------------------------------------------------------
 // Inputs (keep these minimal and stable)
@@ -41,13 +47,13 @@ export interface WorkItemListFilters {
     status?: WorkItemStatus;
     priority?: WorkItemPriority;
     dueFrom?: string; // ISO
-    dueTo?: string;   // ISO
-    q?: string;       // text search (workItemCode / title snapshot if you add later)
+    dueTo?: string; // ISO
+    q?: string;
 }
 
 export interface WorkItemListPaging {
-    page: number;     // 1-based
-    limit: number;    // 1..200
+    page: number; // 1-based
+    limit: number; // 1..200
 }
 
 export interface WorkItemListResult {
@@ -59,7 +65,7 @@ export interface WorkItemCreateInput {
     workItemCode: string;
     teamId: string;
 
-    taskId?: string;
+    taskId: string;
 
     assignedByUserId: string;
     assignedToUserIds: string[];
@@ -96,19 +102,18 @@ export interface WorkItemUpdateInput {
 }
 
 export interface WorkItemAppendActivityInput {
-    // calendar-style event
-    userId: string; // owner member
+    userId: string;
 
-    type: string; // keep as string because your MEMBER_ACTIVITY_TYPE is in the types file
+    type: string;
     title: string;
     notes?: string;
 
     startAt: string; // ISO
-    endAt: string;   // ISO
+    endAt: string; // ISO
     allDay: boolean;
     timezone?: string;
 
-    status: string; // MEMBER_ACTIVITY_STATUS union in your types
+    status: string;
 
     progressBefore?: number;
     progressAfter?: number;
@@ -117,7 +122,35 @@ export interface WorkItemAppendActivityInput {
 }
 
 // ----------------------------------------------------------------------------
-// Service Error (typed enough for controller to map to ApiResponseBuilder.error)
+// Evidence inputs
+// ----------------------------------------------------------------------------
+
+export interface WorkItemUploadEvidenceInput {
+    /** Used for final folder: uploads/team-management/<teamCode>/<taskId>/<workItemId>/evidence */
+    teamCode: string;
+    /** Used for final folder */
+    taskId: string;
+
+    /** Optional label stored in completionEvidenceSummary; defaults to original filename */
+    label?: string;
+
+    /** Actor for audit + updatedByUserId */
+    updatedByUserId: string;
+
+    /**
+     * Files from controller (multer or your uploader pipeline).
+     * Your FileUploader helper should know how to interpret these.
+     */
+    files: FileMetaPacket[];
+}
+
+export interface WorkItemRemoveEvidenceInput {
+    updatedByUserId: string;
+    relPaths: ReadonlyArray<string>;
+}
+
+// ----------------------------------------------------------------------------
+// Service Error
 // ----------------------------------------------------------------------------
 export class WorkItemServiceError extends Error {
     public readonly code: string;
@@ -129,14 +162,73 @@ export class WorkItemServiceError extends Error {
 }
 
 // ----------------------------------------------------------------------------
+// Lean typing (NO any)
+// ----------------------------------------------------------------------------
+
+interface LeanEvidenceRow {
+    label: string;
+    relPath: string;
+    url: string;
+    mimeType: string;
+    originalName: string;
+    sizeBytes: number;
+    uploadedAt: Date;
+}
+
+interface LeanMemberProgressRow {
+    userId: Types.ObjectId;
+    progress: number;
+    status: WorkItemStatus;
+    lastActivityAt: Date;
+}
+
+interface LeanWorkItem {
+    _id: Types.ObjectId;
+
+    workItemCode: string;
+    teamId: Types.ObjectId;
+
+    taskId?: Types.ObjectId;
+
+    assignedByUserId: Types.ObjectId;
+    assignedToUserIds: Types.ObjectId[];
+    assignedAt: Date;
+
+    expectedStartAt?: Date;
+    expectedCompleteAt: Date;
+
+    deadlinePolicy: DeadlinePolicy;
+    graceMinutes?: number;
+
+    statusCurrent: WorkItemStatus;
+    priority: WorkItemPriority;
+    progressCurrent: number;
+
+    lastActivityAt?: Date;
+    completedAt?: Date;
+    completedByUserId?: Types.ObjectId;
+
+    memberProgress?: LeanMemberProgressRow[];
+    completionEvidenceSummary?: LeanEvidenceRow[];
+
+    createdByUserId: Types.ObjectId;
+    updatedByUserId?: Types.ObjectId;
+
+    createdAt: Date;
+    updatedAt: Date;
+}
+
+// ----------------------------------------------------------------------------
 // WorkItemRestService
 // ----------------------------------------------------------------------------
 export class WorkItemRestService {
     private readonly ws: WorkItemWsService;
+    private readonly deleteService: RecycleBinDomainDeleteService;
 
     public constructor () {
-        // WS service is safe (lazy handler inside), so it won't break REST
         this.ws = WorkItemWsService.GetInstance();
+        this.deleteService = new RecycleBinDomainDeleteService();
+
     }
 
     // =========================================================================
@@ -146,7 +238,7 @@ export class WorkItemRestService {
     public async getById( workItemId: string ): Promise<WorkItemDto> {
         const _id = this.toObjectId( workItemId );
 
-        const doc = await WorkItemModel.findById( _id ).lean().exec();
+        const doc = await WorkItemModel.findById( _id ).lean<LeanWorkItem>().exec();
         if ( !doc ) throw new WorkItemServiceError( "WORK_ITEM_NOT_FOUND", "WorkItem not found." );
 
         return this.toWorkItemDto( doc );
@@ -160,7 +252,7 @@ export class WorkItemRestService {
         const skip = ( page - 1 ) * limit;
 
         const [ items, total ] = await Promise.all( [
-            WorkItemModel.find( query ).sort( { updatedAt: -1 } ).skip( skip ).limit( limit ).lean().exec(),
+            WorkItemModel.find( query ).sort( { updatedAt: -1 } ).skip( skip ).limit( limit ).lean<LeanWorkItem[]>().exec(),
             WorkItemModel.countDocuments( query ).exec(),
         ] );
 
@@ -205,78 +297,263 @@ export class WorkItemRestService {
             createdByUserId: this.toObjectId( input.createdByUserId ),
         } );
 
-        const dto = this.toWorkItemDto( doc.toObject() );
+        const dto = this.toWorkItemDto( doc.toObject() as unknown as LeanWorkItem );
 
-        const teamCode = ctx.teamCode;
-        if ( !teamCode ) {
-            // no WS emit, but REST is fine
-            return dto;
+        if ( ctx.teamCode ) {
+            this.ws.emitWorkItemCreated(
+                this.buildEmitCtx( ctx, {
+                    teamCode: ctx.teamCode,
+                    workItemId: doc._id.toString(),
+                    memberUserIds: input.assignedToUserIds,
+                } ),
+                dto
+            );
         }
-        // Emit created
-        this.ws.emitWorkItemCreated(
-            this.buildEmitCtx( ctx, {
-                teamCode,
-                workItemId: this.extractIdFromDto( dto ),
-                memberUserIds: input.assignedToUserIds,
-            } ),
-            dto
-        );
 
         return dto;
     }
 
     public async updateById( ctx: WorkItemWsContext, workItemId: string, input: WorkItemUpdateInput ): Promise<WorkItemDto> {
         const _id = this.toObjectId( workItemId );
-
         const updateDoc = this.buildWorkItemUpdateDoc( input );
 
-        const updated = await WorkItemModel.findByIdAndUpdate( _id, updateDoc, { new: true } ).lean().exec();
+        const updated = await WorkItemModel.findByIdAndUpdate( _id, updateDoc, { new: true } ).lean<LeanWorkItem>().exec();
         if ( !updated ) throw new WorkItemServiceError( "WORK_ITEM_NOT_FOUND", "WorkItem not found." );
 
         const dto = this.toWorkItemDto( updated );
 
-        // Emit updated (use member ids from DB if your DTO contains them; otherwise emit team room only)
-        const memberIds = this.extractAssignedMemberIds( updated );
-
-        this.ws.emitWorkItemUpdated(
-            this.buildEmitCtx( ctx, {
-                workItemId: workItemId,
-                memberUserIds: memberIds,
-            } ),
-            dto
-        );
+        if ( ctx.teamCode ) {
+            const memberIds = this.extractAssignedMemberIds( updated );
+            this.ws.emitWorkItemUpdated(
+                this.buildEmitCtx( ctx, { teamCode: ctx.teamCode, workItemId, memberUserIds: memberIds } ),
+                dto
+            );
+        }
 
         return dto;
     }
 
-    public async deleteById( ctx: WorkItemWsContext, workItemId: string ): Promise<void> {
+    public async deleteById( ctx: WorkItemWsContext, workItemId: string, actor: AuthUser ): Promise<void> {
         const _id = this.toObjectId( workItemId );
 
-        // Load first to know team + members for WS emits
-        const existing = await WorkItemModel.findById( _id ).lean().exec();
+
+
+        const existing = await WorkItemModel.findById( _id ).lean<LeanWorkItem>().exec();
         if ( !existing ) throw new WorkItemServiceError( "WORK_ITEM_NOT_FOUND", "WorkItem not found." );
 
-        const teamCode = ctx.teamCode; // controller should provide; if not, we still delete safely
+        const snapshot = this.toWorkItemDto( existing );
 
-        await Promise.all( [
-            WorkItemModel.deleteOne( { _id } ).exec(),
-            MemberActivityModel.deleteMany( { workItemId: _id } ).exec(),
-        ] );
+        const plan: DomainDeletePlan<WorkItemDto> = {
+            sourceKey: "workItem",
+            refId: workItemId,
+            label: `WorkItem: ${ existing.workItemCode }`,
+            description: "Work item deleted",
+            snapshotData: snapshot as unknown as Record<string, unknown>,
+            files: [],
+            module: "Team Management",
+            entity: "WorkItem",
+            tags: [ "workItem" ],
+            deleteDbRecord: async ( session ) => {
+                const opts = session ? { session } : {};
+                await Promise.all( [
+                    WorkItemModel.deleteOne( { _id }, { opts } ).exec(),
+                    MemberActivityModel.deleteMany( { workItemId: _id }, { opts } ).exec(),
+                ] );
+            },
+        };
 
-        // Emit deleted
-        if ( teamCode ) {
+        await this.deleteService.deleteWithRecycleBin( actor, plan );
+
+        if ( ctx.teamCode ) {
             const memberIds = this.extractAssignedMemberIds( existing );
             this.ws.emitWorkItemDeleted(
-                this.buildEmitCtx( ctx, { teamCode, workItemId } ),
+                this.buildEmitCtx( ctx, { teamCode: ctx.teamCode, workItemId } ),
                 workItemId,
-                teamCode,
+                ctx.teamCode,
                 memberIds.map( ( s ) => this.toObjectId( s ) )
             );
         }
     }
 
     // =========================================================================
-    // ATOMIC OPS (recommended for UI actions)
+    // EVIDENCE (UPLOAD + DB PATCH)
+    // =========================================================================
+    /**
+     * Upload evidence files to:
+     * uploads/team-management/<teamCode>/<taskId>/<workItemId>/evidence
+     * then append metadata rows into completionEvidenceSummary.
+     *
+     * IMPORTANT:
+     * - This uploader reads files from `req` (multer runs inside it).
+     * - So `input.files` is NOT required for the upload itself.
+     *   You can keep the validation if you want, but it must validate req carries files.
+     *
+     * @param ctx WebSocket context (teamCode recommended for emits)
+     * @param workItemId WorkItem Mongo id
+     * @param input Evidence upload input (teamCode/taskId/label/updatedByUserId)
+     * @param req Express request (contains multipart files)
+     */
+    public async uploadEvidence(
+        ctx: WorkItemWsContext,
+        workItemId: string,
+        input: WorkItemUploadEvidenceInput,
+    ): Promise<WorkItemDto> {
+        // -------------------------------------------------------------------------
+        // 0) Basic validations
+        // -------------------------------------------------------------------------
+        if ( !input.teamCode?.trim() ) {
+            throw new WorkItemServiceError( "VALIDATION_ERROR", "teamCode is required." );
+        }
+        if ( !input.taskId?.trim() ) {
+            throw new WorkItemServiceError( "VALIDATION_ERROR", "taskId is required." );
+        }
+        if ( !input.updatedByUserId?.trim() ) {
+            throw new WorkItemServiceError( "VALIDATION_ERROR", "updatedByUserId is required." );
+        }
+        if ( input.files.length === 0 ) {
+            throw new WorkItemServiceError( "VALIDATION_ERROR", "files are required." );
+        }
+
+        const _id = this.toObjectId( workItemId );
+
+        const existing = await WorkItemModel.findById( _id ).lean<LeanWorkItem>().exec();
+        if ( !existing ) {
+            throw new WorkItemServiceError( "WORK_ITEM_NOT_FOUND", "WorkItem not found." );
+        }
+
+        // If WorkItem has taskId, ensure it matches input.taskId (folder safety)
+        if ( existing.taskId && existing.taskId.toString() !== input.taskId ) {
+            throw new WorkItemServiceError( "TASK_MISMATCH", "WorkItem does not belong to the provided taskId." );
+        }
+
+        // -------------------------------------------------------------------------
+        // 2) Build evidence rows (exactOptionalPropertyTypes-safe)
+        // -------------------------------------------------------------------------
+        const now = new Date();
+        const label = this.safeStr( input.label );
+
+        const newRows: LeanEvidenceRow[] = input.files.map( ( p ) => ( {
+            label: label || this.safeStr( p.originalName ) || "Evidence",
+            relPath: this.safeStr( p.relativePath ),
+            url: this.safeStr( p.publicUrl ),
+            mimeType: this.safeStr( p.mimeType ) || "application/octet-stream",
+            originalName: this.safeStr( p.originalName ) || "file",
+            sizeBytes: this.safeNumber( p.sizeBytes ),
+            uploadedAt: now,
+        } ) );
+
+        // Dedup by relPath
+        const existingRel = new Set(
+            Array.isArray( existing.completionEvidenceSummary )
+                ? existing.completionEvidenceSummary.map( ( e ) => e.relPath )
+                : []
+        );
+
+        const safeRows = newRows.filter( ( r ) => r.relPath && r.url && !existingRel.has( r.relPath ) );
+        if ( safeRows.length === 0 ) {
+            return this.toWorkItemDto( existing );
+        }
+
+        // -------------------------------------------------------------------------
+        // 3) Patch DB (append evidence summary)
+        // -------------------------------------------------------------------------
+        const updated = await WorkItemModel.findByIdAndUpdate(
+            _id,
+            {
+                $set: {
+                    updatedByUserId: this.toObjectId( input.updatedByUserId ),
+                },
+                $push: {
+                    completionEvidenceSummary: { $each: safeRows },
+                },
+            },
+            { new: true }
+        )
+            .lean<LeanWorkItem>()
+            .exec();
+
+        if ( !updated ) throw new WorkItemServiceError( "WORK_ITEM_NOT_FOUND", "WorkItem not found." );
+
+        const dto = this.toWorkItemDto( updated );
+
+        // -------------------------------------------------------------------------
+        // 4) WS emit (best-effort)
+        // -------------------------------------------------------------------------
+        if ( ctx.teamCode ) {
+            const memberIds = this.extractAssignedMemberIds( updated );
+            this.ws.emitWorkItemUpdated(
+                this.buildEmitCtx( ctx, { teamCode: ctx.teamCode, workItemId, memberUserIds: memberIds } ),
+                dto
+            );
+        }
+
+        return dto;
+    }
+
+    /**
+     * Extract evidence packets from UploadResultPacket in a strict, field-safe way.
+     * - Your uploader guarantees output.byField has ALL declared keys.
+     */
+    private extractEvidencePackets( result: UploadResultPacket, fieldName: string ): FileMetaPacket[] {
+        const byFieldUnknown: unknown = ( result as unknown as { byField?: unknown; } ).byField;
+        if ( !byFieldUnknown || typeof byFieldUnknown !== "object" ) return [];
+
+        const byField = byFieldUnknown as Record<string, unknown>;
+        const fieldPacketsUnknown = byField[ fieldName ];
+
+        if ( !Array.isArray( fieldPacketsUnknown ) ) return [];
+
+        return fieldPacketsUnknown.filter( ( x ): x is FileMetaPacket => {
+            if ( !x || typeof x !== "object" ) return false;
+            const o = x as Record<string, unknown>;
+            return typeof o[ "relPath" ] === "string" && typeof o[ "url" ] === "string";
+        } );
+    }
+    /**
+     * Remove evidence rows by relPath (DB only).
+     * If you want physical file delete/move, do it in controller using relPath.
+     *
+     * @param ctx WebSocket context
+     * @param workItemId WorkItem id
+     * @param input Removal input (updatedByUserId + relPaths)
+     */
+    public async removeEvidence(
+        ctx: WorkItemWsContext,
+        workItemId: string,
+        input: WorkItemRemoveEvidenceInput
+    ): Promise<WorkItemDto> {
+        this.assertNonEmptyArray( input.relPaths, "relPaths" );
+
+        const _id = this.toObjectId( workItemId );
+
+        const updated = await WorkItemModel.findByIdAndUpdate(
+            _id,
+            {
+                $set: { updatedByUserId: this.toObjectId( input.updatedByUserId ) },
+                $pull: { completionEvidenceSummary: { relPath: { $in: [ ...input.relPaths ] } } },
+            },
+            { new: true }
+        )
+            .lean<LeanWorkItem>()
+            .exec();
+
+        if ( !updated ) throw new WorkItemServiceError( "WORK_ITEM_NOT_FOUND", "WorkItem not found." );
+
+        const dto = this.toWorkItemDto( updated );
+
+        if ( ctx.teamCode ) {
+            const memberIds = this.extractAssignedMemberIds( updated );
+            this.ws.emitWorkItemUpdated(
+                this.buildEmitCtx( ctx, { teamCode: ctx.teamCode, workItemId, memberUserIds: memberIds } ),
+                dto
+            );
+        }
+
+        return dto;
+    }
+
+    // =========================================================================
+    // ATOMIC OPS
     // =========================================================================
 
     public async setStatus( ctx: WorkItemWsContext, workItemId: string, status: WorkItemStatus, updatedByUserId: string ): Promise<WorkItemDto> {
@@ -305,16 +582,17 @@ export class WorkItemRestService {
                 },
             },
             { new: true }
-        ).lean().exec();
+        )
+            .lean<LeanWorkItem>()
+            .exec();
 
         if ( !updated ) throw new WorkItemServiceError( "WORK_ITEM_NOT_FOUND", "WorkItem not found." );
 
         const dto = this.toWorkItemDto( updated );
 
-        const teamCode = ctx.teamCode;
-        if ( teamCode ) {
+        if ( ctx.teamCode ) {
             this.ws.emitWorkItemUpdated(
-                this.buildEmitCtx( ctx, { teamCode, workItemId, memberUserIds: assignedToUserIds } ),
+                this.buildEmitCtx( ctx, { teamCode: ctx.teamCode, workItemId, memberUserIds: assignedToUserIds } ),
                 dto
             );
         }
@@ -323,20 +601,15 @@ export class WorkItemRestService {
     }
 
     // =========================================================================
-    // MEMBER ACTIVITY (calendar-style milestones / targets)
+    // MEMBER ACTIVITY
     // =========================================================================
 
-    public async appendActivity(
-        ctx: WorkItemWsContext,
-        workItemId: string,
-        input: WorkItemAppendActivityInput
-    ): Promise<MemberActivityDto> {
+    public async appendActivity( ctx: WorkItemWsContext, workItemId: string, input: WorkItemAppendActivityInput ): Promise<MemberActivityDto> {
         const _id = this.toObjectId( workItemId );
 
-        const workItem = await WorkItemModel.findById( _id ).lean().exec();
+        const workItem = await WorkItemModel.findById( _id ).lean<LeanWorkItem>().exec();
         if ( !workItem ) throw new WorkItemServiceError( "WORK_ITEM_NOT_FOUND", "WorkItem not found." );
 
-        // Permission: member must be assigned to this work item
         this.assertUserIsAssigned( workItem, input.userId );
 
         const activityDoc = await MemberActivityModel.create( {
@@ -349,7 +622,6 @@ export class WorkItemRestService {
             source: "rest",
 
             type: input.type,
-
             title: input.title,
             ...( input.notes ? { notes: input.notes } : {} ),
 
@@ -366,12 +638,10 @@ export class WorkItemRestService {
             ...( input.milestoneId ? { milestoneId: input.milestoneId } : {} ),
         } );
 
-        const activityDto = this.toMemberActivityDto( activityDoc.toObject() );
+        const activityDto = this.toMemberActivityDto( activityDoc.toObject() as unknown );
 
-        // Update WorkItem snapshot (cheap cached fields)
-        await this.updateSnapshotFromActivity( workItemId, workItem, input );
+        await this.updateSnapshotFromActivity( workItemId, input );
 
-        // Emit activity appended (notify captain + assigned members)
         if ( ctx.teamCode ) {
             const memberIds = this.extractAssignedMemberIds( workItem );
             this.ws.emitActivityAppended(
@@ -387,22 +657,12 @@ export class WorkItemRestService {
     }
 
     // =========================================================================
-    // Snapshot updater (WorkItem cached fields)
+    // Snapshot updater
     // =========================================================================
 
-    private async updateSnapshotFromActivity( workItemId: string, workItemLean: unknown, activity: WorkItemAppendActivityInput ): Promise<void> {
-        // Minimal snapshot update:
-        // - lastActivityAt always updates
-        // - progressCurrent updates if progressAfter provided
-        // - statusCurrent can be auto-set if activity.status suggests done (optional)
-        //
-        // NOTE: For industrial-grade, you can compute per-member progress + overall.
-        // Here we keep it stable and safe.
-
-        const now = new Date();
-
+    private async updateSnapshotFromActivity( workItemId: string, activity: WorkItemAppendActivityInput ): Promise<void> {
         const setDoc: Record<string, unknown> = {
-            lastActivityAt: now,
+            lastActivityAt: new Date(),
         };
 
         if ( typeof activity.progressAfter === "number" ) {
@@ -413,18 +673,13 @@ export class WorkItemRestService {
     }
 
     // =========================================================================
-    // Query builders / validators / DTO mappers (private class methods)
+    // Query builders / validators
     // =========================================================================
 
     private buildListQuery( filters: WorkItemListFilters ): Record<string, unknown> {
-        const q: Record<string, unknown> = {
-            teamId: this.toObjectId( filters.teamId ),
-        };
+        const q: Record<string, unknown> = { teamId: this.toObjectId( filters.teamId ) };
 
-        if ( filters.assignedToUserId ) {
-            q.assignedToUserIds = this.toObjectId( filters.assignedToUserId );
-        }
-
+        if ( filters.assignedToUserId ) q.assignedToUserIds = this.toObjectId( filters.assignedToUserId );
         if ( filters.status ) q.statusCurrent = filters.status;
         if ( filters.priority ) q.priority = filters.priority;
 
@@ -435,9 +690,7 @@ export class WorkItemRestService {
             q.expectedCompleteAt = range;
         }
 
-        // Optional text search (only if you add indexes / field later)
         if ( filters.q && filters.q.trim().length > 0 ) {
-            // workItemCode prefix match (safe)
             q.workItemCode = { $regex: this.escapeRegex( filters.q.trim() ), $options: "i" };
         }
 
@@ -445,9 +698,9 @@ export class WorkItemRestService {
     }
 
     private buildWorkItemUpdateDoc( input: WorkItemUpdateInput ): Record<string, unknown> {
+        // ✅ do NOT set updatedAt manually (timestamps true => mongoose does it)
         const $set: Record<string, unknown> = {
             updatedByUserId: this.toObjectId( input.updatedByUserId ),
-            updatedAt: ()=> new Date().toISOString(),
         };
 
         if ( input.expectedStartAt ) $set.expectedStartAt = this.toDate( input.expectedStartAt );
@@ -464,118 +717,88 @@ export class WorkItemRestService {
         if ( input.completedAt ) $set.completedAt = this.toDate( input.completedAt );
         if ( input.completedByUserId ) $set.completedByUserId = this.toObjectId( input.completedByUserId );
 
-
-
         return { $set };
     }
 
-    private assertUserIsAssigned( workItemLean: unknown, userId: string ): void {
-        const wi = workItemLean as { assignedToUserIds?: Types.ObjectId[]; };
-
+    private assertUserIsAssigned( workItemLean: LeanWorkItem, userId: string ): void {
         const uid = this.toObjectId( userId ).toString();
-        const assigned = Array.isArray( wi.assignedToUserIds ) ? wi.assignedToUserIds.map( ( x ) => x.toString() ) : [];
-
-        if ( !assigned.includes( uid ) ) {
-            throw new WorkItemServiceError( "NOT_ASSIGNED", "User is not assigned to this WorkItem." );
-        }
+        const assigned = Array.isArray( workItemLean.assignedToUserIds ) ? workItemLean.assignedToUserIds.map( ( x ) => x.toString() ) : [];
+        if ( !assigned.includes( uid ) ) throw new WorkItemServiceError( "NOT_ASSIGNED", "User is not assigned to this WorkItem." );
     }
 
-    private extractAssignedMemberIds( workItemLean: unknown ): string[] {
-        const wi = workItemLean as { assignedToUserIds?: Types.ObjectId[]; };
-        const assigned = Array.isArray( wi.assignedToUserIds ) ? wi.assignedToUserIds.map( ( x ) => x.toString() ) : [];
-        return assigned;
+    private extractAssignedMemberIds( workItemLean: LeanWorkItem ): string[] {
+        return Array.isArray( workItemLean.assignedToUserIds ) ? workItemLean.assignedToUserIds.map( ( x ) => x.toString() ) : [];
     }
 
     private buildEmitCtx( ctx: WorkItemWsContext, patch: { teamCode?: string; workItemId?: string; memberUserIds?: string[]; } ): WorkItemWsContext {
-        // exactOptionalPropertyTypes safe: only include optionals when present
-        const next: WorkItemWsContext = {
+        return {
             actor: ctx.actor,
             requestId: ctx.requestId,
             ...( patch.teamCode ? { teamCode: patch.teamCode } : {} ),
             ...( patch.workItemId ? { workItemId: patch.workItemId } : {} ),
             ...( patch.memberUserIds && patch.memberUserIds.length > 0 ? { memberUserIds: patch.memberUserIds } : {} ),
         };
-        return next;
     }
 
-    private extractIdFromDto( dto: WorkItemDto ): string {
-        const rawUnknown: unknown = ( dto as unknown as { _id?: unknown; id?: unknown; } )._id
-            ?? ( dto as unknown as { id?: unknown; } ).id;
+    // =========================================================================
+    // FileUploader result normalization (STRICT + tolerant)
+    // =========================================================================
 
-        // 1) String id
-        if ( typeof rawUnknown === "string" ) {
-            if ( !Types.ObjectId.isValid( rawUnknown ) ) {
-                throw new WorkItemServiceError(
-                    "INVALID_DTO_ID",
-                    "WorkItemDto._id/id is not a valid ObjectId string."
-                );
+    /**
+     * Converts FileUploader output into FileMetaPacket[].
+     * This keeps the service stable even if FileUploader returns:
+     * - { packets: FileMetaPacket[] }
+     * - { files: FileMetaPacket[] }
+     * - FileMetaPacket[]
+     * - { meta: { packets: FileMetaPacket[] } }
+     */
+    private extractFilePackets( result: unknown ): FileMetaPacket[] {
+        const asArr = ( v: unknown ): FileMetaPacket[] => {
+            if ( !Array.isArray( v ) ) return [];
+            return v.filter( this.isFileMetaPacket.bind( this ) );
+        };
+
+        if ( Array.isArray( result ) ) return asArr( result );
+
+        if ( result && typeof result === "object" ) {
+            const r = result as Record<string, unknown>;
+
+            const packets1 = asArr( r[ "packets" ] );
+            if ( packets1.length ) return packets1;
+
+            const packets2 = asArr( r[ "files" ] );
+            if ( packets2.length ) return packets2;
+
+            const meta = r[ "meta" ];
+            if ( meta && typeof meta === "object" ) {
+                const m = meta as Record<string, unknown>;
+                const packets3 = asArr( m[ "packets" ] );
+                if ( packets3.length ) return packets3;
+                const packets4 = asArr( m[ "files" ] );
+                if ( packets4.length ) return packets4;
             }
-            return rawUnknown;
         }
 
-        // 2) Real ObjectId
-        if ( rawUnknown instanceof Types.ObjectId ) {
-            const asString = rawUnknown.toString();
-            if ( !Types.ObjectId.isValid( asString ) ) {
-                throw new WorkItemServiceError(
-                    "INVALID_DTO_ID",
-                    "WorkItemDto._id/id ObjectId is invalid."
-                );
-            }
-            return asString;
-        }
-
-        // 3) ObjectId-like (rare, but safe to support)
-        if ( rawUnknown && typeof rawUnknown === "object" && "toString" in rawUnknown ) {
-            const asString = String( ( rawUnknown as { toString: () => string; } ).toString() );
-            if ( !Types.ObjectId.isValid( asString ) ) {
-                throw new WorkItemServiceError(
-                    "INVALID_DTO_ID",
-                    "WorkItemDto._id/id object is not a valid ObjectId."
-                );
-            }
-            return asString;
-        }
-
-        // 4) Missing / invalid type
-        throw new WorkItemServiceError(
-            "DTO_MISSING_ID",
-            "WorkItemDto does not contain a valid _id/id."
-        );
+        return [];
     }
 
-
-    private extractTeamIdFromDto( dto: WorkItemDto ): string {
-        const rawUnknown: unknown = ( dto as unknown as { teamId?: unknown; } ).teamId;
-
-        if ( typeof rawUnknown === "string" ) {
-            if ( !Types.ObjectId.isValid( rawUnknown ) ) {
-                throw new Error( `[Error:] [WorkItemRestService] Invalid teamId string in DTO.\n` );
-            }
-            return rawUnknown;
-        }
-
-        if ( rawUnknown instanceof Types.ObjectId ) {
-            const asString = rawUnknown.toString();
-            if ( !Types.ObjectId.isValid( asString ) ) {
-                throw new Error( `[Error:] [WorkItemRestService] Invalid teamId ObjectId in DTO.\n` );
-            }
-            return asString;
-        }
-
-        // Some libs return ObjectId-like objects (rare), so fallback:
-        if ( rawUnknown && typeof rawUnknown === "object" && "toString" in rawUnknown ) {
-            const asString = String( ( rawUnknown as { toString: () => string; } ).toString() );
-            if ( !Types.ObjectId.isValid( asString ) ) {
-                throw new Error( `[Error:] [WorkItemRestService] Invalid teamId object in DTO.\n` );
-            }
-            return asString;
-        }
-
-        throw new Error( `[Error:] [WorkItemRestService] teamId missing or invalid type in DTO.\n` );
+    private isFileMetaPacket( v: unknown ): v is FileMetaPacket {
+        if ( !v || typeof v !== "object" ) return false;
+        const o = v as Record<string, unknown>;
+        return typeof o[ "relPath" ] === "string" && typeof o[ "url" ] === "string";
     }
 
+    // =========================================================================
+    // Small safe helpers
+    // =========================================================================
 
+    private safeStr( v: unknown ): string {
+        return typeof v === "string" ? v.trim() : "";
+    }
+
+    private safeNumber( v: unknown ): number {
+        return typeof v === "number" && Number.isFinite( v ) ? v : 0;
+    }
 
     private toObjectId( id: string ): Types.ObjectId {
         if ( !Types.ObjectId.isValid( id ) ) throw new WorkItemServiceError( "INVALID_OBJECT_ID", `Invalid ObjectId: ${ id }` );
@@ -616,25 +839,20 @@ export class WorkItemRestService {
         return input.replace( /[.*+?^${}()|[\]\\]/g, "\\$&" );
     }
 
-    // -------------------------
-    // DTO Mappers (minimal)
-    // -------------------------
+    // =========================================================================
+    // DTO Mapper (NO any)
+    // =========================================================================
 
-    private toWorkItemDto( lean: any ): WorkItemDto {
-        // NOTE: If you refuse `any`, define a LeanWorkItem interface.
-        const id = lean._id?.toString?.() ? lean._id.toString() : String( lean._id );
-
+    private toWorkItemDto( lean: LeanWorkItem ): WorkItemDto {
         return {
-            _id: id,
+            _id: lean._id.toString(),
             workItemCode: lean.workItemCode,
             teamId: lean.teamId.toString(),
 
             ...( lean.taskId ? { taskId: lean.taskId.toString() } : {} ),
 
             assignedByUserId: lean.assignedByUserId.toString(),
-            assignedToUserIds: Array.isArray( lean.assignedToUserIds )
-                ? lean.assignedToUserIds.map( ( x: Types.ObjectId ) => x.toString() )
-                : [],
+            assignedToUserIds: Array.isArray( lean.assignedToUserIds ) ? lean.assignedToUserIds.map( ( x ) => x.toString() ) : [],
 
             assignedAt: new Date( lean.assignedAt ).toISOString(),
             ...( lean.expectedStartAt ? { expectedStartAt: new Date( lean.expectedStartAt ).toISOString() } : {} ),
@@ -653,7 +871,7 @@ export class WorkItemRestService {
 
             ...( Array.isArray( lean.memberProgress ) && lean.memberProgress.length > 0
                 ? {
-                    memberProgress: lean.memberProgress.map( ( mp: any ) => ( {
+                    memberProgress: lean.memberProgress.map( ( mp ) => ( {
                         userId: mp.userId.toString(),
                         progress: mp.progress,
                         status: mp.status,
@@ -664,7 +882,7 @@ export class WorkItemRestService {
 
             ...( Array.isArray( lean.completionEvidenceSummary ) && lean.completionEvidenceSummary.length > 0
                 ? {
-                    completionEvidenceSummary: lean.completionEvidenceSummary.map( ( ev: any ) => ( {
+                    completionEvidenceSummary: lean.completionEvidenceSummary.map( ( ev ) => ( {
                         label: ev.label,
                         relPath: ev.relPath,
                         url: ev.url,
@@ -683,7 +901,6 @@ export class WorkItemRestService {
             updatedAt: new Date( lean.updatedAt ).toISOString(),
         };
     }
-
 
     private toMemberActivityDto( lean: unknown ): MemberActivityDto {
         return lean as MemberActivityDto;

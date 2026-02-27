@@ -32,7 +32,7 @@ import {
 } from "../models/property.model";
 
 import type { CountryCodes, PhoneNumber } from "../models/user.model";
-import type { FileMetaPacket, PaginationMeta } from "../types/common";
+import type { AuthUserNormalized, FileMetaPacket, PaginationMeta } from "../types/common";
 import type { AuthUser } from "../types/common";
 import type { NotificationActorDto, NotificationAudience, NotificationCategory, NotificationTarget } from "../types/notification/notification.types";
 
@@ -44,6 +44,7 @@ import { FileMetaPacketBuilder } from "../utils/files/file-meta-packet.builder";
 
 import { RecycleBinDomainDeleteService, type DomainDeletePlan } from "../services/recyclebin/recyclebin-domain-delete.service";
 import { NotificationHubEngineService } from "../services/notifications/notification-hub-engine.service";
+import type { NotificationActionKey } from "../types/notification/notification-action-keys.catalog";
 
 /* ========================================================================== *
  * INTERNAL TYPES
@@ -234,7 +235,8 @@ export default class Property {
           // 0) Auth
           // -------------------------------------------------------------------
           const author: AuthUser | null = await ApiGuardExport.GetAuthUser( req );
-          if ( !author ) {
+          const normalisedAuthor: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser( req );
+          if ( !author || !normalisedAuthor ) {
             ApiResponseBuilder.conflict( res, "Invalid author!" );
             return;
           }
@@ -313,19 +315,48 @@ export default class Property {
           // -------------------------------------------------------------------
           // 5) Notify (non-fatal)
           // -------------------------------------------------------------------
-          this.tryEmitNotification( author, "property.create", {
-            tags: [ "property", "create" ],
-            target: { category: "Property", module: "Property", refId: propertyID, actionKey: 'property:listing.created' },
-            category: "Property",
-            // Audiences MUST be array (your new rule)
-            audiences: [
-              { mode: "Role", roleKey: "admin" },
-              { mode: "Role", roleKey: "manager" },
-              { mode: "Role", roleKey: "operator" },
-              { mode: "Role", roleKey: "agent" },
-            ],
-            extra: { propertyId: propertyID, title: ( inserted as any )?.title ?? "" },
-          } );
+
+          let audiences: NotificationAudience[] = [];
+
+          if ( normalisedAuthor.username === inserted.addedBy.username ) {
+            audiences = [
+              { mode: 'User', username: normalisedAuthor.username },
+              { mode: 'User', username: inserted.owner },
+              { mode: 'Role', roleKey: 'admin' },
+              { mode: 'Role', roleKey: 'manager' },
+              { mode: 'Role', roleKey: 'operator' },
+            ];
+          } else {
+            audiences = [
+              { mode: 'User', username: normalisedAuthor.username },
+              { mode: 'User', username: inserted.owner },
+              { mode: 'User', username: inserted.addedBy.username },
+              { mode: 'Role', roleKey: 'admin' },
+              { mode: 'Role', roleKey: 'manager' },
+              { mode: 'Role', roleKey: 'operator' },
+            ];
+          }
+
+          audiences = this.deduplicateAudiences( audiences );
+
+          await this.tryEmitNotification(
+            normalisedAuthor,
+            "property:listing.created",
+            {
+              tags: [ "property", "create" ],
+              target: {
+                category: "Property",
+                module: "Property module",
+                refId: propertyID,
+                actionKey: 'property:listing.created',
+                params: { propertyID }
+              },
+              category: "Property",
+              // Audiences MUST be array (your new rule)
+              audiences,
+              extra: { propertyId: propertyID, title: ( inserted as any )?.title ?? "" },
+            }
+          );
 
           ApiResponseBuilder.created( res, "Property inserted successfully", inserted );
           return;
@@ -356,7 +387,8 @@ export default class Property {
           // 0) Auth
           // -------------------------------------------------------------------
           const author: AuthUser | null = await ApiGuardExport.GetAuthUser( req );
-          if ( !author ) {
+          const normalisedAuthor: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser( req );
+          if ( !author || !normalisedAuthor ) {
             ApiResponseBuilder.conflict( res, "Invalid author!" );
             return;
           }
@@ -530,23 +562,48 @@ export default class Property {
           // -------------------------------------------------------------------
           // 9) Notify (non-fatal)
           // -------------------------------------------------------------------
-          this.tryEmitNotification( author, "property.update", {
-            tags: [ "property", "update" ],
-            target: {
+
+
+          let audiences: NotificationAudience[] = [];
+
+          if ( normalisedAuthor.username === existing.addedBy.username ) {
+            audiences = [
+              { mode: 'User', username: normalisedAuthor.username },
+              { mode: 'User', username: existing.owner },
+              { mode: 'Role', roleKey: 'admin' },
+              { mode: 'Role', roleKey: 'manager' },
+              { mode: 'Role', roleKey: 'operator' },
+            ];
+          } else {
+            audiences = [
+              { mode: 'User', username: normalisedAuthor.username },
+              { mode: 'User', username: existing.owner },
+              { mode: 'User', username: existing.addedBy.username },
+              { mode: 'Role', roleKey: 'admin' },
+              { mode: 'Role', roleKey: 'manager' },
+              { mode: 'Role', roleKey: 'operator' },
+            ];
+          }
+
+          audiences = this.deduplicateAudiences( audiences );
+
+          await this.tryEmitNotification(
+            normalisedAuthor,
+            "property:listing.updated",
+            {
+              tags: [ "property", "update" ],
+              target: {
+                category: "Property",
+                module: "Property module",
+                refId: propertyID,
+                actionKey: 'property:listing.updated',
+                params: { propertyID: updated.id }
+              },
               category: "Property",
-              module: "Property",
-              refId: propertyID,
-              actionKey: 'property:listing.updated'
-            },
-            category: "Property",
-            audiences: [
-              { mode: "Role", roleKey: "admin" },
-              { mode: "Role", roleKey: "manager" },
-              { mode: "Role", roleKey: "operator" },
-              { mode: "Role", roleKey: "agent" },
-            ],
-            extra: { propertyId: propertyID, title: ( updated as any )?.title ?? "" },
-          } );
+              audiences,
+              extra: { propertyId: propertyID, title: ( updated as any )?.title ?? "" },
+            }
+          );
 
           ApiResponseBuilder.ok( res, "property", updated, "Property updated successfully." );
           return;
@@ -837,7 +894,8 @@ export default class Property {
           // 0) Auth
           // -------------------------------------------------------------------
           const author: AuthUser | null = await ApiGuardExport.GetAuthUser( req );
-          if ( !author ) {
+          const normalisedAuthor: AuthUserNormalized | null = await ApiGuardExport.GetNormalisedAuthUser( req );
+          if ( !author || !normalisedAuthor ) {
             ApiResponseBuilder.conflict( res, "Invalid author!" );
             return;
           }
@@ -909,27 +967,60 @@ export default class Property {
             entity: "Property",
             tags: [ "property", "delete" ],
             deleteDbRecord: async ( session ) => {
-              await PropertyModel.deleteOne( { id: propertyID }, { session } );
+              const opts = session ? { session } : {};
+              await PropertyModel.deleteOne( { id: propertyID }, { opts } );
             },
           };
 
-          await this.deleteSvc.deleteWithRecycleBin( author, plan );
+          const deleted = await this.deleteSvc.deleteWithRecycleBin( author, plan );
 
           // -------------------------------------------------------------------
           // 6) Notify (non-fatal)
           // -------------------------------------------------------------------
-          this.tryEmitNotification( author, "property.delete", {
-            tags: [ "property", "delete" ],
-            target: { category: "Property", module: "Property", refId: propertyID, actionKey: 'property:listing.deleted' },
-            category: "Property",
-            audiences: [
-              { mode: "Role", roleKey: "admin" },
-              { mode: "Role", roleKey: "manager" },
-              { mode: "Role", roleKey: "operator" },
-              { mode: "Role", roleKey: "agent" },
-            ],
-            extra: { propertyId: propertyID, title: ( property as any )?.title ?? "" },
-          } );
+
+
+          let audiences: NotificationAudience[] = [];
+
+          if ( normalisedAuthor.username === property.addedBy.username ) {
+            audiences = [
+              { mode: 'User', username: normalisedAuthor.username },
+              { mode: 'User', username: property.owner },
+              { mode: 'Role', roleKey: 'admin' },
+              { mode: 'Role', roleKey: 'manager' },
+              { mode: 'Role', roleKey: 'operator' },
+            ];
+          } else {
+            audiences = [
+              { mode: 'User', username: normalisedAuthor.username },
+              { mode: 'User', username: property.owner },
+              { mode: 'User', username: property.addedBy.username },
+              { mode: 'Role', roleKey: 'admin' },
+              { mode: 'Role', roleKey: 'manager' },
+              { mode: 'Role', roleKey: 'operator' },
+            ];
+          }
+
+          audiences = this.deduplicateAudiences( audiences );
+
+          await this.tryEmitNotification(
+            normalisedAuthor,
+            "property:listing.deleted",
+            {
+              tags: [ "property", "delete" ],
+              target: {
+                category: "Property",
+                module: "Property module",
+                refId: propertyID,
+                actionKey: 'property:listing.deleted',
+                params: { recycleItemRef: deleted.entry.entryId },
+              },
+              category: "Property",
+              // Audiences MUST be array (your new rule)
+              audiences,
+              extra: { propertyId: propertyID, title: ( property as any )?.title ?? "" },
+            }
+          );
+
 
           ApiResponseBuilder.noContent( res, "Property recorded to recyclebin and deleted from DB." );
           return;
@@ -1416,9 +1507,9 @@ export default class Property {
    * NOTIFICATION (NEW RULES: audiences ALWAYS array)
    * ====================================================================== */
 
-  private tryEmitNotification(
-    author: AuthUser,
-    eventKey: string,
+  private async tryEmitNotification(
+    author: AuthUserNormalized,
+    eventKey: NotificationActionKey,
     input: {
       audiences: NotificationAudience[];
       tags: string[];
@@ -1426,19 +1517,11 @@ export default class Property {
       category: NotificationCategory;
       extra?: Record<string, unknown>;
     }
-  ): void {
+  ): Promise<void> {
     try {
-      const actor: NotificationActorDto = {
-        userId: String( author.userId ),
-        username: String( author.username ),
-        role: author.role,
-        ...( author.branchId ? { branchId: author.branchId } : {} ),
-        ...( author.teamCodes && author.teamCodes.length > 0 ? { teamCodes: author.teamCodes } : {} ),
-      };
-
-      this.notificationHub.emit( {
+      await this.notificationHub.emit( {
         eventKey,
-        actor,
+        actor: author,
         audiences: Array.isArray( input.audiences ) ? input.audiences : [],
         tags: input.tags,
         target: input.target,
@@ -1878,5 +1961,53 @@ export default class Property {
       { $project: { series: "$arr" } },
       { $replaceRoot: { newRoot: "$series" } },
     ];
+  }
+
+  /**
+ * Deduplicate NotificationAudience entries.
+ *
+ * Why:
+ * - Prevent duplicate user rows in bulkWrite
+ * - Prevent MongoBulkWriteError
+ * - Prevent double WS emits
+ *
+ * Strategy:
+ * - Users dedupe by username
+ * - Roles dedupe by roleKey
+ * - Company dedupe as single instance
+ */
+  private deduplicateAudiences(
+    audiences: NotificationAudience[]
+  ): NotificationAudience[] {
+    const seenUsers = new Set<string>();
+    const seenRoles = new Set<string>();
+    let companyIncluded = false;
+
+    const result: NotificationAudience[] = [];
+
+    for ( const a of audiences ) {
+      if ( a.mode === 'User' ) {
+        if ( !seenUsers.has( a.username ) ) {
+          seenUsers.add( a.username );
+          result.push( a );
+        }
+      }
+
+      else if ( a.mode === 'Role' ) {
+        if ( !seenRoles.has( a.roleKey ) ) {
+          seenRoles.add( a.roleKey );
+          result.push( a );
+        }
+      }
+
+      else if ( a.mode === 'Company' ) {
+        if ( !companyIncluded ) {
+          companyIncluded = true;
+          result.push( a );
+        }
+      }
+    }
+
+    return result;
   }
 }

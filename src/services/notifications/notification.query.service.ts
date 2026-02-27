@@ -3,28 +3,14 @@
 // Notification Hub — Query Service (Enterprise Inbox Queries)
 // =============================================================================
 //
-// PURPOSE
-// - Provide read-only inbox queries for Notification Hub.
-// - Optimized for inbox listing:
-//    - pagination
-//    - server-side filtering
-//    - efficient join with master notifications collection
-//
-// DATA MODEL (Expected)
-// - user_notifications   : per-user state documents
-// - notifications        : master notification documents
-//
-// IMPORTANT SEMANTICS
-// - isDeleted  -> trash (deleted items)
-// - isArchived -> hidden/archive (not trash)
-// - unreadOnly implies: not deleted + not archived + isRead=false
-//
-// TYPE RULES
-// - DTO IDs are strings (no mongoose types in DTO contracts)
-// - Dates returned to UI as ISO strings
+// FIX SUMMARY (Owner boundary correction)
+// - Inbox state belongs to a USER by userId (stable identifier).
+// - user_notifications collection is indexed on userId and unique by (userId, notificationId).
+// - Querying by username can return empty if username drifted or legacy rows are missing username.
+// - We still use username for scope filtering because audiences.mode="User" stores username.
 // =============================================================================
 
-import type { ClientSession, PipelineStage, FilterQuery } from "mongoose";
+import { type ClientSession, type PipelineStage, type FilterQuery, Types } from "mongoose";
 
 import type {
   NotificationCoreDto,
@@ -37,15 +23,12 @@ import type {
 
 import { UserNotificationModel } from "../../models/notifications/user-notification.model";
 import type { NotificationScope, NotificationPriorityScope } from "../../socket/events/notifications/notification.rpc.events";
+import { NotificationTypeGuards } from "../../types/notification/notification.type-guards";
 
 /* =============================================================================
  * A) Internal aggregation row shapes (aligned with $project)
  * ========================================================================== */
 
-/**
- * AggRowInbox must match the EXACT shape produced by the $project stage.
- * If you change $project, update this interface.
- */
 interface AggRowInbox {
   inboxId: string;
 
@@ -55,14 +38,17 @@ interface AggRowInbox {
   isRead: boolean;
   readAt?: string;
 
+  isArchived?: boolean;
+  archivedAt?: string;
+
   isDeleted: boolean;
+  deletedAt?: string;
+
+  deliveredAt?: string;
 
   notification: NotificationCoreDto;
 }
 
-/**
- * $count output shape.
- */
 interface CountAggRow {
   c: number;
 }
@@ -76,38 +62,32 @@ interface PriorityCond {
  * ========================================================================== */
 
 export class NotificationQueryService {
+  private static readonly HARD_MAX_LIMIT: number = 500;
   public constructor () {}
 
   /* ===========================================================================
-   * 01) Load inbox page for a user
+   * 01) Load inbox page for a user (default tab)
    * ======================================================================== */
 
+  /**
+   * Load inbox listing for a single user (owner boundary).
+   *
+   * @param userId
+   * - Expected: authenticated user's id (MongoId string stored in DB as string)
+   * - Usage: owner boundary for reading inbox state rows (stable identifier)
+   *
+   * @param req
+   * - Expected: NotificationLoadRequest containing page/limit/filters
+   *
+   * @param session
+   * - Optional: mongoose ClientSession
+   */
   public async loadInboxForUser(
-    username: string,
+    userId: string,
     req: NotificationLoadRequest,
     session?: ClientSession
   ): Promise<NotificationLoadResponse> {
-    /**
-     * WHY this method exists
-     * - UI needs paginated inbox listing.
-     * - Must apply both:
-     *    1) per-user filters (read/deleted/archived)
-     *    2) master notification filters (category/severity/search/date)
-     *
-     * HOW to use
-     * - Called from NotificationRestService.loadInbox(...)
-     *
-     * PARAMETERS
-     * - username: inbox owner boundary (security + filtering)
-     * - req: pagination + filters
-     * - session: optional transaction session (rare for read ops)
-     *
-     * RETURNS
-     * - items: NotificationInboxItemDto[]
-     * - other.total: total count for current filters
-     */
-
-    const u = this.safeUsername( username );
+    const uid = this.safeUserId( userId );
 
     const page = this.safePage( req.page );
     const limit = this.safeLimit( req.limit );
@@ -115,76 +95,54 @@ export class NotificationQueryService {
 
     const filters: NotificationLoadFilters = req.filters ?? {};
 
-    const stateMatch = this.buildStateMatch( u, filters );
+    const stateMatch = this.buildStateMatch( uid, filters );
     const notifMatch = this.buildNotificationMatch( filters );
 
-    const pipeline: PipelineStage[] = [
-      // 1) Filter per-user rows (user_notifications)
-      { $match: stateMatch },
-
-      // 2) Sort by arrival time
-      { $sort: { deliveredAt: -1 } },
-
-      // 3) Pagination
-      { $skip: skip },
-      { $limit: limit },
-
-      // 4) Join master notification (notifications)
-      {
-        $lookup: {
-          from: "notifications",
-          localField: "notificationId",
-          foreignField: "_id",
-          as: "n",
-        },
-      },
-
-      // 5) Flatten joined array
-      { $unwind: "$n" },
-
-      // 6) Apply master notification filters (after join)
-      { $match: notifMatch },
-
-      // 7) Final projection into DTO-friendly shape
-      this.buildInboxProject(),
-    ];
+    const pipeline = this.buildInboxPipeline( {
+      stateMatch,
+      notifMatch,
+      extraMatches: [],
+      sort: { deliveredAt: -1, "n.createdAt": -1, _id: -1 },
+      skip,
+      limit,
+      project: true,
+    } );
 
     const rows = await this.aggregateWithSession<AggRowInbox>( pipeline, session );
-
-    // Convert aggregation rows to strict DTO
     const items = rows.map( ( r ) => this.mapAggRowToInboxItem( r ) );
 
-    // Load total count using same filters
-    const total = await this.countInboxTotalForUser( u, filters, session );
+    const total = await this.countInboxTotalForUser( uid, filters, session );
 
     return { items, other: { total } };
   }
 
+  /* ===========================================================================
+   * 01-B) Load inbox by scope + priorityScope (tabs)
+   * ======================================================================== */
+
   /**
-   * Load inbox by “scope” (user/role/company) and “priorityScope”.
+   * Load inbox items under a scope tab:
+   * - scope = user | role | company
+   * - priorityScope = all | prioritized | unprioritized
+   *
+   * NOTE
+   * - Owner boundary is still userId (state rows).
+   * - Scope boundary uses username/roleKey because master audiences store those fields.
+   *
+   * @param userId
+   * - Expected: authenticated user's id (MongoId string)
    *
    * @param username
-   * - Expected: inbox owner username (security boundary in user_notifications).
+   * - Expected: authenticated user's username (used only for scope=User audience matching)
    *
    * @param roleKey
-   * - Expected: current user role string (used only for scope="role" match).
-   *
-   * @param scope
-   * - Expected: "user" | "role" | "company"
-   *
-   * @param priorityScope
-   * - Expected: "all" | "prioritized" | "unprioritized"
-   *
-   * @param req
-   * - Expected: NotificationLoadRequest (page/limit/filters)
-   *
-   * @param session
-   * - Optional: mongoose ClientSession for transactional reads (rare but supported)
+   * - Expected: authenticated user's role key (used only for scope=Role audience matching)
    */
   public async loadInboxForUserByScope(
+    userId: string,
     username: string,
     roleKey: string,
-    scope: NotificationScope,
+    scope: NotificationScope = "company",
     priorityScope: NotificationPriorityScope,
     req: NotificationLoadRequest,
     session?: ClientSession
@@ -192,7 +150,8 @@ export class NotificationQueryService {
     items: NotificationInboxItemDto[];
     other: { total: number; unread: number; prioritized: number; unprioritized: number; };
   }> {
-    const u = this.safeUsername( username );
+    const uid = this.safeUserId( userId );
+    const uname = this.safeUsername( username );
     const r = this.safeString( roleKey );
 
     const page = this.safePage( req.page );
@@ -201,138 +160,150 @@ export class NotificationQueryService {
 
     const filters: NotificationLoadFilters = req.filters ?? {};
 
-    const stateMatch = this.buildStateMatch( u, filters );
+    const stateMatch = this.buildStateMatch( uid, filters );
     const notifMatch = this.buildNotificationMatch( filters );
 
-    const scopeMatch = this.buildScopeMatch( scope, u, r );
-    const priorityMatch = this.buildPriorityMatch( priorityScope );
+    const scopeMatch = this.buildScopeMatch( scope, uname, r );
+    const priorityMatch = this.buildPriorityMatch( priorityScope, uname );
 
-    const pipeline: PipelineStage[] = [
-      { $match: stateMatch },
-      { $sort: { deliveredAt: -1 } },
-      { $skip: skip },
-      { $limit: limit },
-      {
-        $lookup: {
-          from: "notifications",
-          localField: "notificationId",
-          foreignField: "_id",
-          as: "n",
-        },
-      },
-      { $unwind: "$n" },
-      { $match: notifMatch },
-      { $match: scopeMatch },
-      { $match: priorityMatch },
+    const pipeline = this.buildInboxPipeline( {
+      stateMatch,
+      notifMatch,
+      extraMatches: [ scopeMatch, priorityMatch ],
+      sort: { deliveredAt: -1 },
+      skip,
+      limit,
+      project: true,
+    } );
 
-      // ✅ MUST be the SAME $project as loadInboxForUser
-      this.buildInboxProject(),
-    ];
-
-    // ✅ pass session
     const rows = await this.aggregateWithSession<AggRowInbox>( pipeline, session );
     const items = rows.map( ( x ) => this.mapAggRowToInboxItem( x ) );
 
-    // ✅ pass real filters (don’t ignore)
-    const counts = await this.countInboxForUserWithScopes( u, r, filters /*, session if you add it */ );
+    const counts = await this.countInboxForUserByScope( uid, uname, r, scope ?? "company", filters, session );
 
-    return { items, other: counts };
-  }
-
-  /**
-   * Counts for:
-   * - total
-   * - unread
-   * - prioritized
-   * - unprioritized
-   *
-   * @param username
-   * - Expected: inbox owner username
-   *
-   * @param roleKey
-   * - Expected: current user role
-   *
-   * @param filters
-   * - Expected: NotificationLoadFilters (same semantics as list filters)
-   *
-   * @param session
-   * - Optional: mongoose session
-   */
-  public async countInboxForUserWithScopes(
-    username: string,
-    roleKey: string,
-    filters: NotificationLoadFilters,
-    session?: ClientSession
-  ): Promise<{ total: number; unread: number; prioritized: number; unprioritized: number; }> {
-    const u = this.safeUsername( username );
-    const r = this.safeString( roleKey );
-
-    // ✅ total/unread MUST respect filters + session
-    const base = await this.countInboxForUser( u, { ...filters }, session );
-
-    // prioritized/unprioritized should also respect filters + session
-    const prioritized = await this.countByPriority( u, r, "prioritized", { ...filters }, session );
-    const unprioritized = await this.countByPriority( u, r, "unprioritized", { ...filters }, session );
+    const total = await this.countInboxForUserByScopeAndPriority( uid, uname, r, scope ?? "company", priorityScope, filters, session );
+    const unread = await this.countUnreadForUserByScopeAndPriority( uid, uname, r, scope ?? "company", priorityScope, filters, session );
 
     return {
-      total: base.total,
-      unread: base.unread,
-      prioritized,
-      unprioritized,
+      items,
+      other: {
+        total,
+        unread,
+        prioritized: counts.prioritized,
+        unprioritized: counts.unprioritized,
+      },
     };
   }
 
   /* ===========================================================================
-   * 02) Count inbox totals (total + unread)
+   * 02) Count inbox totals
    * ======================================================================== */
 
+  /**
+   * Counts for user inbox (default view):
+   * - total
+   * - unread
+   *
+   * @param userId
+   * - Expected: authenticated user's id (MongoId string)
+   */
+  /**
+ * Counts for default inbox view (ALL scope), split by audience priority model.
+ *
+ * RULE
+ * - prioritized   : direct-to-user (audiences.mode="User" with this username)
+ * - unprioritized : role/company broadcasts (and NOT direct-to-user)
+ *
+ * NOTE
+ * - We need username here because canonical User-audience stores username.
+ */
   public async countInboxForUser(
+    userId: string,
     username: string,
     filters: NotificationLoadFilters,
     session?: ClientSession
   ): Promise<NotificationCountResponse> {
-    /**
-     * WHY this method exists
-     * - UI badges need counts:
-     *    - total inbox count (for current filter set)
-     *    - unread count (unread + not deleted + not archived)
-     *
-     * HOW to use
-     * - Called from NotificationRestService.countInbox(...)
-     */
+    const uid = this.safeUserId( userId );
+    const uname = this.safeUsername( username );
 
-    const u = this.safeUsername( username );
+    // total (respect filters)
+    const total = await this.countInboxTotalForUser( uid, { ...filters }, session );
 
-    // TOTAL count respects current filter set
-    const total = await this.countInboxTotalForUser( u, { ...filters }, session );
-
-    // UNREAD: enforce unread semantics
+    // unread (force unread semantics)
     const unreadFilters: NotificationLoadFilters = {
       ...filters,
       unreadOnly: true,
       includeDeleted: false,
       includeArchived: false,
     };
+    const unread = await this.countInboxTotalForUser( uid, unreadFilters, session );
 
-    const unread = await this.countInboxTotalForUser( u, unreadFilters, session );
+    // prioritized/unprioritized are computed on the SAME base filters
+    // (do NOT force unreadOnly unless you explicitly want unread-priority counts)
+    const prioritized = await this.countByPriorityOnly( uid, uname, "prioritized", { ...filters }, session );
+    const unprioritized = await this.countByPriorityOnly( uid, uname, "unprioritized", { ...filters }, session );
 
-    return { total, unread };
+    return { total, unread, prioritized, unprioritized };
   }
 
-  /* =============================================================================
-   * C) Internal: count using join + filters (same semantics as load)
-   * ========================================================================== */
-
-  private async countInboxTotalForUser(
+  /**
+   * Counts under scope tabs:
+   * - prioritized
+   * - unprioritized
+   * - total/unread (scope-aware)
+   *
+   * @param userId
+   * - Expected: authenticated user's id (MongoId string)
+   *
+   * @param username
+   * - Expected: authenticated user's username (for scope=User)
+   *
+   * @param roleKey
+   * - Expected: authenticated user's roleKey (for scope=Role)
+   */
+  public async countInboxForUserByScope(
+    userId: string,
     username: string,
+    roleKey: string,
+    scope: NotificationScope = "company",
     filters: NotificationLoadFilters,
     session?: ClientSession
-  ): Promise<number> {
-    const stateMatch = this.buildStateMatch( username, filters );
-    const notifMatch = this.buildNotificationMatch( filters );
+  ): Promise<{
+    total: number;
+    unread: number;
+    prioritized: number;
+    unprioritized: number;
+  }> {
+    const uid = this.safeUserId( userId );
+    const uname = this.safeUsername( username );
+    const role = this.safeNonEmptyString( roleKey, 'Role key' );
+
+    const prioritized = await this.countByScopeAndPriority( uid, uname, role, scope, "prioritized", filters, session );
+    const unprioritized = await this.countByScopeAndPriority( uid, uname, role, scope, "unprioritized", filters, session );
+
+    // ✅ FIX: total/unread must respect scope + priority=all (scope-aware)
+    const total = await this.countInboxForUserByScopeAndPriority( uid, uname, role, scope ?? "company", "all", { ...filters }, session );
+    const unread = await this.countUnreadForUserByScopeAndPriority( uid, uname, role, scope ?? "company", "all", { ...filters }, session );
+
+    return { total, unread, prioritized, unprioritized };
+  }
+
+  /* ===========================================================================
+   * Fix A helpers
+   * ======================================================================== */
+
+  public async loadInboxItemById(
+    inboxId: string,
+    userId: string,
+    session?: ClientSession
+  ): Promise<NotificationInboxItemDto | null> {
+    if ( !Types.ObjectId.isValid( inboxId ) ) return null;
+
+    const inboxObjectId = new Types.ObjectId( inboxId );
+    const uid = this.safeUserId( userId );
 
     const pipeline: PipelineStage[] = [
-      { $match: stateMatch },
+      { $match: { _id: inboxObjectId, userId: uid } },
       {
         $lookup: {
           from: "notifications",
@@ -341,46 +312,155 @@ export class NotificationQueryService {
           as: "n",
         },
       },
-      { $unwind: "$n" },
-      { $match: notifMatch },
+      { $unwind: { path: "$n", preserveNullAndEmptyArrays: false } },
+      this.buildInboxProject(),
+    ];
+
+    const rows = await this.aggregateWithSession<AggRowInbox>( pipeline, session );
+    const first = rows[ 0 ];
+    return first ? this.mapAggRowToInboxItem( first ) : null;
+  }
+
+  public async loadInboxItemsByNotificationAndUsers(
+    notificationId: string,
+    userIds: string[],
+    session?: ClientSession
+  ): Promise<NotificationInboxItemDto[]> {
+    const notifId = typeof notificationId === "string" ? notificationId.trim() : "";
+    if ( !notifId || !Types.ObjectId.isValid( notifId ) ) return [];
+
+    const normalizedUserIds = this.normalizeStringIds( userIds );
+    if ( normalizedUserIds.length === 0 ) return [];
+
+    const notifObjectId = new Types.ObjectId( notifId );
+
+    const pipeline: PipelineStage[] = [
+      {
+        $match: {
+          notificationId: notifObjectId,
+          userId: { $in: normalizedUserIds },
+        },
+      },
+      {
+        $lookup: {
+          from: "notifications",
+          localField: "notificationId",
+          foreignField: "_id",
+          as: "n",
+        },
+      },
+      { $unwind: { path: "$n", preserveNullAndEmptyArrays: false } },
+      this.buildInboxProject(),
+    ];
+
+    const rows = await this.aggregateWithSession<AggRowInbox>( pipeline, session );
+    return rows.map( ( r ) => this.mapAggRowToInboxItem( r ) );
+  }
+
+  /* =============================================================================
+   * C) Internal count helpers
+   * ========================================================================== */
+
+  /**
+ * Count by priorityScope only (no scope tabs).
+ *
+ * @param userId  owner boundary (state rows)
+ * @param username used for User-audience matching
+ * @param priorityScope prioritized | unprioritized
+ */
+  private async countByPriorityOnly(
+    userId: string,
+    username: string,
+    priorityScope: NotificationPriorityScope,
+    filters: NotificationLoadFilters,
+    session?: ClientSession
+  ): Promise<number> {
+    const stateMatch = this.buildStateMatch( userId, filters );
+    const notifMatch = this.buildNotificationMatch( filters );
+
+    const priorityMatch = this.buildPriorityMatch( priorityScope, username );
+
+    const pipeline: PipelineStage[] = [
+      { $match: stateMatch },
+      ...this.buildLookupAndMasterMatchPipeline( { notifMatch } ),
+      { $match: priorityMatch },
+      { $count: "c" },
+    ];
+
+    const rows = await this.aggregateWithSession<CountAggRow>( pipeline, session );
+    const first = rows[ 0 ];
+    return first ? Number( first.c ) : 0;
+  }
+
+  private async countInboxTotalForUser(
+    userId: string,
+    filters: NotificationLoadFilters,
+    session?: ClientSession
+  ): Promise<number> {
+    const stateMatch = this.buildStateMatch( userId, filters );
+    const notifMatch = this.buildNotificationMatch( filters );
+
+    const pipeline: PipelineStage[] = [
+      { $match: stateMatch },
+      ...this.buildLookupAndMasterMatchPipeline( { notifMatch } ),
       { $count: "c" },
     ];
 
     const agg = await this.aggregateWithSession<CountAggRow>( pipeline, session );
-
     const first = agg[ 0 ];
-    if ( !first ) return 0;
-
-    return Number( first.c );
+    return first ? Number( first.c ) : 0;
   }
 
-
-  public async countInboxForUserByScope(
+  private async countByScopeAndPriority(
+    userId: string,
     username: string,
     roleKey: string,
     scope: NotificationScope,
     priorityScope: NotificationPriorityScope,
     filters: NotificationLoadFilters,
     session?: ClientSession
-  ): Promise<{ total: number; unread: number; prioritized: number; unprioritized: number; }> {
-    const u = this.safeUsername( username );
-    const r = this.safeString( roleKey );
+  ): Promise<number> {
+    const stateMatch = this.buildStateMatch( userId, filters );
+    const notifMatch = this.buildNotificationMatch( filters );
+    const uname = this.safeUsername( username );
 
-    const stateMatch = this.buildStateMatch( u, { ...filters } );
-    const notifMatch = this.buildNotificationMatch( { ...filters } );
-    const scopeMatch = this.buildScopeMatch( scope, u, r );
-    const priorityMatch = this.buildPriorityMatch( priorityScope );
+    const scopeMatch = this.buildScopeMatch( scope, username, roleKey );
+    const priorityMatch = this.buildPriorityMatch( priorityScope, uname );
 
-    const total = await this.countWithPipeline(
-      {
-        state: stateMatch,
-        notif: notifMatch,
-        scope: scopeMatch,
-        priority: priorityMatch,
-      },
-      session
-    );
+    const pipeline: PipelineStage[] = [
+      { $match: stateMatch },
+      ...this.buildLookupAndMasterMatchPipeline( { notifMatch } ),
+      { $match: scopeMatch },
+      { $match: priorityMatch },
+      { $count: "c" },
+    ];
 
+    const rows = await this.aggregateWithSession<CountAggRow>( pipeline, session );
+    const first = rows[ 0 ];
+    return first ? Number( first.c ) : 0;
+  }
+
+  private async countInboxForUserByScopeAndPriority(
+    userId: string,
+    username: string,
+    roleKey: string,
+    scope: NotificationScope = "company",
+    priorityScope: NotificationPriorityScope,
+    filters: NotificationLoadFilters,
+    session?: ClientSession
+  ): Promise<number> {
+    return this.countByScopeAndPriority( userId, username, roleKey, scope, priorityScope, { ...filters }, session );
+  }
+
+  private async countUnreadForUserByScopeAndPriority(
+    userId: string,
+    username: string,
+    roleKey: string,
+    scope: NotificationScope,
+    priorityScope: NotificationPriorityScope,
+    filters: NotificationLoadFilters,
+    session?: ClientSession
+  ): Promise<number> {
     const unreadFilters: NotificationLoadFilters = {
       ...filters,
       unreadOnly: true,
@@ -388,101 +468,64 @@ export class NotificationQueryService {
       includeArchived: false,
     };
 
-    const unreadStateMatch = this.buildStateMatch( u, unreadFilters );
-    const unreadNotifMatch = this.buildNotificationMatch( unreadFilters );
-
-    const unread = await this.countWithPipeline(
-      {
-        state: unreadStateMatch,
-        notif: unreadNotifMatch,
-        scope: scopeMatch,
-        priority: priorityMatch,
-
-      },
-      session
-    );
-
-    const prioritized = await this.countWithPipeline(
-      {
-        state: stateMatch,
-        notif: notifMatch,
-        scope: scopeMatch,
-        priority: this.buildPriorityMatch( "prioritized" ),
-
-      },
-      session
-    );
-
-    const unprioritized = await this.countWithPipeline(
-      {
-        state: stateMatch,
-        notif: notifMatch,
-        scope: scopeMatch,
-        priority: this.buildPriorityMatch( "prioritized" ),
-
-      },
-      session
-    );
-
-    return { total, unread, prioritized, unprioritized };
-  }
-
-  private async countWithPipeline(
-    input: {
-      state: FilterQuery<unknown>;
-      notif: FilterQuery<unknown>;
-      scope?: FilterQuery<unknown>;
-      priority?: FilterQuery<unknown>;
-    },
-    session?: ClientSession
-  ): Promise<number> {
-    const pipeline: PipelineStage[] = [];
-
-    // ✅ Required matches (never undefined)
-    pipeline.push( { $match: input.state } as unknown as PipelineStage );
-    pipeline.push( {
-      $lookup: {
-        from: "notifications",
-        localField: "notificationId",
-        foreignField: "_id",
-        as: "n",
-      },
-    } );
-    pipeline.push( { $unwind: "$n" } );
-    pipeline.push( { $match: input.notif } as unknown as PipelineStage );
-
-    // ✅ Optional matches (only push if present)
-    if ( input.scope ) {
-      pipeline.push( { $match: input.scope } as unknown as PipelineStage );
-    }
-
-    if ( input.priority ) {
-      pipeline.push( { $match: input.priority } as unknown as PipelineStage );
-    }
-
-    pipeline.push( { $count: "c" } );
-
-    const rows = await this.aggregateWithSession<CountAggRow>( pipeline, session );
-    return rows[ 0 ]?.c ? Number( rows[ 0 ].c ) : 0;
+    return this.countByScopeAndPriority( userId, username, roleKey, scope, priorityScope, unreadFilters, session );
   }
 
   /* =============================================================================
-   * D) Builders: state match + notification match
+   * D) Builders: pipelines + matches
    * ========================================================================== */
 
-  private buildStateMatch( username: string, filters: NotificationLoadFilters ): FilterQuery<unknown> {
-    /**
-     * WHY this method exists
-     * - user_notifications contains per-user state.
-     * - This method builds the $match for that collection.
-     *
-     * SEMANTICS
-     * - includeDeleted=false => isDeleted=false
-     * - includeArchived=false => isArchived=false
-     * - unreadOnly => isRead=false AND isDeleted=false AND isArchived=false
-     */
+  private buildLookupAndMasterMatchPipeline( input: { notifMatch: FilterQuery<unknown>; } ): PipelineStage[] {
+    return [
+      {
+        $lookup: {
+          from: "notifications",
+          localField: "notificationId",
+          foreignField: "_id",
+          as: "n",
+        },
+      },
+      { $unwind: "$n" },
+      { $match: input.notifMatch },
+    ];
+  }
 
-    const match: Record<string, unknown> = { username };
+  private buildInboxPipeline( input: {
+    stateMatch: FilterQuery<unknown>;
+    notifMatch: FilterQuery<unknown>;
+    extraMatches: Array<FilterQuery<unknown>>;
+    sort: Record<string, 1 | -1>;
+    skip: number;
+    limit: number;
+    project: boolean;
+  } ): PipelineStage[] {
+    const pipeline: PipelineStage[] = [];
+
+    pipeline.push( { $match: input.stateMatch } );
+    pipeline.push( ...this.buildLookupAndMasterMatchPipeline( { notifMatch: input.notifMatch } ) );
+
+    for ( const m of input.extraMatches ) {
+      if ( m && Object.keys( m as Record<string, unknown> ).length > 0 ) {
+        pipeline.push( { $match: m } );
+      }
+    }
+
+    pipeline.push( { $sort: input.sort } );
+    pipeline.push( { $skip: input.skip } );
+    pipeline.push( { $limit: input.limit } );
+
+    if ( input.project ) {
+      pipeline.push( this.buildInboxProject() );
+    }
+
+    return pipeline;
+  }
+
+  /**
+   * ✅ OWNER BOUNDARY (state rows): userId
+   */
+  private buildStateMatch( userId: string, filters: NotificationLoadFilters ): FilterQuery<unknown> {
+    const match: Record<string, unknown> = { userId };
 
     if ( !filters.includeDeleted ) {
       match.isDeleted = false;
@@ -502,24 +545,15 @@ export class NotificationQueryService {
   }
 
   private buildNotificationMatch( filters: NotificationLoadFilters ): FilterQuery<unknown> {
-    /**
-     * WHY this method exists
-     * - notifications collection holds the master message.
-     * - After $unwind "$n", the master doc is under "n.*".
-     */
-
     const match: Record<string, unknown> = {};
 
     if ( filters.category ) match[ "n.category" ] = filters.category;
     if ( filters.severity ) match[ "n.severity" ] = filters.severity;
 
-    // Audience mode filter for admin/tools
-    // NOTE: audiences is array, so use "n.audiences.mode"
     if ( filters.mode ) {
-      match[ "n.audiences.mode" ] = filters.mode;
+      match[ "n.audiences" ] = { $elemMatch: { mode: filters.mode } };
     }
 
-    // Search across relevant master fields
     const search = this.safeString( filters.search );
     if ( search ) {
       const rx = this.escapeRegex( search );
@@ -532,7 +566,6 @@ export class NotificationQueryService {
       ];
     }
 
-    // Date range filtering (ISO string)
     const fromIso = this.safeIso( filters.from );
     const toIso = this.safeIso( filters.to );
 
@@ -546,20 +579,175 @@ export class NotificationQueryService {
     return match as FilterQuery<unknown>;
   }
 
+  /**
+   * Scope matching applies to MASTER notification audiences (not to state rows).
+   * - User scope uses username because canonical audience stores username.
+   * - Role scope uses roleKey.
+   * - Company scope is mode=Company.
+   */
+  private buildScopeMatch( scope: NotificationScope, username: string, roleKey: string ): FilterQuery<unknown> {
+    const safeScope = scope.trim().toLowerCase();
+
+    if ( safeScope === "user" ) {
+      const u = username.trim();
+      return {
+        $or: [
+          { "n.audiences": { $elemMatch: { mode: "User", username: u } } },
+          { "n.audiences": { $elemMatch: { mode: "User", username: { $regex: new RegExp( `^${ this.escapeRegex( u ) }$`, "i" ) } } } },
+        ],
+      } as FilterQuery<unknown>;
+    }
+
+    if ( safeScope === "role" ) {
+      const r = roleKey.trim();
+      const rx = new RegExp( `^${ this.escapeRegex( r ) }$`, "i" );
+
+      return {
+        $or: [
+          { "n.audiences": { $elemMatch: { mode: "Role", roleKey: r } } },
+          { "n.audiences": { $elemMatch: { mode: "Role", roleKey: { $regex: rx } } } },
+
+          // ✅ legacy support (if older docs used `role`)
+          { "n.audiences": { $elemMatch: { mode: "Role", role: r } } },
+          { "n.audiences": { $elemMatch: { mode: "Role", role: { $regex: rx } } } },
+        ],
+      } as FilterQuery<unknown>;
+    }
+
+    return {
+      "n.audiences": { $elemMatch: { mode: "Company" } },
+    } as FilterQuery<unknown>;
+  }
+
+  /**
+ * Priority scope is audience-mode based (NOT severity/tags).
+ *
+ * RULE
+ * - prioritized   : audiences contains User for THIS username (case-insensitive)
+ * - unprioritized : audiences contains Company or Role (optionally Team if you decide),
+ *                   AND does NOT contain User for THIS username
+ * - all           : no extra match
+ *
+ * NOTE
+ * - Your canonical NotificationAudience(User) stores username, not userId.
+ * - If you have legacy docs storing userId in audiences, we support it defensively.
+ */
+  private buildPriorityMatch(
+    priorityScope: NotificationPriorityScope,
+    username: string
+  ): FilterQuery<unknown> {
+    if ( priorityScope === "all" ) {
+      return {} as FilterQuery<unknown>;
+    }
+
+    const u = this.safeNonEmptyString( username, "Username" ).trim();
+    const rxUser = new RegExp( `^${ this.escapeRegex( u ) }$`, "i" );
+
+    // "Direct" audience match (prioritized)
+    // Supports:
+    // - canonical: { mode:"User", username:"..." }
+    // - legacy : { mode:"User", userId:"..." }  (only if exists in DB; harmless otherwise)
+    const userAudienceMatch: FilterQuery<unknown> = {
+      "n.audiences": {
+        $elemMatch: {
+          mode: "User",
+          $or: [
+            { username: u },
+            { username: { $regex: rxUser } },
+
+            // legacy (optional) — safe even if field does not exist
+            // eslint-disable-next-line @typescript-eslint/naming-convention
+            { userId: u },
+            // eslint-disable-next-line @typescript-eslint/naming-convention
+            { userId: { $regex: rxUser } },
+          ],
+        } as Record<string, unknown>,
+      },
+    } as FilterQuery<unknown>;
+
+    // "Overall" audience match (unprioritized)
+    // Based on your requirement: Role or Company.
+    // If you later want Team included, add: { mode:"Team", teamCode: ... } logic.
+    const roleOrCompanyMatch: FilterQuery<unknown> = {
+      $or: [
+        { "n.audiences": { $elemMatch: { mode: "Company" } } },
+        { "n.audiences": { $elemMatch: { mode: "Role" } } },
+      ],
+    } as FilterQuery<unknown>;
+
+    if ( priorityScope === "prioritized" ) {
+      return userAudienceMatch;
+    }
+
+    // unprioritized
+    // - must be role/company
+    // - must NOT be direct user audience
+    return {
+      $and: [
+        roleOrCompanyMatch,
+        { $nor: [ userAudienceMatch as unknown as Record<string, unknown> ] },
+      ],
+    } as unknown as FilterQuery<unknown>;
+  }
+
   /* =============================================================================
-   * E) Mapping: aggregation row -> DTO (final guard)
+   * E) Projection and mapping
    * ========================================================================== */
 
-  private mapAggRowToInboxItem( r: AggRowInbox ): NotificationInboxItemDto {
-    /**
-     * WHY this method exists
-     * - Even if aggregation projects a DTO-like shape,
-     *   we keep one final mapping step to:
-     *     - enforce exactOptionalPropertyTypes safe output
-     *     - trim strings
-     *     - avoid accidental undefined injection
-     */
+  private buildInboxProject(): PipelineStage.Project {
+    return {
+      $project: {
+        _id: 0,
 
+        inboxId: { $toString: "$_id" },
+
+        // userId is stored as string in DB, do NOT $toString an already-string value
+        userId: "$userId",
+        username: "$username",
+
+        isRead: "$isRead",
+        readAt: {
+          $cond: [ { $ifNull: [ "$readAt", false ] }, { $toString: "$readAt" }, "$$REMOVE" ],
+        },
+
+        isArchived: "$isArchived",
+        archivedAt: {
+          $cond: [ { $ifNull: [ "$archivedAt", false ] }, { $toString: "$archivedAt" }, "$$REMOVE" ],
+        },
+
+        isDeleted: "$isDeleted",
+        deletedAt: {
+          $cond: [ { $ifNull: [ "$deletedAt", false ] }, { $toString: "$deletedAt" }, "$$REMOVE" ],
+        },
+
+        deliveredAt: {
+          $cond: [ { $ifNull: [ "$deliveredAt", false ] }, { $toString: "$deliveredAt" }, "$$REMOVE" ],
+        },
+
+        notification: {
+          id: { $toString: "$n._id" },
+          eventKey: "$n.eventKey",
+          category: "$n.category",
+          severity: "$n.severity",
+          title: "$n.title",
+          body: "$n.body",
+          audiences: "$n.audiences",
+          createdAt: { $toString: "$n.createdAt" },
+
+          icon: { $ifNull: [ "$n.icon", "$$REMOVE" ] },
+          tags: { $ifNull: [ "$n.tags", "$$REMOVE" ] },
+          target: { $ifNull: [ "$n.target", "$$REMOVE" ] },
+          actor: { $ifNull: [ "$n.actor", "$$REMOVE" ] },
+
+          expiresAt: {
+            $cond: [ { $ifNull: [ "$n.expiresAt", false ] }, { $toString: "$n.expiresAt" }, "$$REMOVE" ],
+          },
+        },
+      },
+    };
+  }
+
+  private mapAggRowToInboxItem( r: AggRowInbox ): NotificationInboxItemDto {
     const inboxId = String( r.inboxId );
 
     const userId = typeof r.userId === "string" ? r.userId.trim() : "";
@@ -574,43 +762,69 @@ export class NotificationQueryService {
       notification: r.notification,
     };
 
+    const out: Record<string, unknown> = { ...base };
+
     if ( r.readAt ) {
       const iso = this.toIsoMaybe( r.readAt );
-      if ( iso ) {
-        return { ...base, readAt: iso };
-      }
+      if ( iso ) out.readAt = iso;
     }
 
-    return base;
+    if ( typeof r.isArchived === "boolean" ) out.isArchived = r.isArchived;
+
+    if ( r.archivedAt ) {
+      const iso = this.toIsoMaybe( r.archivedAt );
+      if ( iso ) out.archivedAt = iso;
+    }
+
+    if ( r.deletedAt ) {
+      const iso = this.toIsoMaybe( r.deletedAt );
+      if ( iso ) out.deletedAt = iso;
+    }
+
+    if ( r.deliveredAt ) {
+      const iso = this.toIsoMaybe( r.deliveredAt );
+      if ( iso ) out.deliveredAt = iso;
+    }
+
+    if ( !NotificationTypeGuards.isInboxItem( out ) ) {
+      throw new Error( "[Error:] [Notification inbox item validation failed!]\n" );
+    }
+    return out;
   }
 
   /* =============================================================================
-   * F) Aggregation executor (session-safe + strict typing)
+   * F) Aggregation executor
    * ========================================================================== */
 
-  private async aggregateWithSession<T>(
-    pipeline: PipelineStage[],
-    session?: ClientSession
-  ): Promise<T[]> {
+  private async aggregateWithSession<T>( pipeline: PipelineStage[], session?: ClientSession ): Promise<T[]> {
     const agg = UserNotificationModel.aggregate<T>( pipeline );
-
-    if ( session ) {
-      agg.session( session );
-    }
+    if ( session ) agg.session( session );
 
     const rows = await agg.exec();
-    return Array.isArray( rows ) ? rows : [];
+    const sorted = Array.isArray( rows )
+      ? rows.slice().sort( ( a: any, b: any ) => {
+        const da = new Date( a?.deliveredAt ?? 0 ).getTime();
+        const db = new Date( b?.deliveredAt ?? 0 ).getTime();
+        return db - da;
+      } )
+      : [];
+
+    return sorted;
   }
 
   /* =============================================================================
-   * G) Safety helpers (class-based)
+   * G) Safety helpers
    * ========================================================================== */
 
-  private safeUsername( v: string ): string {
+  private safeUserId( v: unknown ): string {
+    const s = typeof v === "string" ? v.trim() : "";
+    if ( !s ) throw new Error( "NotificationQueryService: userId is required." );
+    return s;
+  }
+
+  private safeUsername( v: unknown ): string {
     const u = typeof v === "string" ? v.trim() : "";
-    if ( !u ) {
-      throw new Error( "NotificationQueryService: username is required." );
-    }
+    if ( !u ) throw new Error( "NotificationQueryService: username is required." );
     return u;
   }
 
@@ -639,166 +853,49 @@ export class NotificationQueryService {
 
   private safeLimit( limit: number ): number {
     const n = Number( limit );
-    if ( !Number.isFinite( n ) || n < 1 ) return 10;
-    return Math.min( Math.floor( n ), 100 );
+
+    // ✅ "load all" contract:
+    // - limit = 0 or -1 means "load all", but we still protect with HARD_MAX_LIMIT.
+    if ( Number.isFinite( n ) && ( n === 0 || n === -1 ) ) {
+      return NotificationQueryService.HARD_MAX_LIMIT;
+    }
+
+    // normal paging behavior
+    if ( !Number.isFinite( n ) || n < 1 ) return 100;
+
+    // keep your existing safety ceiling, but align with hard max
+    return Math.min( Math.floor( n ), NotificationQueryService.HARD_MAX_LIMIT );
   }
 
   private toIsoMaybe( v: unknown ): string {
-    if ( typeof v === "string" ) return v;
+    if ( typeof v === "string" ) {
+      const s = v.trim();
+      if ( !s ) return "";
+      return s;
+    }
     if ( v instanceof Date ) return v.toISOString();
     return "";
   }
 
-  private async countByPriority(
-    username: string,
-    roleKey: string,
-    priorityScope: NotificationPriorityScope,
-    filters: NotificationLoadFilters,
-    session?: ClientSession
-  ): Promise<number> {
-    // per-user state match (includes unreadOnly/includeDeleted/includeArchived semantics)
-    const stateMatch = this.buildStateMatch( username, filters );
-
-    // master notification match (category/severity/search/date/mode)
-    const notifMatch = this.buildNotificationMatch( filters );
-
-    // priority filter (severity/tags)
-    const priorityMatch = this.buildPriorityMatch( priorityScope );
-
-    // NOTE:
-    // - roleKey currently not used here because priority count is for the user's inbox.
-    // - if you later want role/company priority counts separately, you can add scopeMatch too.
-
-    const pipeline: PipelineStage[] = [
-      { $match: stateMatch },
-      {
-        $lookup: {
-          from: "notifications",
-          localField: "notificationId",
-          foreignField: "_id",
-          as: "n",
-        },
-      },
-      { $unwind: "$n" },
-      { $match: notifMatch },
-      { $match: priorityMatch },
-      { $count: "c" },
-    ];
-
-    const rows = await this.aggregateWithSession<CountAggRow>( pipeline, session );
-    return rows[ 0 ]?.c ? Number( rows[ 0 ].c ) : 0;
+  private safeNonEmptyString( v: unknown, label: string ): string {
+    const s = typeof v === "string" ? v.trim() : "";
+    if ( !s ) throw new Error( `NotificationQueryService: ${ label } is required.` );
+    return s;
   }
 
-  /**
-   * Build match for "scope" tabs (user / role / company).
-   *
-   * @param scope
-   * - Expected: "user" | "role" | "company"
-   *
-   * @param username
-   * - Expected: current auth username
-   * - Used only for scope="user" to match { mode:"User", username }
-   *
-   * @param roleKey
-   * - Expected: current auth role (Role)
-   * - Used only for scope="role" to match { mode:"Role", roleKey }
-   */
-  private buildScopeMatch(
-    scope: NotificationScope,
-    username: string,
-    roleKey: string
-  ): FilterQuery<unknown> {
-    if ( scope === "user" ) {
-      return {
-        "n.audiences": {
-          $elemMatch: {
-            mode: "User",
-            $or: [
-              { username },
-              { userId: username }, // remove if not used
-            ],
-          },
-        },
-      } as FilterQuery<unknown>;
+  private normalizeStringIds( values: string[] ): string[] {
+    const list = Array.isArray( values ) ? values : [];
+    const out: string[] = [];
+    const seen = new Set<string>();
+
+    for ( const v of list ) {
+      const s = typeof v === "string" ? v.trim() : "";
+      if ( !s ) continue;
+      if ( seen.has( s ) ) continue;
+      seen.add( s );
+      out.push( s );
     }
 
-    if ( scope === "role" ) {
-      return {
-        "n.audiences": {
-          $elemMatch: { mode: "Role", roleKey },
-        },
-      } as FilterQuery<unknown>;
-    }
-
-    // company
-    return {
-      "n.audiences": {
-        $elemMatch: { mode: "Company" },
-      },
-    } as FilterQuery<unknown>;
-  }
-
-
-
-  private buildPriorityMatch( priorityScope: NotificationPriorityScope ): FilterQuery<unknown> {
-    if ( priorityScope === "all" ) {
-      return {} as FilterQuery<unknown>;
-    }
-
-    const cond: PriorityCond = {
-      $or: [
-        { "n.severity": { $in: [ "warning", "error" ] } },
-        { "n.tags": { $in: [ "priority" ] } },
-      ],
-    };
-
-    if ( priorityScope === "prioritized" ) {
-      return cond as unknown as FilterQuery<unknown>;
-    }
-
-    // unprioritized = NOT(prioritized)
-    return { $nor: [ cond ] } as unknown as FilterQuery<unknown>;
-  }
-
-  private buildInboxProject(): PipelineStage.Project {
-    return {
-      $project: {
-        _id: 0,
-        inboxId: { $toString: "$_id" },
-        userId: { $toString: "$userId" },
-        username: "$username",
-        isRead: "$isRead",
-        readAt: {
-          $cond: [
-            { $ifNull: [ "$readAt", false ] },
-            { $toString: "$readAt" },
-            "$$REMOVE",
-          ],
-        },
-        isDeleted: "$isDeleted",
-        notification: {
-          id: { $toString: "$n._id" },
-          eventKey: "$n.eventKey",
-          category: "$n.category",
-          severity: "$n.severity",
-          title: "$n.title",
-          body: "$n.body",
-          icon: "$n.icon",
-          tags: "$n.tags",
-          target: "$n.target",
-          actor: "$n.actor",
-          audiences: "$n.audiences",
-          createdAt: { $toString: "$n.createdAt" },
-          expiresAt: {
-            $cond: [
-              { $ifNull: [ "$n.expiresAt", false ] },
-              { $toString: "$expiresAt" },
-              "$$REMOVE",
-            ],
-
-          },
-        },
-      },
-    };
+    return out;
   }
 }

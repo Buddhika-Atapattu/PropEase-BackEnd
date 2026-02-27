@@ -40,8 +40,8 @@ import { CommentsSourceRegistry } from "../source/comments.source";
 
 import { WsEmitterProvider } from "../socket/ws-emitter.provider";
 
-import { NotificationRpcGateway } from "../socket/gateways/notifications/notification.ws.gateway";
 import type { AuthUser } from "../types/common";
+import { NotificationRpcHandler } from "../socket/handlers/notifications/notification.rpc.handler";
 
 // ============================================================================
 // Result contract for bootstrap
@@ -152,11 +152,11 @@ export class SocketBootstrap {
 
     // ------------------------------------------------------------------------
     // 5) Connection handler
-    // WHY:
+    // WHY: 
     // - This is the canonical place where sockets are authenticated and placed
     //   into correct rooms:
-    //    • aud.team.<teamCode>
-    //    • aud.member.<userId>
+    //    • team.<teamCode>
+    //    • member.<userId>
     //    • user:<username>
     //    • (optional) team:<teamCode>
     //
@@ -246,8 +246,8 @@ export class SocketBootstrap {
     // REST remains backup.
     // =========================================================================
     try {
-      const notifRpc = new NotificationRpcGateway();
-      notifRpc.attach( io );
+      const notifRpc = new NotificationRpcHandler();
+      notifRpc.bind( io );
 
       console.log( "[Info:] [SocketBootstrap] Notification WS gateway attached.\n" );
     } catch ( err ) {

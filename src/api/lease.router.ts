@@ -666,7 +666,7 @@ export default class Lease {
           }
 
           // -------------------- Notify relevant users --------------------
-          this.notificationHub.emit( {
+          await this.notificationHub.emit( {
             eventKey: 'lease:agreement.created',
             actor,
             audiences: [
@@ -1132,7 +1132,7 @@ export default class Lease {
           }
 
           // -------------------- Notify relevant users --------------------
-          this.notificationHub.emit( {
+          await this.notificationHub.emit( {
             eventKey: 'lease:agreement.renewed',
             actor,
             audiences: [
@@ -1209,8 +1209,9 @@ export default class Lease {
           module: 'Lease Management',
           tags: [ 'Lease', 'Agreement', 'Document Deletion' ],
           files: scanFiles,
-          deleteDbRecord: async ( session: ClientSession ): Promise<void> => {
-            await LeaseModel.deleteOne( { leaseID } ).session( session ).exec();
+          deleteDbRecord: async ( session?: ClientSession ): Promise<void> => {
+            const opts = session ? { session } : {};
+            await LeaseModel.deleteOne( { leaseID }, { opts } ).exec();
           },
         };
 
@@ -1228,8 +1229,8 @@ export default class Lease {
         }
 
         // -------------------- Notify relevant users --------------------
-        this.notificationHub.emit( {
-          eventKey: 'lease:agreement.deleted',
+        await this.notificationHub.emit( {
+          eventKey: 'lease:agreement.terminated',
           actor: notificationActor,
           audiences: [
             {
@@ -1250,7 +1251,7 @@ export default class Lease {
             },
           ],
           target: {
-            actionKey: 'lease:agreement.renewed',
+            actionKey: 'lease:agreement.terminated',
             category: 'Lease',
             module: 'Lease Management',
             params: { leaseID: leaseAgreementDB.leaseID },
@@ -1453,7 +1454,7 @@ export default class Lease {
         }
 
         // -------------------- Notify relevant users --------------------
-        this.notificationHub.emit( {
+        await this.notificationHub.emit( {
           eventKey: type.trim().toLowerCase() === "download" ? 'lease:agreement.downloaded' : 'lease:agreement.viewed',
           actor,
           audiences: [
