@@ -1,24 +1,44 @@
-// Path: src.utils/files/public-path.guard.ts
+// Path: src/utils/files/public-path.guard.ts
+// =============================================================================
+// PublicPathGuard (NORMALIZE + STRICT VALIDATE)
+// -----------------------------------------------------------------------------
+// Accepts parent input forms:
+// - "/public/uploads/..", "public/uploads/..", "/uploads/..", "uploads/.."
+// - "/public/recyclebin/..", "public/recyclebin/..", "/recyclebin/..", "recyclebin/.."
+//
+// Guarantees output is canonical:
+// - "uploads/..." OR "recyclebin/..." (NO "public/", NO leading "/")
+//
+// Security hardening:
+// - rejects ".", ".." segments and null bytes
+// - abs path must stay under "<projectRoot>/public"
+// - if exists: realpath must stay under "<projectRoot>/public" (symlink escape defense)
+// =============================================================================
+
 import fs from "fs";
 import path from "path";
 
 export class PublicPathGuard {
+  private constructor () {}
+
   /**
-   * Normalize a path to "public-relative POSIX".
+   * Normalize any input into POSIX-like public-relative path.
    *
-   * @param publicRel
-   * - Expected: "uploads/leases/LEASE-001/file.pdf"
-   * - NOT expected: "public/uploads/..." (do not include "public/")
-   * - NOT expected: "/uploads/..." (no leading slash)
+   * @param pathLike
+   * - Expected: could be "public/uploads/x", "/uploads/x", "\\uploads\\x", etc.
+   *
+   * @returns
+   * - Example: "uploads/x" or "recyclebin/y"
+   * - Returns "" if empty
    */
-  public static toPosixPublicRel(publicRel: string): string {
-    const raw = typeof publicRel === "string" ? publicRel.trim() : "";
+  public static toPosixPublicRel( pathLike: string ): string {
+    const raw = typeof pathLike === "string" ? pathLike.trim() : "";
     if (!raw) return "";
 
-    // Convert Windows "\" to "/" and strip leading "./" and "/" safely
+    // "\" => "/", remove leading "./" and leading "/" safely
     const posix = raw.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "");
 
-    // Strip a mistaken "public/" prefix (common mistake)
+    // Strip mistaken "public/" prefix
     if (posix.toLowerCase().startsWith("public/")) {
       return posix.slice("public/".length);
     }
@@ -27,116 +47,142 @@ export class PublicPathGuard {
   }
 
   /**
-   * Validate that a public-relative path is safe (no traversal).
+   * Canonicalize to ONLY:
+   * - "uploads/..." OR "recyclebin/..."
    *
-   * Why we need this
-   * - Prevent "../" attacks and any attempt to resolve outside the public root.
+   * This is the core invariant your FileUploader helper claims.
    *
-   * @param publicRel
-   * - Expected: "uploads/..."
+   * @param pathLike
+   * - Accepts: "/public/uploads/..", "uploads/..", "/recyclebin/..", etc.
+   *
+   * @returns canonical publicRel or "" if invalid
    */
-  public static assertPublicRel(publicRel: string, label: string): void {
-    const rel = this.toPosixPublicRel(publicRel);
-    if (!rel) {
-      throw new Error(`Invalid ${label}: empty`);
+  public static normalizeStrict( pathLike: string ): string {
+    const rel = this.toPosixPublicRel( pathLike );
+    if ( !rel ) return "";
+    if ( rel.includes( "\0" ) ) return "";
+
+    // Split segments, remove empty, remove "." segments (harmless)
+    const parts = rel.split( "/" ).filter( Boolean ).filter( ( p ) => p !== "." );
+
+    if ( parts.length === 0 ) return "";
+
+    const root = String( parts[ 0 ] ?? "" ).toLowerCase();
+    if ( root !== "uploads" && root !== "recyclebin" ) {
+      return "";
     }
 
-    // Hard reject traversal tokens in any segment
-    const parts = rel.split("/").filter(Boolean);
+    // Reject traversal segments explicitly
     for (const p of parts) {
-      if (p === "." || p === "..") {
-        throw new Error(`Invalid ${label}: path traversal detected`);
-      }
+      if ( p === ".." ) return "";
     }
 
-    // Also reject null bytes
-    if (rel.includes("\0")) {
-      throw new Error(`Invalid ${label}: null byte`);
+    return parts.join( "/" );
+  }
+
+  /**
+   * Throw if pathLike cannot be normalized into uploads/ or recyclebin/.
+   *
+   * @param pathLike
+   * - any accepted input form
+   *
+   * @param label
+   * - used in error message
+   */
+  public static assertStrict( pathLike: string, label: string ): void {
+    const rel = this.normalizeStrict( pathLike );
+    if ( !rel ) {
+      throw new Error(
+        `Invalid ${ label }: must be under "uploads/" or "recyclebin/". Got: ${ String( pathLike ) }`
+      );
     }
   }
 
   /**
-   * Resolve a public-relative path to an absolute disk path under "<cwd>/public".
+   * Resolve strict publicRel to absolute disk path under "<projectRoot>/public".
    *
-   * @param publicRel
-   * - Expected: "uploads/..."
+   * @param pathLike
+   * - any accepted input form
    */
-  public static absFromPublicRel(publicRel: string): string {
-    const rel = this.toPosixPublicRel(publicRel);
-    this.assertPublicRel(rel, "publicRel");
+  public static absFromStrict( pathLike: string ): { publicRel: string; absDiskPath: string; } {
+    const publicRel = this.normalizeStrict( pathLike );
+    this.assertStrict( publicRel, "publicRel" );
 
-    // Build absolute root: <projectRoot>/public
+    // Public folder is sibling of src => projectRoot/public.
+    // Using process.cwd() is OK ONLY if you run node from project root.
+    // If that ever changes, swap to a resolver (recommended).
     const publicRoot = path.resolve(process.cwd(), "public");
-    const abs = path.resolve(publicRoot, rel);
 
-    // Ensure abs is still under public root (defense-in-depth)
-    const publicRootWithSep = publicRoot.endsWith(path.sep) ? publicRoot : publicRoot + path.sep;
-    const absWithSep = abs.endsWith(path.sep) ? abs : abs + path.sep;
+    const abs = path.resolve( publicRoot, publicRel );
 
-    if (!absWithSep.startsWith(publicRootWithSep)) {
-      throw new Error("Invalid publicRel: resolved outside public root");
+    this.assertUnderBase( publicRoot, abs, "Invalid publicRel: resolved outside public root" );
+
+    // Symlink escape defense (only if exists)
+    if ( fs.existsSync( abs ) ) {
+      const realRoot = fs.realpathSync( publicRoot );
+      const realAbs = fs.realpathSync( abs );
+      this.assertUnderBase( realRoot, realAbs, "Invalid publicRel: realpath escaped public root" );
     }
 
-    return abs;
+    return { publicRel, absDiskPath: abs };
   }
 
   /**
-   * Check whether a public-relative path exists under public/.
-   *
-   * @param options.publicRel
-   * - Expected: "uploads/..."
-   *
-   * @param options.kind
-   * - Optional: "file" | "dir" | "any"
-   * - Default: "any"
+   * Existence check for strict publicRel (uploads/recyclebin only).
    */
-  public static existsInPublic(options: {
-    publicRel: string;
+  public static existsStrict( options: {
+    pathLike: string;
     kind?: "file" | "dir" | "any";
-  }): { exists: boolean; publicRel: string; absDiskPath: string } {
-    const publicRel = this.toPosixPublicRel(options.publicRel);
-    const absDiskPath = this.absFromPublicRel(publicRel);
-
+  } ): { exists: boolean; publicRel: string; absDiskPath: string; } {
     const kind = options.kind ?? "any";
+    const resolved = this.absFromStrict( options.pathLike );
 
-    if (!fs.existsSync(absDiskPath)) {
-      return { exists: false, publicRel, absDiskPath };
+    if ( !fs.existsSync( resolved.absDiskPath ) ) {
+      return { exists: false, publicRel: resolved.publicRel, absDiskPath: resolved.absDiskPath };
     }
 
     if (kind === "any") {
-      return { exists: true, publicRel, absDiskPath };
+      return { exists: true, publicRel: resolved.publicRel, absDiskPath: resolved.absDiskPath };
     }
 
-    const st = fs.statSync(absDiskPath);
+    const st = fs.statSync( resolved.absDiskPath );
     if (kind === "file") {
-      return { exists: st.isFile(), publicRel, absDiskPath };
+      return { exists: st.isFile(), publicRel: resolved.publicRel, absDiskPath: resolved.absDiskPath };
     }
-    return { exists: st.isDirectory(), publicRel, absDiskPath };
+
+    return { exists: st.isDirectory(), publicRel: resolved.publicRel, absDiskPath: resolved.absDiskPath };
   }
 
   /**
-   * Filter only existing public-relative paths.
-   *
-   * @param options.paths
-   * - Expected: array of "uploads/..." paths
-   *
-   * @param options.kind
-   * - Optional: "file" | "dir" | "any"
+   * Filter only existing strict public paths.
    */
-  public static filterExisting(options: {
+  public static filterExistingStrict( options: {
     paths: string[];
     kind?: "file" | "dir" | "any";
-  }): Array<{ publicRel: string; absDiskPath: string }> {
-    const kind = options.kind ?? "any";
+  } ): Array<{ publicRel: string; absDiskPath: string; }> {
     const out: Array<{ publicRel: string; absDiskPath: string }> = [];
+    const kind = options.kind ?? "any";
 
-    for (const p of options.paths) {
-      const checked = this.existsInPublic({ publicRel: p, kind });
-      if (checked.exists) {
-        out.push({ publicRel: checked.publicRel, absDiskPath: checked.absDiskPath });
-      }
+    for ( const p of options.paths ?? [] ) {
+      const checked = this.existsStrict( { pathLike: p, kind } );
+      if ( checked.exists ) out.push( { publicRel: checked.publicRel, absDiskPath: checked.absDiskPath } );
     }
 
     return out;
+  }
+
+  /**
+   * Ensure target is under base (path containment).
+   */
+  private static assertUnderBase( baseAbs: string, targetAbs: string, msg: string ): void {
+    const base = path.resolve( baseAbs );
+    const target = path.resolve( targetAbs );
+
+    const baseWithSep = base.endsWith( path.sep ) ? base : base + path.sep;
+    const targetWithSep = target.endsWith( path.sep ) ? target : target + path.sep;
+
+    if ( target !== base && !targetWithSep.startsWith( baseWithSep ) ) {
+      throw new Error( msg );
+    }
   }
 }
