@@ -605,6 +605,7 @@ export class TeamTaskService {
       label: [ "Team Task", existing.name ?? String( existing._id ?? existing.id ) ].join( " - " ),
       refId: String( existing._id ?? existing.id ),
       snapshotData: this.toJsonSafeSnapshot( existing ),
+      collectionName: TeamTaskModel.collection.name,
       files: filesScan,
       deleteDbRecord: async ( session?: ClientSession ): Promise<void> => {
         const opts = session ? { session } : {};

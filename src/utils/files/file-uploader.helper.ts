@@ -1,10 +1,10 @@
 // Path: src/utils/file-uploader.helper.ts
-/* ============================================================================
+/* =============================================================================
  * 🔴🔴🔴 CRITICAL WARNING (DO NOT MODIFY WITHOUT SYSTEM REVIEW) 🔴🔴🔴
- * ----------------------------------------------------------------------------
+ * -----------------------------------------------------------------------------
  * SECURITY + CONTRACT CRITICAL infrastructure component.
  *
- * Invariants guaranteed:
+ * ✅ Invariants guaranteed:
  *  1) Path Traversal Protection
  *     - No caller can write/move/read outside:  /public
  *     - Uploads are always under:              /public/uploads
@@ -22,10 +22,10 @@
  *     - Moving to recyclebin preserves SAME public-relative path
  *       under recyclebin/<category>/<refId>/...
  *
- *  5) Directory-safe metadata arrays (NEW)
+ *  5) Directory-safe metadata arrays
  *     - FS ops accept file OR directory paths
  *     - Returned results include `meta: FileMetaPacket[]` (files-only, flat)
- * ========================================================================== */
+ * ============================================================================= */
 
 import type { Request, Response } from "express";
 import fs from "fs";
@@ -38,23 +38,20 @@ import sharp from "sharp";
 import type { FileMetaPacket } from "../../types/common";
 import { PublicPathGuard } from "./public-path.guard";
 
-/* ========================================================================== *
+/* =============================================================================
  * UNIVERSAL UPLOAD RESULT CONTRACT
- * ========================================================================== */
+ * ============================================================================= */
 
-/**
- * UploadResultPacket
- * - Returned by ALL upload helpers (single-field and multi-field)
- * - Stable contract for controllers/services
- */
 export interface UploadResultPacket {
-  /** base relative directory under PUBLIC (unix style, no leading "/")
-   *  Example: "uploads/teamManagement/teamTasks/__tmp/<token>"
+  /**
+   * Base relative directory under PUBLIC (unix style, no leading "/")
+   * Example: "uploads/teamManagement/teamTasks/__tmp/<token>"
    */
   baseRelativeDir: string;
 
-  /** base public URL prefix for UI usage
-   *  Example: "https://host/uploads/teamManagement/teamTasks/__tmp/<token>"
+  /**
+   * Base public URL prefix for UI usage
+   * Example: "https://host/uploads/teamManagement/teamTasks/__tmp/<token>"
    */
   basePublicUrl: string;
 
@@ -64,24 +61,22 @@ export interface UploadResultPacket {
   /** Total file bytes across all fields */
   totalBytes: number;
 
-  /** fieldName -> FileMetaPacket[]
-   * - ALWAYS includes declared field keys (even if empty arrays)
+  /**
+   * fieldName -> FileMetaPacket[]
+   * ✅ ALWAYS includes declared field keys (even if empty arrays)
    */
   byField: Record<string, FileMetaPacket[]>;
 }
 
-/* ========================================================================== *
+/* =============================================================================
  * FILE SYSTEM CRUD RESULT CONTRACTS
- * (Backwards compatible + adds `meta` arrays)
- * ========================================================================== */
+ * ============================================================================= */
 
 export interface FsMoveResult {
   /** moved items (public-relative unix paths, no leading "/") */
   moved: string[];
-
   /** skipped items (invalid / missing / not allowed) */
   skipped: string[];
-
   /** meta packets for FILES ONLY (flat list). Best-effort. */
   meta: FileMetaPacket[];
 }
@@ -98,35 +93,46 @@ export interface FsDeleteResult {
   meta: FileMetaPacket[];
 }
 
-/* ========================================================================== *
- * FILE UPLOADER (UNIVERSAL / MODULE-AGNOSTIC)
- * ========================================================================== */
+/* =============================================================================
+ * TYPES
+ * ============================================================================= */
 
 type MoveKind = "file" | "dir";
 
 type MoveItem =
   | string
   | {
-    /** path can be:
+    /**
+     * Path can be:
      * - public-relative like "uploads/x/y.png"
      * - OR absolute disk path under /public (will be normalized)
      */
     path: string;
 
-    /** optional kind hint:
-     * - "file" or "dir"
-     * - if omitted, kind is detected via fs.stat
-     */
+      /**
+       * Optional kind hint:
+       * - "file" or "dir"
+       * - If omitted, kind is detected via fs.stat
+       */
     kind?: MoveKind;
   };
+
+/* =============================================================================
+ * FILE UPLOADER (UNIVERSAL / MODULE-AGNOSTIC)
+ * ============================================================================= */
 
 export default class FileUploader {
   // ===========================================================================
   // 00) ROOT PATHS (filesystem)
   // ===========================================================================
 
+  /** Absolute disk path: <project>/public */
   private static readonly PUBLIC_ROOT: string = path.resolve( process.cwd(), "public" );
+
+  /** Absolute disk path: <project>/public/uploads */
   private static readonly UPLOAD_ROOT: string = path.join( FileUploader.PUBLIC_ROOT, "uploads" );
+
+  /** Absolute disk path: <project>/public/recyclebin */
   private static readonly RECYCLEBIN_ROOT: string = path.join( FileUploader.PUBLIC_ROOT, "recyclebin" );
 
   // ===========================================================================
@@ -134,14 +140,36 @@ export default class FileUploader {
   // ===========================================================================
 
   /**
-   * Create a multer instance using memory storage (buffers only).
+   * =============================================================================
+   * 01) Why this method (with usage)
+   * -----------------------------------------------------------------------------
+   * Build a multer instance that stores uploads in memory (Buffer).
+   * Useful when you want to validate/transform (e.g., Sharp) before saving.
    *
-   * @param allowedMimeTypes
-   * - Expected: Set of allowed MIME strings (e.g. "image/png", "application/pdf")
-   * - If empty set => allow all types
+   * 02) Params (what it actually expects)
+   * -----------------------------------------------------------------------------
+   * - @param allowedMimeTypes: Set of allowed MIME strings.
+   *   If empty => allow all.
+   * - @param maxFileSizeMb: Per-file max size in MB.
    *
-   * @param maxFileSizeMb
-   * - Expected: maximum file size in megabytes per file
+   * 03) Usage hint
+   * -----------------------------------------------------------------------------
+   * Use in controllers where you want:
+   *   - req.file.buffer (single)
+   *   - req.files[].buffer (multi)
+   *
+   * 04) Reasons to use this method
+   * -----------------------------------------------------------------------------
+   * - Image compression (webp), OCR pre-processing, virus scan, hashing.
+   *
+   * 05) What need to avoid
+   * -----------------------------------------------------------------------------
+   * - Very large files => memory pressure.
+   *
+   * 06) What result method generates
+   * -----------------------------------------------------------------------------
+   * Returns `multer.Multer` instance ready for route middleware usage.
+   * =============================================================================
    */
   public static createMemoryUpload(
     allowedMimeTypes: ReadonlySet<string>,
@@ -150,13 +178,11 @@ export default class FileUploader {
     const storage = multer.memoryStorage();
 
     const fileFilter: multer.Options[ "fileFilter" ] = ( _req, file, cb ): void => {
-      // If no restrictions => allow all
       if ( !allowedMimeTypes || allowedMimeTypes.size === 0 ) {
         cb( null, true );
         return;
       }
 
-      // Allow only configured MIME types
       if ( allowedMimeTypes.has( file.mimetype ) ) {
         cb( null, true );
         return;
@@ -173,22 +199,39 @@ export default class FileUploader {
   }
 
   /**
-   * Create a multer instance using disk storage.
+   * =============================================================================
+   * 01) Why this method (with usage)
+   * -----------------------------------------------------------------------------
+   * Build a multer instance that stores uploads directly on disk (under /public/uploads).
+   * Use when you need direct-to-disk streaming and stable stored files.
    *
-   * @param options.allowedMimeTypes
-   * - Expected: Set of allowed MIME strings (empty => allow all)
+   * 02) Params (what it actually expects)
+   * -----------------------------------------------------------------------------
+   * - @param allowedMimeTypes: allow-list Set; empty => allow all.
+   * - @param maxFileSizeMb: per-file max MB.
+   * - @param maxFiles: total max files per request.
+   * - @param resolveDestination(req): returns:
+   *     a) absolute path under /public/uploads, OR
+   *     b) a relative subpath under uploads/ (like "users/<id>/avatar")
    *
-   * @param options.maxFileSizeMb
-   * - Expected: maximum file size in MB per file
+   * 03) Usage hint
+   * -----------------------------------------------------------------------------
+   * Typical: createDiskUpload({ resolveDestination: (req) => `users/${id}/avatar` })
    *
-   * @param options.maxFiles
-   * - Expected: maximum number of files per request (multer "files" limit)
+   * 04) Reasons to use this method
+   * -----------------------------------------------------------------------------
+   * - Large uploads (avoid RAM usage)
+   * - Universal file attachments storage
    *
-   * @param options.resolveDestination
-   * - Expected: function that returns disk destination directory path
-   * - Can return:
-   *   - absolute path (must be under /public/uploads)
-   *   - OR relative subpath (will be converted under /public/uploads)
+   * 05) What need to avoid
+   * -----------------------------------------------------------------------------
+   * - Never return destinations outside /public/uploads
+   * - Never pass "public/uploads/.." or traversal strings (guard rejects)
+   *
+   * 06) What result method generates
+   * -----------------------------------------------------------------------------
+   * Returns `multer.Multer` instance for routes.
+   * =============================================================================
    */
   public static createDiskUpload( options: {
     allowedMimeTypes: ReadonlySet<string>;
@@ -199,23 +242,17 @@ export default class FileUploader {
     const storage: StorageEngine = multer.diskStorage( {
       destination: async ( req, _file, cb ): Promise<void> => {
         try {
-          // Resolve destination from caller
           const resolved = await options.resolveDestination( req );
-
-          // Normalize + validate to stay under UPLOAD_ROOT
           const dest = FileUploader.normalizeAndValidateDiskDestination( resolved );
-
-          // Ensure directory exists
           await FileUploader.ensureDirectory( dest );
-
           cb( null, dest );
         } catch ( error: unknown ) {
-          cb( error instanceof Error ? error : new Error( String( error ) ), "" );
+          cb( error instanceof Error ? error : new Error( String( error ) ), FileUploader.UPLOAD_ROOT );
         }
       },
 
       filename: ( _req, file, cb ): void => {
-        // Create a safe stored filename (slug + timestamp + extension)
+        // ✅ Correct: originalname is the only reliable source for extension here
         const ext = path.extname( file.originalname );
         const base = path.basename( file.originalname, ext );
         const storedName = `${ FileUploader.slugify( base ) }_${ Date.now() }${ ext.toLowerCase() }`;
@@ -252,27 +289,52 @@ export default class FileUploader {
   // ===========================================================================
 
   /**
-   * Universal single-field uploader.
+   * =============================================================================
+   * 01) Why this method (with usage)
+   * -----------------------------------------------------------------------------
+   * Universal single-field uploader that saves to:
+   *   public/uploads/<subPath>/<fieldName>/
+   * And returns a stable `UploadResultPacket` with meta.
    *
-   * @param subPath
-   * - Expected: relative path under "uploads/"
-   * - Example: "teamManagement/teamTasks/__tmp/<token>"
-   * - MUST NOT contain ".."
+   * 02) Params (what it actually expects)
+   * -----------------------------------------------------------------------------
+   * - @param subPath:
+   *     Relative under uploads (RECOMMENDED):
+   *       "users/<username>" or "teamManagement/teamTasks/__tmp/<token>"
+   *     Also tolerated:
+   *       "uploads/..." or "public/uploads/..." (auto-normalized)
+   *     Also tolerated (ONLY if inside public/uploads):
+   *       absolute disk path "D:\\...\\public\\uploads\\users\\x"
+   * - @param fieldName:
+   *     Multer field name ("avatar", "evidence", "attachments", etc.)
+   * - @param req:
+   *     Express Request (req.files may already contain files if middleware ran upstream)
+   * - @param options:
+   *     allowedMimeTypes / maxFileSizeMb / maxFiles
    *
-   * @param fieldName
-   * - Expected: multer fieldname ("evidence", "attachments", "avatar"...)
+   * 03) Usage hint
+   * -----------------------------------------------------------------------------
+   * In controller:
+   *   const out = await FileUploader.handleUpload(`users/${username}`, "avatar", req, {...});
    *
-   * @param req
-   * - Expected: Express Request (holds req.files after multer runs)
+   * 04) Reasons to use this method
+   * -----------------------------------------------------------------------------
+   * - Contract-stable result packet
+   * - Prevents accidental double-multer runs
+   * - Enforces storage only inside /public/uploads
    *
-   * @param options.allowedMimeTypes
-   * - Optional: Set of allowed MIME types for this field (empty => allow all)
+   * 05) What need to avoid
+   * -----------------------------------------------------------------------------
+   * - Do NOT pass recyclebin paths here (this is an uploader under uploads)
+   * - Do NOT pass absolute paths outside /public/uploads
    *
-   * @param options.maxFileSizeMb
-   * - Optional: per-file max size in MB (default 20)
-   *
-   * @param options.maxFiles
-   * - Optional: max files for this field (default 20)
+   * 06) What result method generates
+   * -----------------------------------------------------------------------------
+   * UploadResultPacket:
+   *   - baseRelativeDir: "uploads/<subPath>"
+   *   - byField[fieldName]: FileMetaPacket[]
+   *   - totalFiles/totalBytes aggregated
+   * =============================================================================
    */
   public static async handleUpload(
     subPath: string,
@@ -284,24 +346,23 @@ export default class FileUploader {
       maxFiles?: number;
     },
   ): Promise<UploadResultPacket> {
-    // 1) Sanitize the relative sub path (path traversal safety)
-    const safeSubPath = FileUploader.sanitizeSubPath( subPath );
+    // 1) Normalize subPath safely (absolute paths allowed ONLY if inside public/uploads)
+    const safeSubPath = FileUploader.normalizeSubPath( subPath );
     if ( !safeSubPath.trim() ) {
       throw new Error( "Uploading path is required!" );
     }
 
-    // 2) Sanitize field name (keeps folder-safe and stable)
+    // 2) Sanitize field name
     const safeField = FileUploader.sanitizeSegmentStrict( fieldName );
     if ( !safeField ) {
       throw new Error( "fieldName is required!" );
     }
 
-    // 3) Build base outputs (these are contract-stable strings)
+    // 3) Build base outputs
     const baseRelativeDir = [ "uploads", safeSubPath ].filter( Boolean ).join( "/" ).replace( /^\/+/, "" );
     const basePublicUrl = `${ FileUploader.buildOriginFromReq( req ) }/${ baseRelativeDir }`;
 
-    // 4) Double-run protection:
-    //    If middleware already ran multer, DO NOT upload again.
+    // 4) Double-run protection: if req.files already contains this field, just normalize packets
     const already = FileUploader.readExistingFilesForField( req, safeField );
     if ( already.length > 0 ) {
       const packets = already.map( ( f ) =>
@@ -313,17 +374,16 @@ export default class FileUploader {
       } );
     }
 
-    // 5) Prepare safe disk destination:
-    //    /public/uploads/<safeSubPath>/<safeField>/
+    // 5) Prepare destination dir: /public/uploads/<safeSubPath>/<safeField>/
     const baseDir = FileUploader.buildSafeChildDir( FileUploader.UPLOAD_ROOT, safeSubPath );
     const fieldDir = FileUploader.buildSafeChildDir( baseDir, safeField );
-
     await FileUploader.ensureDirectory( fieldDir );
 
-    // 6) Configure multer disk storage for this upload
+    // 6) Configure multer disk storage
     const storage: StorageEngine = multer.diskStorage( {
       destination: ( _req, _file, cb ) => cb( null, fieldDir ),
       filename: ( _req, file, cb ) => {
+        // ✅ FIX: extension must come from originalname
         const ext = path.extname( file.originalname );
         const base = path.basename( file.originalname, ext );
         const storedName = `${ FileUploader.slugify( base ) }_${ Date.now() }${ ext.toLowerCase() }`;
@@ -331,7 +391,7 @@ export default class FileUploader {
       },
     } );
 
-    // 7) Configure file filter
+    // 7) File filter
     const fileFilter: multer.Options[ "fileFilter" ] = ( _req, file, cb ): void => {
       const allowed = options?.allowedMimeTypes;
 
@@ -348,7 +408,7 @@ export default class FileUploader {
       cb( new Error( `File type not allowed: ${ file.mimetype }` ) );
     };
 
-    // 8) Run multer (array means allow multiple files for same field)
+    // 8) Run multer
     const upload = multer( {
       storage,
       limits: {
@@ -358,27 +418,24 @@ export default class FileUploader {
       fileFilter,
     } ).array( safeField );
 
-    // 9) Execute multer using a Promise wrapper
+    // 9) Execute multer (promise wrapper)
     const files: Express.Multer.File[] = await new Promise( ( resolve, reject ) => {
-      // Multer expects (req, res, next). We provide a dummy typed Response.
       upload( req, {} as unknown as Response, ( err: unknown ) => {
         if ( err ) {
           const msg = err instanceof Error ? err.message : "Unknown upload error";
           reject( new Error( `File upload failed: ${ msg }` ) );
           return;
         }
-
-        // multer populates req.files
         resolve( ( ( req.files ?? [] ) as unknown ) as Express.Multer.File[] );
       } );
     } );
 
-    // 10) Normalize to FileMetaPacket[]
+    // 10) Pack meta
     const packets = files.map( ( f ) =>
       FileUploader.toFilePacket( { req, safeSubPath, fieldName: safeField, file: f } ),
     );
 
-    // 11) Build stable UploadResultPacket
+    // 11) Return stable packet
     return FileUploader.buildUploadResult( baseRelativeDir, basePublicUrl, {
       [ safeField ]: packets,
     } );
@@ -389,29 +446,51 @@ export default class FileUploader {
   // ===========================================================================
 
   /**
-   * Universal multi-field uploader.
+   * =============================================================================
+   * 01) Why this method (with usage)
+   * -----------------------------------------------------------------------------
+   * Universal multi-field uploader that saves to:
+   *   public/uploads/<subPath>/<fieldName>/
+   * for each declared field, and returns stable UploadResultPacket.
    *
-   * @param subPath
-   * - Expected: relative path under "uploads/"
-   * - Example: "teamManagement/teamTasks/__tmp/<token>"
+   * 02) Params (what it actually expects)
+   * -----------------------------------------------------------------------------
+   * - @param subPath:
+   *   Same rules as handleUpload() (relative under uploads preferred).
+   * - @param fields:
+   *   Multer fields config:
+   *     [{ name: "evidence", maxCount: 10 }, { name: "attachments", maxCount: 5 }]
+   * - @param req:
+   *   Express request
+   * - @param options:
+   *   allowedMimeTypesByField, maxFileSizeMb (per-file), maxFiles (total)
    *
-   * @param fields
-   * - Expected: multer fields config array
-   * - Example: [{ name: "evidence", maxCount: 10 }, { name: "attachments", maxCount: 5 }]
-   * - IMPORTANT: output.byField will ALWAYS contain ALL declared keys (even empty arrays)
+   * 03) Usage hint
+   * -----------------------------------------------------------------------------
+   * const out = await FileUploader.handleMultiFieldUpload(
+   *   `leases/${leaseId}`,
+   *   [{ name: "tenantSignature", maxCount: 1 }, { name: "tenantScanedDocuments", maxCount: 10 }],
+   *   req,
+   *   { allowedMimeTypesByField: {...} }
+   * )
    *
-   * @param req
-   * - Expected: Express Request
+   * 04) Reasons to use this method
+   * -----------------------------------------------------------------------------
+   * - Upload multiple logical buckets in one request
+   * - Output.byField ALWAYS includes declared keys (even if empty)
    *
-   * @param options.allowedMimeTypesByField
-   * - Optional: per-field MIME type allow-lists:
-   *   { evidence: new Set([...]), attachments: new Set([...]) }
+   * 05) What need to avoid
+   * -----------------------------------------------------------------------------
+   * - Passing undeclared field names expecting them to appear (they’ll be stored but not “seeded”)
+   * - Passing absolute paths outside public/uploads (throws)
    *
-   * @param options.maxFileSizeMb
-   * - Optional: max size per file in MB (default 20)
-   *
-   * @param options.maxFiles
-   * - Optional: max total files across all fields (default 40)
+   * 06) What result method generates
+   * -----------------------------------------------------------------------------
+   * UploadResultPacket with:
+   * - baseRelativeDir / basePublicUrl
+   * - byField per declared field
+   * - totals (files/bytes)
+   * =============================================================================
    */
   public static async handleMultiFieldUpload(
     subPath: string,
@@ -423,21 +502,18 @@ export default class FileUploader {
       maxFiles?: number;
     },
   ): Promise<UploadResultPacket> {
-    // 1) Sanitize the relative sub path
-    const safeSubPath = FileUploader.sanitizeSubPath( subPath );
+    const safeSubPath = FileUploader.normalizeSubPath( subPath );
     if ( !safeSubPath.trim() ) {
       throw new Error( "Uploading path is required!" );
     }
 
-    // 2) Seed byField with declared keys (even if no uploads happen)
+    // Seed declared keys (empty arrays must exist)
     const seededByField = FileUploader.seedByFieldKeys( fields );
 
-    // 3) Build base outputs
     const baseRelativeDir = [ "uploads", safeSubPath ].filter( Boolean ).join( "/" ).replace( /^\/+/, "" );
     const basePublicUrl = `${ FileUploader.buildOriginFromReq( req ) }/${ baseRelativeDir }`;
 
-    // 4) Double-run protection:
-    //    If middleware already ran multer, normalize req.files and return.
+    // Double-run protection
     const existing = FileUploader.readExistingFilesMulti( req );
     if ( Object.keys( existing ).length > 0 ) {
       for ( const [ rawField, filesArr ] of Object.entries( existing ) ) {
@@ -457,13 +533,11 @@ export default class FileUploader {
       return FileUploader.buildUploadResult( baseRelativeDir, basePublicUrl, seededByField );
     }
 
-    // 5) Prepare safe base directory:
-    //    /public/uploads/<safeSubPath>/
+    // Base dir: /public/uploads/<safeSubPath>/
     const baseDir = FileUploader.buildSafeChildDir( FileUploader.UPLOAD_ROOT, safeSubPath );
     await FileUploader.ensureDirectory( baseDir );
 
-    // 6) Configure multer disk storage:
-    //    each field gets its own folder under baseDir
+    // Storage: each field gets its own folder under baseDir
     const storage: StorageEngine = multer.diskStorage( {
       destination: async ( _req, file, cb ): Promise<void> => {
         try {
@@ -472,11 +546,12 @@ export default class FileUploader {
           await FileUploader.ensureDirectory( fieldDir );
           cb( null, fieldDir );
         } catch ( error: unknown ) {
-          cb( error instanceof Error ? error : new Error( String( error ) ), "" );
+          cb( error instanceof Error ? error : new Error( String( error ) ), baseDir );
         }
       },
 
       filename: ( _req, file, cb ): void => {
+        // ✅ FIX: extension must come from originalname
         const ext = path.extname( file.originalname );
         const base = path.basename( file.originalname, ext );
         const storedName = `${ FileUploader.slugify( base ) }_${ Date.now() }${ ext.toLowerCase() }`;
@@ -484,11 +559,10 @@ export default class FileUploader {
       },
     } );
 
-    // 7) Configure per-field mime filter
+    // Per-field filter
     const fileFilter: multer.Options[ "fileFilter" ] = ( _req, file, cb ): void => {
       const byField = options?.allowedMimeTypesByField;
 
-      // No field-specific rules => allow all
       if ( !byField || Object.keys( byField ).length === 0 ) {
         cb( null, true );
         return;
@@ -496,13 +570,11 @@ export default class FileUploader {
 
       const allow = byField[ file.fieldname ];
 
-      // Field missing allow-list => allow all
       if ( !allow || allow.size === 0 ) {
         cb( null, true );
         return;
       }
 
-      // Allow only listed types
       if ( allow.has( file.mimetype ) ) {
         cb( null, true );
         return;
@@ -511,7 +583,6 @@ export default class FileUploader {
       cb( new Error( `File type not allowed for field "${ file.fieldname }": ${ file.mimetype }` ) );
     };
 
-    // 8) Run multer
     const upload = multer( {
       storage,
       limits: {
@@ -521,7 +592,6 @@ export default class FileUploader {
       fileFilter,
     } ).fields( fields );
 
-    // 9) Execute multer using a Promise wrapper
     const filesByField: Record<string, Express.Multer.File[]> = await new Promise( ( resolve, reject ) => {
       upload( req, {} as unknown as Response, ( err: unknown ) => {
         if ( err ) {
@@ -535,7 +605,7 @@ export default class FileUploader {
       } );
     } );
 
-    // 10) Fill seeded arrays (includes empty arrays for missing fields)
+    // Fill seeded keys
     for ( const [ rawFieldName, filesArr ] of Object.entries( filesByField ) ) {
       const field = FileUploader.sanitizeSegmentStrict( rawFieldName );
       if ( !field ) continue;
@@ -550,7 +620,6 @@ export default class FileUploader {
       );
     }
 
-    // 11) Build stable UploadResultPacket
     return FileUploader.buildUploadResult( baseRelativeDir, basePublicUrl, seededByField );
   }
 
@@ -559,30 +628,46 @@ export default class FileUploader {
   // ===========================================================================
 
   /**
-   * Convert an in-memory buffer into a single .webp file saved under uploads/<subPath>/<fieldName>/.
+   * =============================================================================
+   * 01) Why this method (with usage)
+   * -----------------------------------------------------------------------------
+   * Convert a Buffer (memory upload) into a single WEBP file on disk under uploads/.
+   * Great for profile images, thumbnails, and predictable image format storage.
    *
-   * @param options.req
-   * - Expected: Express Request (for absolute public URL)
+   * 02) Params (what it actually expects)
+   * -----------------------------------------------------------------------------
+   * - @param req: Express request (for absolute URL)
+   * 
+   * - @param subPath: relative under uploads (preferred), tolerated "uploads/.." or "public/uploads/.."
+   * 
+   * - @param fieldName: destination folder name under subPath ("avatar", "thumbnail", etc.)
+   * 
+   * - @param originalName: used only to derive base name (semantic)
+   * 
+   * - @param buffer: image bytes
+   * 
+   * - @param webpQuality: 1..100 (default 80)
    *
-   * @param options.subPath
-   * - Expected: relative path under "uploads/"
-   * - Example: "users/profilePhotos/<userId>"
+   * 03) Usage hint
+   * -----------------------------------------------------------------------------
+   * - Use with createMemoryUpload() + controller transforms
    *
-   * @param options.fieldName
-   * - Expected: destination folder name (logical bucket)
-   * - Example: "avatar"
+   * 04) Reasons to use this method
+   * -----------------------------------------------------------------------------
+   * - Consistent format
+   * - Smaller storage size
    *
-   * @param options.originalName
-   * - Expected: original name for semantic naming
-   * - Example: "myPhoto.png"
+   * 05) What need to avoid
+   * -----------------------------------------------------------------------------
+   * - Passing non-image buffer (Sharp will throw)
+   * - Passing absolute paths outside public/uploads (throws)
    *
-   * @param options.buffer
-   * - Expected: raw image buffer
-   *
-   * @param options.webpQuality
-   * - Optional: 1..100 (default 80)
+   * 06) What result method generates
+   * -----------------------------------------------------------------------------
+   * UploadResultPacket with byField[fieldName] containing one FileMetaPacket
+   * =============================================================================
    */
-  public static async saveSingleWebPFromMemory( options: {
+  public static async saveWebPFromMemory( options: {
     req: Request;
     subPath: string;
     fieldName: string;
@@ -590,7 +675,7 @@ export default class FileUploader {
     buffer: Buffer;
     webpQuality?: number;
   } ): Promise<UploadResultPacket> {
-    const safeSubPath = FileUploader.sanitizeSubPath( options.subPath );
+    const safeSubPath = FileUploader.normalizeSubPath( options.subPath );
     if ( !safeSubPath.trim() ) throw new Error( "Uploading path is required!" );
 
     const fieldName = FileUploader.sanitizeSegmentStrict( options.fieldName );
@@ -646,23 +731,38 @@ export default class FileUploader {
   // ===========================================================================
 
   /**
+   * =============================================================================
+   * 01) Why this method (with usage)
+   * -----------------------------------------------------------------------------
    * Read FileMetaPacket[] for file OR directory inputs under public/.
+   * If a directory is passed, it recursively scans and returns FILE packets only.
    *
-   * @param options.items
-   * - Expected:
-   *   - string path OR MoveItem OR array
-   *   - Allowed forms:
-   *     - "uploads/..." or "recyclebin/..." (public-relative)
-   *     - absolute disk path under /public
+   * 02) Params (what it actually expects)
+   * -----------------------------------------------------------------------------
+   * - @param items:
+   *   - "uploads/..." or "recyclebin/..." (public-relative)
+   *   - OR absolute disk path under /public
+   *   - OR MoveItem with optional kind hint
+   * - @param req (optional): to generate absolute publicUrl
+   * - @param onlyUploads (default true): restrict scanning to uploads/
+   * - @param allowRecyclebin (default false): allow recyclebin/
    *
-   * @param options.req
-   * - Optional: Express Request for absolute publicUrl
+   * 03) Usage hint
+   * -----------------------------------------------------------------------------
+   * - Use after copy/move to compute meta for UI lists.
    *
-   * @param options.onlyUploads
-   * - Optional: if true, only "uploads/" items will be scanned (default true)
+   * 04) Reasons to use this method
+   * -----------------------------------------------------------------------------
+   * - Windows-like "Recycle Bin list" needs meta from folders too.
    *
-   * @param options.allowRecyclebin
-   * - Optional: if true, recyclebin paths are allowed (default false)
+   * 05) What need to avoid
+   * -----------------------------------------------------------------------------
+   * - Passing paths outside public (guard will sanitize/skip)
+   *
+   * 06) What result method generates
+   * -----------------------------------------------------------------------------
+   * FileMetaPacket[] (files-only), flattened.
+   * =============================================================================
    */
   public static async readPublicMetaArray( options: {
     items: MoveItem | MoveItem[];
@@ -679,15 +779,12 @@ export default class FileUploader {
 
     for ( const it of list ) {
       const rawPath = typeof it === "string" ? it : it.path;
-      const hintedKind: MoveKind | null = typeof it === "string" ? null : ( it.kind ?? null );
+      const hintedKind: MoveKind | null = typeof it === "string" ? null : it.kind ?? null;
 
       const trimmed = String( rawPath ?? "" ).trim();
       if ( !trimmed ) continue;
 
-      // Convert absolute path to public-relative (if needed)
       const relCandidate = FileUploader.toPublicRelativeIfAbs( trimmed );
-
-      // Normalize to public-relative (WITHOUT "public/"; everything is under PUBLIC_ROOT here)
       const rel = FileUploader.sanitizePublicRelativePath( relCandidate );
 
       if ( !rel ) continue;
@@ -699,7 +796,6 @@ export default class FileUploader {
       if ( !allowRecyclebin && isRecycle ) continue;
       if ( !isUploads && !isRecycle ) continue;
 
-      // Build absolute path safely under /public
       const abs = FileUploader.buildSafeChildPath( FileUploader.PUBLIC_ROOT, rel );
       if ( !fs.existsSync( abs ) ) continue;
 
@@ -716,7 +812,6 @@ export default class FileUploader {
         continue;
       }
 
-      // Directory => scan recursively and flatten file packets
       const scanned = await FileUploader.scanDirFilesRecursive( {
         absDir: abs,
         relDir: rel,
@@ -736,11 +831,35 @@ export default class FileUploader {
   // ===========================================================================
 
   /**
-   * Read a file under public/ (uploads or recyclebin only).
+   * =============================================================================
+   * 01) Why this method (with usage)
+   * -----------------------------------------------------------------------------
+   * Read a file under public/ (uploads or recyclebin only) as a Buffer.
+   * Used for "download", "serve inline", or processing pipelines.
    *
-   * @param relativePathUnderPublic
-   * - Expected: "uploads/..." OR "recyclebin/..."
-   * - NOT expected: "public/uploads/..." (this class uses PUBLIC_ROOT as base)
+   * 02) Params (what it actually expects)
+   * -----------------------------------------------------------------------------
+   * - @param relativePathUnderPublic:
+   *   "uploads/..." OR "recyclebin/..."
+   *
+   * 03) Usage hint
+   * -----------------------------------------------------------------------------
+   * - Use in controllers to stream file to response.
+   *
+   * 04) Reasons to use this method
+   * -----------------------------------------------------------------------------
+   * - Enforces strict root boundaries (security)
+   *
+   * 05) What need to avoid
+   * -----------------------------------------------------------------------------
+   * - Passing "public/uploads/..." (this helper expects under-public relative)
+   *   If you do pass it, PublicPathGuard should normalize; if it doesn’t in your guard,
+   *   pass correct "uploads/..".
+   *
+   * 06) What result method generates
+   * -----------------------------------------------------------------------------
+   * Buffer of file contents.
+   * =============================================================================
    */
   public static async readPublicFile( relativePathUnderPublic: string ): Promise<Buffer> {
     const safeRel = FileUploader.sanitizePublicRelativePath( relativePathUnderPublic );
@@ -758,23 +877,40 @@ export default class FileUploader {
   // ===========================================================================
 
   /**
-   * Copy files or directories under public/ into a destination directory.
+   * =============================================================================
+   * 01) Why this method (with usage)
+   * -----------------------------------------------------------------------------
+   * Copy files or directories under public/ into a destination directory
+   * under uploads/ or recyclebin/.
    *
-   * @param options.sources
-   * - Expected:
+   * 02) Params (what it actually expects)
+   * -----------------------------------------------------------------------------
+   * - @param sources:
    *   - "uploads/..." OR "recyclebin/..." OR absolute under /public
-   *   - OR array of those
+   * - @param destinationDir:
+   *   - "uploads/..." OR "recyclebin/..."
+   * - @param overwrite:
+   *   - default false
+   * - req:
+   *   - optional; to generate absolute URLs in meta
    *
-   * @param options.destinationDir
-   * - Expected:
-   *   - target directory under "uploads/" or "recyclebin/"
-   *   - Example: "uploads/teamManagement/teamTasks/<teamCode>/<taskId>/evidence"
+   * 03) Usage hint
+   * -----------------------------------------------------------------------------
+   * - Copy attachments from temp folder to final folder (without removing source)
    *
-   * @param options.overwrite
-   * - Optional: overwrite existing files (default false)
+   * 04) Reasons to use this method
+   * -----------------------------------------------------------------------------
+   * - Safe copy while keeping strict root boundaries
+   * - Produces meta for UI
    *
-   * @param options.req
-   * - Optional: Express Request for absolute publicUrl
+   * 05) What need to avoid
+   * -----------------------------------------------------------------------------
+   * - Passing destination outside uploads/ or recyclebin/ (throws)
+   *
+   * 06) What result method generates
+   * -----------------------------------------------------------------------------
+   * FsCopyResult { copied[], skipped[], meta[] }
+   * =============================================================================
    */
   public static async copyPublicFiles( options: {
     sources: string | string[];
@@ -819,7 +955,6 @@ export default class FileUploader {
           continue;
         }
 
-        // File => copy into destination dir
         if ( kind === "file" ) {
           const fileName = path.basename( srcAbs );
           const dstAbs = path.join( dstDirAbs, fileName );
@@ -840,7 +975,6 @@ export default class FileUploader {
           continue;
         }
 
-        // Dir => copy dir into destination dir preserving its directory name
         const dirName = path.basename( srcAbs );
         const dstAbsDir = path.join( dstDirAbs, dirName );
 
@@ -849,7 +983,6 @@ export default class FileUploader {
         const finalRelDir = path.relative( FileUploader.PUBLIC_ROOT, dstAbsDir ).replace( /\\/g, "/" );
         copied.push( finalRelDir );
 
-        // Directory meta => scan files under destination directory
         const scanned = await FileUploader.readPublicMetaArray( {
           items: [ { path: finalRelDir, kind: "dir" } ],
           ...( options.req ? { req: options.req } : {} ),
@@ -873,21 +1006,37 @@ export default class FileUploader {
   // ===========================================================================
 
   /**
-   * Move files or directories under public/ into a destination directory.
+   * =============================================================================
+   * 01) Why this method (with usage)
+   * -----------------------------------------------------------------------------
+   * Move files or directories under public/ into a destination directory
+   * under uploads/ or recyclebin/.
    *
-   * @param options.sources
-   * - Expected:
-   *   - "uploads/..." OR "recyclebin/..." OR absolute under /public
+   * 02) Params (what it actually expects)
+   * -----------------------------------------------------------------------------
+   * - @param sources: "uploads/..." OR "recyclebin/..." OR absolute under /public
+   * - @param destinationDir: "uploads/..." OR "recyclebin/..."
+   * - @param overwrite: default false
+   * - @param req: optional for absolute URLs
    *
-   * @param options.destinationDir
-   * - Expected:
-   *   - target directory under "uploads/" or "recyclebin/"
+   * 03) Usage hint
+   * -----------------------------------------------------------------------------
+   * - Use to finalize temp uploads into final folders
+   * - Use to reorganize attachments inside uploads/
    *
-   * @param options.overwrite
-   * - Optional: overwrite existing (default false)
+   * 04) Reasons to use this method
+   * -----------------------------------------------------------------------------
+   * - Strict boundary enforcement
+   * - Produces meta for UI
    *
-   * @param options.req
-   * - Optional: Express Request for absolute publicUrl
+   * 05) What need to avoid
+   * -----------------------------------------------------------------------------
+   * - Passing destination outside uploads/recyclebin (throws)
+   *
+   * 06) What result method generates
+   * -----------------------------------------------------------------------------
+   * FsMoveResult { moved[], skipped[], meta[] }
+   * =============================================================================
    */
   public static async movePublicFiles( options: {
     sources: string | string[];
@@ -932,7 +1081,6 @@ export default class FileUploader {
           continue;
         }
 
-        // File => move into destination dir
         if ( kind === "file" ) {
           const fileName = path.basename( srcAbs );
           const dstAbs = path.join( dstDirAbs, fileName );
@@ -953,7 +1101,6 @@ export default class FileUploader {
           continue;
         }
 
-        // Dir => move dir into destination dir preserving its directory name
         const dirName = path.basename( srcAbs );
         const dstAbsDir = path.join( dstDirAbs, dirName );
 
@@ -985,21 +1132,41 @@ export default class FileUploader {
   // ===========================================================================
 
   /**
-   * Move uploads/* items into recyclebin/<category>/<refId>/uploads/* (mirror tree).
+   * =============================================================================
+   * 01) Why this method (with usage)
+   * -----------------------------------------------------------------------------
+   * Soft-delete: Move uploads/* items into:
+   *   recyclebin/<category>/<refId>/<original uploads path...>
+   * This preserves the tree (Windows recyclebin behavior).
    *
-   * @param category
-   * - Expected: safe category key like "Milestone" or "Lease" or "TeamTask"
-   * - Used to namespace recycle bin entries
+   * 02) Params (what it actually expects)
+   * -----------------------------------------------------------------------------
+   * - @param category: safe key like "Lease", "TeamTask", "WorkItem", etc.
+   * - @param refId: the deleted object ID string
+   * - @param items:
+   *   - "uploads/..." or absolute under public pointing to uploads/...
+   *   - Can be file OR directory
+   * - @param req: optional for absolute URLs in meta
    *
-   * @param refId
-   * - Expected: safe identifier for the deleted object (string id)
+   * 03) Usage hint
+   * -----------------------------------------------------------------------------
+   * - Provide the exact uploaded paths you stored in DB.
+   * - You can pass whole folder paths to recycle everything under it.
    *
-   * @param items
-   * - Expected: file or dir paths under uploads/
-   * - Accepts MoveItem or MoveItem[]
+   * 04) Reasons to use this method
+   * -----------------------------------------------------------------------------
+   * - Exact tree preservation
+   * - Easy restore
    *
-   * @param req
-   * - Optional: Express Request for absolute publicUrl
+   * 05) What need to avoid
+   * -----------------------------------------------------------------------------
+   * - Passing recyclebin items here (only uploads can be recycled)
+   * - Passing non-uploads paths (skipped)
+   *
+   * 06) What result method generates
+   * -----------------------------------------------------------------------------
+   * FsMoveResult { moved[], skipped[], meta[] } where moved paths are inside recyclebin/
+   * =============================================================================
    */
   public static async moveToRecycleBin(
     category: string,
@@ -1030,7 +1197,7 @@ export default class FileUploader {
     for ( const it of list ) {
       try {
         const rawPath = typeof it === "string" ? it : it.path;
-        const hintedKind: MoveKind | null = typeof it === "string" ? null : ( it.kind ?? null );
+        const hintedKind: MoveKind | null = typeof it === "string" ? null : it.kind ?? null;
 
         const trimmed = String( rawPath ?? "" ).trim();
         if ( !trimmed ) {
@@ -1038,11 +1205,10 @@ export default class FileUploader {
           continue;
         }
 
-        // Normalize absolute -> public-relative
         const relCandidate = FileUploader.toPublicRelativeIfAbs( trimmed );
         const rel = FileUploader.sanitizePublicRelativePath( relCandidate );
 
-        // Only uploads are allowed to be recycled
+        // Only uploads allowed
         if ( !rel.startsWith( "uploads/" ) ) {
           skipped.push( trimmed );
           continue;
@@ -1060,22 +1226,18 @@ export default class FileUploader {
           continue;
         }
 
-        // Mirror tree target:
-        //   recyclebin/<cat>/<refId>/<rel>
+        // Mirror tree: recyclebin/<cat>/<refId>/<rel>
         const absTarget = path.join( recycleBaseAbs, rel );
         await FileUploader.ensureDirectory( path.dirname( absTarget ) );
 
         // Collision safe
-        const finalAbsTarget = fs.existsSync( absTarget )
-          ? FileUploader.withCollisionSuffix( absTarget )
-          : absTarget;
+        const finalAbsTarget = fs.existsSync( absTarget ) ? FileUploader.withCollisionSuffix( absTarget ) : absTarget;
 
         await fse.move( absSource, finalAbsTarget, { overwrite: true } );
 
         const finalRel = path.relative( FileUploader.PUBLIC_ROOT, finalAbsTarget ).replace( /\\/g, "/" );
         moved.push( finalRel );
 
-        // Build meta packets (files only)
         if ( kind === "file" ) {
           meta.push(
             await FileUploader.buildMetaPacketFromAbs( {
@@ -1104,15 +1266,36 @@ export default class FileUploader {
   }
 
   /**
-   * Restore recyclebin/<cat>/<refId>/uploads/... back to uploads/... (mirror reverse).
+   * =============================================================================
+   * 01) Why this method (with usage)
+   * -----------------------------------------------------------------------------
+   * Restore: move recyclebin/<cat>/<refId>/uploads/... back to uploads/...
+   * (mirror reverse).
    *
-   * @param recycleRelativePathsOrDirs
-   * - Expected: recyclebin paths:
+   * 02) Params (what it actually expects)
+   * -----------------------------------------------------------------------------
+   * - @param recycleRelativePathsOrDirs:
    *   - "recyclebin/<cat>/<refId>/uploads/..."
-   * - Accepts string or string[]
+   *   - file or dir
+   * - @param req: optional (for meta public URLs)
    *
-   * @param req
-   * - Optional: Express Request for absolute publicUrl
+   * 03) Usage hint
+   * -----------------------------------------------------------------------------
+   * - Store recyclebin paths in DB for each deleted entry, then restore those.
+   *
+   * 04) Reasons to use this method
+   * -----------------------------------------------------------------------------
+   * - Mirrors Windows “Restore”
+   *
+   * 05) What need to avoid
+   * -----------------------------------------------------------------------------
+   * - Passing non-recyclebin paths (skipped)
+   * - Trying to restore into recyclebin again
+   *
+   * 06) What result method generates
+   * -----------------------------------------------------------------------------
+   * FsMoveResult { moved[], skipped[], meta[] } moved paths are under uploads/
+   * =============================================================================
    */
   public static async restoreFromRecycleBin(
     recycleRelativePathsOrDirs: string | string[],
@@ -1154,20 +1337,16 @@ export default class FileUploader {
           continue;
         }
 
-        // Restore destination is the "rest" path under PUBLIC_ROOT
         const absTarget = FileUploader.buildSafeChildPath( FileUploader.PUBLIC_ROOT, rest );
         await FileUploader.ensureDirectory( path.dirname( absTarget ) );
 
-        const finalAbsTarget = fs.existsSync( absTarget )
-          ? FileUploader.withCollisionSuffix( absTarget )
-          : absTarget;
+        const finalAbsTarget = fs.existsSync( absTarget ) ? FileUploader.withCollisionSuffix( absTarget ) : absTarget;
 
         await fse.move( absSource, finalAbsTarget, { overwrite: true } );
 
         const finalRel = path.relative( FileUploader.PUBLIC_ROOT, finalAbsTarget ).replace( /\\/g, "/" );
         moved.push( finalRel );
 
-        // Meta packets for moved content
         const kind = FileUploader.detectKind( finalAbsTarget );
         if ( kind === "file" ) {
           meta.push(
@@ -1197,14 +1376,34 @@ export default class FileUploader {
   }
 
   /**
+   * =============================================================================
+   * 01) Why this method (with usage)
+   * -----------------------------------------------------------------------------
    * Permanently delete items from recyclebin.
+   * This is the “Empty Recycle Bin” / “Delete permanently” operation.
    *
-   * @param recycleRelativePathsOrDirs
-   * - Expected: "recyclebin/<cat>/<refId>/..."
-   * - Accepts string or string[]
+   * 02) Params (what it actually expects)
+   * -----------------------------------------------------------------------------
+   * - @param recycleRelativePathsOrDirs:
+   *   "recyclebin/<cat>/<refId>/..."
+   * - @param req: optional for meta URL building BEFORE deletion
    *
-   * @param req
-   * - Optional: Express Request for absolute publicUrl (for meta before delete)
+   * 03) Usage hint
+   * -----------------------------------------------------------------------------
+   * - Always guard this with high-privilege RBAC (purge)
+   *
+   * 04) Reasons to use this method
+   * -----------------------------------------------------------------------------
+   * - Permanent cleanup
+   *
+   * 05) What need to avoid
+   * -----------------------------------------------------------------------------
+   * - Passing uploads paths (skipped)
+   *
+   * 06) What result method generates
+   * -----------------------------------------------------------------------------
+   * FsDeleteResult { deleted[], skipped[], meta[] } meta is best-effort before delete
+   * =============================================================================
    */
   public static async deleteFromRecycleBin(
     recycleRelativePathsOrDirs: string | string[],
@@ -1233,7 +1432,6 @@ export default class FileUploader {
           continue;
         }
 
-        // Best-effort meta BEFORE delete
         const kind = FileUploader.detectKind( absTarget );
         if ( kind === "file" ) {
           meta.push(
@@ -1253,7 +1451,6 @@ export default class FileUploader {
           meta.push( ...scanned );
         }
 
-        // Delete
         const st = fs.statSync( absTarget );
         if ( st.isDirectory() ) {
           await fse.remove( absTarget );
@@ -1276,24 +1473,6 @@ export default class FileUploader {
   // 10) PRIVATE HELPERS – META BUILDERS (FILES ONLY)
   // ===========================================================================
 
-  /**
-   * Recursively scan a directory and return FILE packets only (flat).
-   *
-   * @param args.absDir
-   * - Expected: absolute directory path under PUBLIC_ROOT
-   *
-   * @param args.relDir
-   * - Expected: public-relative directory path (uploads/... or recyclebin/...)
-   *
-   * @param args.req
-   * - Optional: Express Request for absolute publicUrl
-   *
-   * @param args.onlyUploads
-   * - Expected: if true, only include uploads/ paths
-   *
-   * @param args.allowRecyclebin
-   * - Expected: if true, include recyclebin/ paths
-   */
   private static async scanDirFilesRecursive( args: {
     absDir: string;
     relDir: string;
@@ -1341,19 +1520,6 @@ export default class FileUploader {
     return out;
   }
 
-  /**
-   * Build a FileMetaPacket from a known absolute path and its public-relative path.
-   *
-   * @param args.absPath
-   * - Expected: absolute path under PUBLIC_ROOT
-   *
-   * @param args.relPath
-   * - Expected: public-relative path WITHOUT "public/"
-   * - Example: "uploads/tenant/X/file.pdf"
-   *
-   * @param args.req
-   * - Optional: Express Request for absolute publicUrl
-   */
   private static async buildMetaPacketFromAbs( args: {
     absPath: string;
     relPath: string;
@@ -1361,24 +1527,17 @@ export default class FileUploader {
   } ): Promise<FileMetaPacket> {
     const st = await fsp.stat( args.absPath );
 
-    // Stored name is always last path segment
     const storedName = path.posix.basename( args.relPath );
-
-    // In generic scans, we don't know the true originalName; use storedName
     const originalName = storedName;
 
-    // Derive extension and guess MIME type
     const extension = path.posix.extname( storedName ).replace( ".", "" );
     const mimeType = FileUploader.guessMimeTypeFromName( storedName );
 
-    // Normalize rel path into unix-like style
     const relativePath = String( args.relPath ?? "" ).replace( /\\/g, "/" ).replace( /^\/+/, "" );
 
-    // Build public url
     const origin = args.req ? FileUploader.buildOriginFromReq( args.req ) : "";
     const publicUrl = origin ? `${ origin }/${ relativePath }` : `/${ relativePath }`;
 
-    // fieldName is not reliably derivable here; keep stable placeholder
     return FileUploader.packPacket( {
       originalName,
       storedName,
@@ -1397,25 +1556,15 @@ export default class FileUploader {
   // 11) PRIVATE HELPERS – PATH SAFETY & UTILITIES
   // ===========================================================================
 
-  /**
-   * Normalize + validate a disk destination path for createDiskUpload().
-   *
-   * @param destination
-   * - Expected:
-   *   - Absolute path under UPLOAD_ROOT
-   *   - OR subPath relative to uploads/
-   */
   private static normalizeAndValidateDiskDestination( destination: string ): string {
     const raw = String( destination ?? "" ).trim();
     if ( !raw ) throw new Error( "Upload destination is empty." );
 
-    // If caller gave a relative path => treat as uploads/<subPath>
     if ( !path.isAbsolute( raw ) ) {
-      const safeSubPath = FileUploader.sanitizeSubPath( raw );
+      const safeSubPath = FileUploader.normalizeSubPath( raw );
       return FileUploader.buildSafeChildDir( FileUploader.UPLOAD_ROOT, safeSubPath );
     }
 
-    // Absolute path must be under UPLOAD_ROOT
     const abs = path.resolve( raw );
     const base = path.resolve( FileUploader.UPLOAD_ROOT );
 
@@ -1426,27 +1575,10 @@ export default class FileUploader {
     return abs;
   }
 
-  /**
-   * Ensure directory exists (mkdirp).
-   *
-   * @param targetDir
-   * - Expected: absolute directory path
-   */
   private static async ensureDirectory( targetDir: string ): Promise<void> {
     await fse.ensureDir( targetDir );
   }
 
-  /**
-   * Sanitize a subPath used under uploads/.
-   *
-   * @param subPath
-   * - Expected: "teamManagement/teamTasks/__tmp/<token>" (any slashes ok)
-   *
-   * Output guarantees:
-   * - no ".."
-   * - only safe segments
-   * - unix slashes
-   */
   private static sanitizeSubPath( subPath: string ): string {
     const normalized = String( subPath ?? "" ).replace( /\\/g, "/" ).trim();
 
@@ -1459,56 +1591,18 @@ export default class FileUploader {
     return parts.join( "/" );
   }
 
-  /**
-   * Sanitize a path RELATIVE to PUBLIC_ROOT.
-   *
-   * @param relative
-   * - Expected: "uploads/..." or "recyclebin/..."
-   * - Also accepts leading "/" which will be removed
-   */
   private static sanitizePublicRelativePath( pathLike: string ): string {
     const rel = PublicPathGuard.normalizeStrict( pathLike );
-    if ( !rel ) return ""; // keep old behavior (caller often skips on empty)
+    if ( !rel ) return "";
     return rel;
   }
 
-  /**
-   * Strict segment sanitizer (folder-safe).
-   *
-   * @param segment
-   * - Expected: "evidence" or "LEASE-001"
-   * - Output: safe string containing only [a-zA-Z0-9_-]
-   */
   private static sanitizeSegmentStrict( segment: string ): string {
     const trimmed = String( segment ?? "" ).trim();
     if ( !trimmed ) return "";
     return trimmed.replace( /[^a-zA-Z0-9_-]/g, "_" );
   }
 
-  /**
-   * Loose segment sanitizer for public-relative paths.
-   * - Prevent slashes, but allow dots for filenames.
-   *
-   * @param segment
-   * - Expected: a single segment like "file.pdf"
-   */
-  private static sanitizeSegmentLoose( segment: string ): string {
-    const trimmed = String( segment ?? "" ).trim();
-    if ( !trimmed ) return "";
-    return trimmed.replace( /[\/\\]/g, "_" );
-  }
-
-  /**
-   * Build safe child directory under a base directory.
-   *
-   * @param base
-   * - Expected: absolute base path (e.g. UPLOAD_ROOT)
-   *
-   * @param child
-   * - Expected: relative path (already sanitized)
-   *
-   * @returns absolute directory path that is guaranteed to be under base
-   */
   private static buildSafeChildDir( base: string, child: string ): string {
     const baseResolved = path.resolve( base );
     const target = path.resolve( base, child );
@@ -1520,15 +1614,6 @@ export default class FileUploader {
     return target;
   }
 
-  /**
-   * Build safe child path under a base directory.
-   *
-   * @param base
-   * - Expected: absolute base path (e.g. PUBLIC_ROOT)
-   *
-   * @param relative
-   * - Expected: public-relative path like "uploads/..."
-   */
   private static buildSafeChildPath( base: string, relative: string ): string {
     const baseResolved = path.resolve( base );
     const target = path.resolve( base, relative );
@@ -1540,12 +1625,6 @@ export default class FileUploader {
     return target;
   }
 
-  /**
-   * Slugify a filename base to safe URL/FS friendly format.
-   *
-   * @param input
-   * - Expected: original file name without extension
-   */
   private static slugify( input: string ): string {
     const safe = String( input ?? "" )
       .trim()
@@ -1556,15 +1635,6 @@ export default class FileUploader {
     return safe || "file";
   }
 
-  /**
-   * Read a header safely from req.headers.
-   *
-   * @param req
-   * - Expected: Express Request
-   *
-   * @param name
-   * - Expected: header name (case-insensitive)
-   */
   private static getFirstHeaderValue( req: Request, name: string ): string {
     const v = req.headers[ name.toLowerCase() ];
     if ( typeof v === "string" ) return v;
@@ -1572,12 +1642,6 @@ export default class FileUploader {
     return "";
   }
 
-  /**
-   * Parse first token from comma-separated header values.
-   *
-   * @param raw
-   * - Expected: "https, http" or "example.com, proxy.local"
-   */
   private static firstCsvToken( raw: string ): string {
     const token = String( raw ?? "" )
       .split( "," )
@@ -1588,13 +1652,6 @@ export default class FileUploader {
     return token ?? "";
   }
 
-  /**
-   * Build origin from request (proxy-safe).
-   *
-   * @param req
-   * - Expected: Express Request
-   * - Uses x-forwarded-host + x-forwarded-proto when present
-   */
   private static buildOriginFromReq( req: Request ): string {
     const protoRaw = FileUploader.getFirstHeaderValue( req, "x-forwarded-proto" );
     const forwardedProto = FileUploader.firstCsvToken( protoRaw );
@@ -1613,21 +1670,6 @@ export default class FileUploader {
     return `${ protocol }://${ hostHeader }`;
   }
 
-  /**
-   * Convert a multer file into FileMetaPacket (PropEase contract).
-   *
-   * @param args.req
-   * - Expected: Express Request (for origin)
-   *
-   * @param args.safeSubPath
-   * - Expected: already sanitized sub path under uploads/
-   *
-   * @param args.fieldName
-   * - Expected: sanitized field name (folder-safe)
-   *
-   * @param args.file
-   * - Expected: Express.Multer.File returned by multer
-   */
   private static toFilePacket( args: {
     req: Request;
     safeSubPath: string;
@@ -1658,8 +1700,6 @@ export default class FileUploader {
     const absDiskPath = path.resolve( FileUploader.PUBLIC_ROOT, relativePath );
     const uploadedAtIso = new Date().toISOString();
 
-    // IMPORTANT:
-    // - exactOptionalPropertyTypes safe: we add optional fields only if present
     const basePacket = FileUploader.packPacket( {
       originalName,
       storedName,
@@ -1673,6 +1713,7 @@ export default class FileUploader {
       uploadedAtIso,
     } );
 
+    // exactOptionalPropertyTypes-safe: add only if real
     const encoding = typeof file.encoding === "string" ? file.encoding.trim() : "";
     if ( encoding ) {
       ( basePacket as unknown as { encoding: string; } ).encoding = encoding;
@@ -1681,18 +1722,6 @@ export default class FileUploader {
     return basePacket;
   }
 
-  /**
-   * Build stable UploadResultPacket while computing totals.
-   *
-   * @param baseRelativeDir
-   * - Expected: "uploads/<subPath>"
-   *
-   * @param basePublicUrl
-   * - Expected: "https://host/uploads/<subPath>"
-   *
-   * @param byField
-   * - Expected: fieldName -> packets
-   */
   private static buildUploadResult(
     baseRelativeDir: string,
     basePublicUrl: string,
@@ -1720,12 +1749,6 @@ export default class FileUploader {
     };
   }
 
-  /**
-   * Seed byField with declared keys, each mapped to empty array.
-   *
-   * @param fields
-   * - Expected: [{ name: "evidence" }, { name: "attachments" }]
-   */
   private static seedByFieldKeys( fields: Array<{ name: string; }> ): Record<string, FileMetaPacket[]> {
     const out: Record<string, FileMetaPacket[]> = {};
 
@@ -1738,15 +1761,6 @@ export default class FileUploader {
     return out;
   }
 
-  /**
-   * Read existing files for a single field when multer already executed upstream.
-   *
-   * @param req
-   * - Expected: Express Request containing req.files
-   *
-   * @param fieldName
-   * - Expected: sanitized field name
-   */
   private static readExistingFilesForField( req: Request, fieldName: string ): Express.Multer.File[] {
     const filesAny = ( req.files as unknown ) as
       | Express.Multer.File[]
@@ -1763,14 +1777,6 @@ export default class FileUploader {
     return Array.isArray( hit ) ? hit : [];
   }
 
-  /**
-   * Read existing files for multi-field when multer already executed upstream.
-   *
-   * @param req
-   * - Expected: Express Request containing req.files
-   *
-   * @returns fieldName -> files[]
-   */
   private static readExistingFilesMulti( req: Request ): Record<string, Express.Multer.File[]> {
     const filesAny = ( req.files as unknown ) as
       | Express.Multer.File[]
@@ -1795,12 +1801,6 @@ export default class FileUploader {
     return filesAny;
   }
 
-  /**
-   * Pack packet base into FileMetaPacket (contract type).
-   *
-   * @param base
-   * - Expected: full object that matches FileMetaPacket required props
-   */
   private static packPacket( base: {
     originalName: string;
     storedName: string;
@@ -1816,14 +1816,6 @@ export default class FileUploader {
     return base as unknown as FileMetaPacket;
   }
 
-  /**
-   * Determine whether path is a file or a directory.
-   *
-   * @param absSource
-   * - Expected: absolute path
-   *
-   * @returns "file" | "dir" | null
-   */
   private static detectKind( absSource: string ): MoveKind | null {
     try {
       const st = fs.statSync( absSource );
@@ -1835,14 +1827,6 @@ export default class FileUploader {
     }
   }
 
-  /**
-   * Add a collision suffix to an absolute target path.
-   *
-   * @param absTarget
-   * - Expected: absolute path that already exists
-   *
-   * @returns a new absolute path that does not collide (best-effort)
-   */
   private static withCollisionSuffix( absTarget: string ): string {
     const stamp = Date.now();
     const ext = path.extname( absTarget );
@@ -1855,15 +1839,6 @@ export default class FileUploader {
     return `${ absTarget }__${ stamp }`;
   }
 
-  /**
-   * Convert absolute disk path under PUBLIC_ROOT into public-relative path.
-   * If input is already relative, returns cleaned relative.
-   *
-   * @param relOrAbs
-   * - Expected:
-   *   - absolute path under PUBLIC_ROOT
-   *   - OR public-relative path like "uploads/..."
-   */
   private static toPublicRelativeIfAbs( relOrAbs: string ): string {
     const raw = String( relOrAbs ?? "" ).trim();
     if ( !raw ) return "";
@@ -1874,7 +1849,7 @@ export default class FileUploader {
 
       const rel = path.relative( publicRootAbs, abs ).replace( /\\/g, "/" );
 
-      // If outside public root => mark as unsafe (caller will sanitize and skip)
+      // Outside public root => mark unsafe
       if ( rel.startsWith( ".." ) ) return "__outside_public_root__";
 
       return rel.replace( /^\/+/, "" );
@@ -1883,12 +1858,6 @@ export default class FileUploader {
     return PublicPathGuard.normalizeStrict( raw );
   }
 
-  /**
-   * Guess MIME type based on file name extension.
-   *
-   * @param fileName
-   * - Expected: "file.png" or "document.pdf"
-   */
   private static guessMimeTypeFromName( fileName: string ): string {
     const ext = path.extname( fileName ).toLowerCase();
 
@@ -1913,5 +1882,69 @@ export default class FileUploader {
     }
 
     return "application/octet-stream";
+  }
+
+  /**
+   * =============================================================================
+   * 01) Why this method (with usage)
+   * -----------------------------------------------------------------------------
+   * Normalize any "subPath" into a safe relative path UNDER uploads/.
+   * ✅ Fixes the bug where absolute windows paths become "uploads/D_/project/..."
+   *
+   * 02) Params (what it actually expects)
+   * -----------------------------------------------------------------------------
+   * - input:
+   *   - relative under uploads (preferred): "users/<username>"
+   *   - OR "uploads/users/<username>"
+   *   - OR "public/uploads/users/<username>"
+   *   - OR ABSOLUTE under public/uploads:
+   *       "D:\\...\\public\\uploads\\users\\<username>"
+   *
+   * 03) Usage hint
+   * -----------------------------------------------------------------------------
+   * - Always pass relative form from controllers to keep logs clean.
+   *
+   * 04) Reasons to use this method
+   * -----------------------------------------------------------------------------
+   * - Prevents traversal / wrong baseRelativeDir
+   * - Guarantees storage stays inside /public/uploads
+   *
+   * 05) What need to avoid
+   * -----------------------------------------------------------------------------
+   * - Passing absolute paths outside /public/uploads (throws)
+   *
+   * 06) What result method generates
+   * -----------------------------------------------------------------------------
+   * A safe relative path like "users/<username>" (no leading slash)
+   * =============================================================================
+   */
+  private static normalizeSubPath( input: string ): string {
+    const raw = String( input ?? "" ).trim();
+    if ( !raw ) return "";
+
+    // Absolute path allowed ONLY if inside public/uploads
+    if ( path.isAbsolute( raw ) ) {
+      const abs = path.resolve( raw );
+      const uploadsRoot = path.resolve( FileUploader.UPLOAD_ROOT );
+
+      if ( abs === uploadsRoot || abs.startsWith( uploadsRoot + path.sep ) ) {
+        const relUnderUploads = path.relative( uploadsRoot, abs ).replace( /\\/g, "/" );
+        return FileUploader.sanitizeSubPath( relUnderUploads );
+      }
+
+      throw new Error( "Unsafe subPath: absolute path is not under public/uploads." );
+    }
+
+    // Normalize slashes + remove leading "/"
+    const norm = raw.replace( /\\/g, "/" ).replace( /^\/+/, "" );
+
+    // strip leading "public/"
+    const noPublic = norm.startsWith( "public/" ) ? norm.slice( "public/".length ) : norm;
+
+    // strip leading "uploads/"
+    const noUploads = noPublic.startsWith( "uploads/" ) ? noPublic.slice( "uploads/".length ) : noPublic;
+
+    // final sanitize (segments only)
+    return FileUploader.sanitizeSubPath( noUploads );
   }
 }

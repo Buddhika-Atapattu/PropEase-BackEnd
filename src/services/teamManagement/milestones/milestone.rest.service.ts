@@ -289,6 +289,7 @@ export class MilestoneRestService {
             sourceKey: "Milestone",
             refId: String( ( existing as unknown as { _id: unknown; } )._id ),
             label: this.buildRecycleLabel( existing ),
+            collectionName: MilestoneModel.collection.name,
             ...( this.buildRecycleDescription( existing ) ? { description: this.buildRecycleDescription( existing ) } : {} ),
 
             // ✅ FIX: snapshotData expects Record<string, unknown>

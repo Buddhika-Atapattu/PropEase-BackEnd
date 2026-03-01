@@ -12,7 +12,7 @@
 // uploads/team-management/<teamCode>/<taskId>/<workItemId>/evidence
 // ============================================================================
 
-import { Types } from "mongoose";
+import { Types, type ClientSession } from "mongoose";
 import { Request } from 'express';
 
 import { WorkItemModel } from "../../../models/teamManagement/workItems/workItem.model";
@@ -333,45 +333,97 @@ export class WorkItemRestService {
         return dto;
     }
 
-    public async deleteById( ctx: WorkItemWsContext, workItemId: string, actor: AuthUser ): Promise<void> {
+    public async deleteById(
+        ctx: WorkItemWsContext,
+        workItemId: string,
+        actor: AuthUser
+    ): Promise<void> {
         const _id = this.toObjectId( workItemId );
 
-
-
         const existing = await WorkItemModel.findById( _id ).lean<LeanWorkItem>().exec();
-        if ( !existing ) throw new WorkItemServiceError( "WORK_ITEM_NOT_FOUND", "WorkItem not found." );
+        if ( !existing ) {
+            throw new WorkItemServiceError( "WORK_ITEM_NOT_FOUND", "WorkItem not found." );
+        }
 
+        // Snapshot of the work item (DTO)
         const snapshot = this.toWorkItemDto( existing );
 
-        const plan: DomainDeletePlan<WorkItemDto> = {
+        // Load activities as LEAN DB docs (NOT DTO) because we need _id reliably
+        type LeanMemberActivity = { _id: unknown; workItemId?: unknown; } & Record<string, unknown>;
+        const activities = await MemberActivityModel.find( { workItemId: _id } )
+            .lean<LeanMemberActivity[]>()
+            .exec();
+
+        // 1) RecycleBin delete each activity (unique refId per activity) — awaited deterministically
+        for ( const activity of activities ) {
+            try {
+                const activityIdRaw = ( activity as { _id?: unknown; } )._id;
+                const activityId = String( activityIdRaw ?? "" ).trim();
+                if ( !activityId ) {
+                    // If this happens, better to fail loud (restore integrity depends on IDs)
+                    throw new Error( "[Error:] [WorkItemService.deleteById:] member activity _id missing\n" );
+                }
+
+                const activityPlan: DomainDeletePlan<MemberActivityDto> = {
+                    sourceKey: "memberActivity",
+                    refId: activityId, // ✅ unique per activity (restore-safe)
+                    label: `Member Activity (WorkItem: ${ existing.workItemCode })`,
+                    description: "Member activity deleted (cascade from work item)",
+                    snapshotData: { activity }, // ✅ snapshot the activity itself
+                    files: [],
+                    collectionName: MemberActivityModel.collection.name, // ✅ correct collection
+                    module: "Team Management",
+                    entity: "MemberActivity",
+                    tags: [ "memberActivity", "cascade", "workItem" ],
+
+                    deleteDbRecord: async ( session?: ClientSession ): Promise<void> => {
+                        const opts = session ? { session } : undefined;
+                        await MemberActivityModel.deleteOne( { _id: this.toObjectId( activityId ) }, opts ).exec();
+                    },
+                };
+
+                await this.deleteService.deleteWithRecycleBin( actor, activityPlan );
+            } catch ( err: unknown ) {
+                console.error( "[Error:] [WorkItemService.deleteById:] memberActivity recycle delete failed.\n", err, "\n" );
+                // Choose: either continue deleting others or stop. Stopping keeps behavior strict.
+                throw err;
+            }
+        }
+
+        // 2) RecycleBin delete the work item itself
+        const workItemPlan: DomainDeletePlan<WorkItemDto> = {
             sourceKey: "workItem",
             refId: workItemId,
             label: `WorkItem: ${ existing.workItemCode }`,
             description: "Work item deleted",
-            snapshotData: snapshot as unknown as Record<string, unknown>,
+            snapshotData: { workItem: snapshot }, // ✅ snapshot the workItem
             files: [],
+            collectionName: WorkItemModel.collection.name,
             module: "Team Management",
             entity: "WorkItem",
             tags: [ "workItem" ],
-            deleteDbRecord: async ( session ) => {
-                const opts = session ? { session } : {};
-                await Promise.all( [
-                    WorkItemModel.deleteOne( { _id }, { opts } ).exec(),
-                    MemberActivityModel.deleteMany( { workItemId: _id }, { opts } ).exec(),
-                ] );
+
+            deleteDbRecord: async ( session?: ClientSession ): Promise<void> => {
+                const opts = session ? { session } : undefined;
+
+                // ✅ Only delete work item here.
+                // Activities already deleted above (and recorded to recyclebin individually).
+                await WorkItemModel.deleteOne( { _id }, opts ).exec();
             },
         };
 
-        await this.deleteService.deleteWithRecycleBin( actor, plan );
+        await this.deleteService.deleteWithRecycleBin( actor, workItemPlan );
 
+        // 3) WS emit
         if ( ctx.teamCode ) {
             const memberIds = this.extractAssignedMemberIds( existing );
+
             this.ws.emitWorkItemDeleted(
-                this.buildEmitCtx( ctx, { teamCode: ctx.teamCode, workItemId } ),
-                workItemId,
-                ctx.teamCode,
-                memberIds.map( ( s ) => this.toObjectId( s ) )
-            );
+              this.buildEmitCtx( ctx, { teamCode: ctx.teamCode, workItemId } ),
+              workItemId,
+              ctx.teamCode,
+              memberIds.map( ( s ) => this.toObjectId( s ) )
+          );
         }
     }
 

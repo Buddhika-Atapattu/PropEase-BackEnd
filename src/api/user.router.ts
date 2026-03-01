@@ -76,7 +76,7 @@ export default class UserRoute {
   private readonly DEFAULT_URL: string = "uploads/users";
   private readonly RECYCLE_URL: string = "recyclebin/users";
 
-  private readonly USERS_UPLOAD_ROOT_REL = "uploads/users";
+  private readonly USERS_UPLOAD_ROOT_REL = "uploads/users/";
 
   private readonly router: Router;
   private readonly twilioClient: Twilio = twilio(
@@ -474,7 +474,7 @@ export default class UserRoute {
           const username = String( req.body.username || "" ).trim();
           const name = String( req.body.name || "" ).trim();
           const email = String( req.body.email || "" ).trim();
-          const passRaw = String( req.body.userPassword || "" ).trim();
+          const passRaw = String( req.body.password || "" ).trim();
           const role = String( req.body.role || "user" ).trim();
           const creator = String( req.body.creator || "system" ).trim();
 
@@ -557,17 +557,19 @@ export default class UserRoute {
 
           // Use FileUploader to persist the image (webp) to /public/uploads/users/<username>/image.webp
           const baseUrl = `${ req.protocol }://${ req.get( "host" ) }`;
-          const subPath = path.join( this.DEFAULT_PATH, `${ username }`, );
-          const imageResult = await FileUploader.saveSingleWebPFromMemory( {
+          const subPath = `uploads/users/${ username }`;
+          const imageResult = await FileUploader.saveWebPFromMemory( {
             req,
             subPath,
-            fieldName: "image.webp",
+            fieldName: "images",
             originalName: image.originalname,
             buffer: image.buffer,
             webpQuality: 80,
           } );
 
-          const publicImageUrl = imageResult.basePublicUrl;
+          console.log( '[Path: ]', imageResult );
+
+          const publicImageUrl = imageResult.byField.images?.length === 1 ? imageResult.byField.images[ 0 ]?.publicUrl : '';
 
           // Access information
           const access = this.parseJSON<IUser[ "access" ] | undefined>(
@@ -626,6 +628,15 @@ export default class UserRoute {
             return;
           }
 
+          const socialHandle = `@${ username }`;
+          const socialDisplayName = name;
+
+          // Payment profile defaults (non-empty customerId)
+          const paymentCustomerId = `CUST-${ username.toUpperCase() }-${ Date.now() }`;
+
+          // If you want billing email to follow user email:
+          const billingEmail = email;
+
           const newUserDoc: IUser = new UserModel( {
             name,
             username,
@@ -657,6 +668,24 @@ export default class UserRoute {
             creator,
             nationality,
             nicOrPassport,
+            paymentProfile: {
+              provider: "custom",
+              customerId: paymentCustomerId,
+              defaultCurrency: "LKR",
+              billingEmail,
+              defaultPaymentMethodRef: null,
+              paymentMethodRefs: [],
+            },
+
+            socialProfile: {
+              handle: socialHandle,
+              displayName: socialDisplayName,
+              about: null,
+              avatarUrl: null,
+              coverUrl: null,
+              isCreator: false,
+              isPublicProfile: true,
+            },
           } );
 
           await newUserDoc.save();
@@ -727,7 +756,7 @@ export default class UserRoute {
           );
           return;
         } catch ( error: any ) {
-          console.error( "[create-user] error:", error?.message || error );
+          console.error( "[Error:] [Create-user] error:", error?.message || error );
           ApiResponseBuilder.internalError( res, error );
           return;
         }
@@ -790,17 +819,19 @@ export default class UserRoute {
 
           // If there is a new image -> convert to webp and replace
           if ( image ) {
-            const subPath = path.join( this.DEFAULT_PATH, `${ username }`, );
-            const imageResult = await FileUploader.saveSingleWebPFromMemory( {
+            const subPath = `uploads/users/${ username }`;
+            const imageResult = await FileUploader.saveWebPFromMemory( {
               req,
               subPath,
-              fieldName: "image.webp",
+              fieldName: "images",
               originalName: image.originalname,
               buffer: image.buffer,
               webpQuality: 80,
             } );
 
-            imageUrl = imageResult.basePublicUrl;
+            console.log( '[Path: ]', imageResult.byField );
+
+            imageUrl = imageResult.byField.images?.length === 1 ? imageResult.byField.images[ 0 ]?.publicUrl : '';
 
           }
 
@@ -1928,13 +1959,14 @@ export default class UserRoute {
           // ===================================================================
           // const filePackets = await this.collectUserFiles( username );
           const publicRelPath = `${ this.USERS_UPLOAD_ROOT_REL }/${ username }`;
-          const filePackets = await FileMetaPacketBuilder.scanDir( {
-            dirPathLike: publicRelPath,
-            bucket: 'image',
+          const filePackets = await FileMetaPacketBuilder.scanTree( {
+            rootPathLike: publicRelPath,
+            bucket: 'files',
             req,
           } );
 
 
+          console.log( '\n\n\n\n\n', filePackets, '\n\n\n\n\n' );
 
           // ===================================================================
           // 4) Build snapshotData (JSON-safe)
@@ -1959,7 +1991,7 @@ export default class UserRoute {
             refId: username,             // your domain identifier (string)
             label: `User: ${ userDoc.name ?? username }`, // UI label
             description: "Deleted from User Management",
-
+            collectionName: UserModel.collection.name,
             snapshotData,                // what gets written to snapshot.json + DB snapshotData
             files: filePackets,          // what gets moved to recyclebin/files/
 

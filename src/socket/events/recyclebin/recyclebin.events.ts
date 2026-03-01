@@ -3,9 +3,15 @@
 // RecycleBin — WebSocket Events (SINGLE SOURCE OF TRUTH)
 // -----------------------------------------------------------------------------
 // ✅ This file is the ONLY place allowed to define:
-//    - RecycleBin event names (stable taxonomy)
 //    - Room naming conventions
+//    - Event names (stable taxonomy)
 //    - WS payload contracts
+//
+// ✅ Room rule (your rule — NO "aud." prefix):
+//    - user.<username>
+//    - role.<role>
+//    - team.<teamCode>
+//    - company
 //
 // SERVICES / GATEWAYS MUST import from this file.
 // =============================================================================
@@ -17,7 +23,7 @@ import type {
   RecycleBinRecordResult,
 } from "../../../types/recyclebin/recyclebin.types";
 
-import { SocketRooms } from '../rooms/socket.rooms';
+import { SocketRooms } from "../rooms/socket.rooms";
 
 /* =============================================================================
  * A) Rooms (Stable Forever)
@@ -27,36 +33,78 @@ export class RecycleBinRooms {
   private constructor() {}
 
   /**
-   * Company-level room.
-   * Use for admin recycle-bin dashboards (global view).
+   * Why / for what
+   * - Company-level room for global dashboards.
+   *
+   * Usage hint
+   * - Use ONLY when controller confirms the actor has access to company-wide view.
+   *
+   * Avoid
+   * - Do not emit to company for normal user-only operations.
+   *
+   * Result
+   * - All clients joined to "company" can react (refresh list/badge).
    */
-  public static readonly COMPANY: string = " company";
+  public static readonly COMPANY: string = "company";
 
   /**
-   * Role-level room.
-   * Example:  role.admin
+   * Why / for what
+   * - Role-level audience.
+   *
+   * @param roleKey role identifier (e.g. "admin")
+   *
+   * Usage hint
+   * - Emit when recycle bin operation affects a role-scoped dashboard.
+   *
+   * Avoid
+   * - Avoid untrusted payload role strings; role must come from auth user context.
+   *
+   * Result
+   * - Emits into: role.<role>
    */
   public static role(roleKey: string): string {
     const r = typeof roleKey === "string" ? roleKey.trim() : "";
-    return SocketRooms.role( r.toLowerCase() );
+    return SocketRooms.role(r.toLowerCase());
   }
 
   /**
-   * Team-level room.
-   * Example:  team.TEAM001
+   * Why / for what
+   * - Team-level audience.
+   *
+   * @param teamCode team code (e.g. "TEAM001")
+   *
+   * Usage hint
+   * - Emit for team dashboards / team recycle bin usage (if used).
+   *
+   * Avoid
+   * - Avoid emitting team events if the module isn’t team-scoped.
+   *
+   * Result
+   * - Emits into: team.<teamCode>
    */
   public static team(teamCode: string): string {
     const t = typeof teamCode === "string" ? teamCode.trim() : "";
-    return SocketRooms.team( t );
+    return SocketRooms.team(t);
   }
 
   /**
-   * ✅ User-level room (PropEase standard)
-   * Example: user:buddhika
+   * Why / for what
+   * - User-level audience.
+   *
+   * @param username username (e.g. "buddhika")
+   *
+   * Usage hint
+   * - Most safe default room for recycle operations.
+   *
+   * Avoid
+   * - Do not trust username from payload; controller must use auth user.
+   *
+   * Result
+   * - Emits into: user.<username>
    */
   public static user(username: string): string {
     const u = typeof username === "string" ? username.trim() : "";
-    return SocketRooms.user( u );
+    return SocketRooms.user(u);
   }
 }
 
@@ -67,109 +115,65 @@ export class RecycleBinRooms {
 export class RecycleBinEvents {
   private constructor() {}
 
-  /**
-   * Fired when an item is soft-deleted into recycle bin.
-   * FE should:
-   * - remove it from the original module list immediately
-   * - optionally show a toast
-   * - refresh recycle bin list/counts if user is on that module
-   */
+  /** Fired when an item is recorded (soft delete into recycle bin). */
   public static readonly SOFT_DELETED: string = "rb:soft-deleted";
 
-  /**
-   * Fired when an item is restored from recycle bin.
-   * FE should:
-   * - refresh the original module list
-   * - refresh recycle bin list/counts
-   */
+  /** Fired when an item is restored (REAL restore complete). */
   public static readonly RESTORED: string = "rb:restored";
 
-  /**
-   * Fired when an item is permanently deleted.
-   * FE should:
-   * - remove it from recycle bin list immediately
-   * - refresh recycle bin counts
-   */
+  /** Fired when an item is permanently deleted (purged). */
   public static readonly PERMANENT_DELETED: string = "rb:permanent-deleted";
 
-  /**
-   * Fired when recycle bin counts changed (total items).
-   * (Unread concept does not apply here — use total only.)
-   */
+  /** Fired when recycle bin total count changed (badge refresh). */
   public static readonly COUNT: string = "rb:count";
 
-  /**
-   * Fallback signal for “reload your recycle-bin view”.
-   * Useful for bulk operations / maintenance jobs.
-   */
+  /** Fallback signal for “reload recycle bin” (bulk changes / maintenance). */
   public static readonly BULK: string = "rb:bulk";
+
+  /** Optional: push a single list item (UI insert/update without full reload). */
+  public static readonly ITEM: string = "rb:item";
 }
 
 /* =============================================================================
  * C) Payload Contracts (WS Layer Only)
  * ========================================================================== */
 
-/**
- * rb:soft-deleted
- */
+/** rb:soft-deleted */
 export interface RecycleBinSoftDeletedPayload {
   sourceKey: string;
   refId: string;
-
-  /**
-   * DB entry id created for the recyclebin list
-   */
   entryId: string;
-
-  /**
-   * Result returned from engine (optional)
-   */
   result?: RecycleBinRecordResult;
 }
 
-/**
- * rb:restored
- */
+/** rb:restored */
 export interface RecycleBinRestoredPayload {
   entryId: string;
   sourceKey: string;
   refId: string;
-
   restoredRefId?: string;
-
   result?: RecycleBinRestorePrepareDto;
 }
 
-/**
- * rb:permanent-deleted
- */
+/** rb:permanent-deleted */
 export interface RecycleBinPermanentDeletedPayload {
   entryId: string;
   sourceKey: string;
   refId: string;
-
   result?: RecycleBinPurgeResult;
 }
 
-/**
- * rb:count
- * The recycle bin module can show a small badge (total deleted items).
- */
+/** rb:count */
 export interface RecycleBinCountPayload {
   total: number;
 }
 
-/**
- * rb:bulk
- */
+/** rb:bulk */
 export interface RecycleBinBulkPayload {
   reason: "bulk-update" | "system-refresh" | "rebuild";
 }
 
-/**
- * Optional: server can push a single list item (for UI insert/remove).
- * This is not required, but useful for a smooth UX.
- */
+/** rb:item */
 export interface RecycleBinListItemPayload {
   item: RecycleBinListItemDto;
 }

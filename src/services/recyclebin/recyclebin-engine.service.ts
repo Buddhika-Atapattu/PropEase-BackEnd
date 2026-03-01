@@ -1,12 +1,33 @@
 // Path: src/services/recyclebin/recyclebin-engine.service.ts
 // =============================================================================
-// RecycleBinEngineService (Phase 2) — FIXED
+// RecycleBinEngineService — RECORD + LIST + SNAPSHOT + REAL RESTORE + PURGE
 // -----------------------------------------------------------------------------
-// KEY FIXES:
-// 1) Correct model import -> recyclebin-entry.model.ts
-// 2) Correct audit writer import -> audits/recyclebin-audit-writer.service.ts
-// 3) Keep audit query import under audits/
-// 4) Keep exactOptionalPropertyTypes safe (omit optionals, no `{ session: undefined }`)
+// What this engine solves (your requirements):
+// ✅ 01) Fix path mapping (preserve folders)
+//     uploads/users/<u>/images/x.webp
+//       -> recyclebin/users/<u>/images/x.webp
+//
+// ✅ 02) Record DB collection name (non-breaking)
+//     - Stored in: entry.extra.recycle.collectionName
+//     - Also written to meta.json under meta.recycle.collectionName
+//
+// ✅ 03) REAL RESTORE (DB + Files)
+//     - Restores snapshot document into recorded collection
+//     - Moves files back: recyclebin/... -> uploads/...
+//     - Marks entry status = restored
+//
+// ✅ 04) Universal + exactOptionalPropertyTypes-safe
+//     - Never pass session: undefined
+//     - Optional result fields are omitted unless they have a real value
+//
+// ✅ 05) Fix your bug:
+//     - restoreDocKey must be "property" (NOT "propertie")
+//     - status must not remain "restore_in_progress" after success/failure
+//
+// Notes
+// - This engine does NOT decide RBAC; controller must guard restore/purge strictly.
+// - This engine is universal: it never hard-locks to "properties/users" special cases.
+//   Instead it uses a universal rule: restoreDocKey defaults to ORIGINAL sourceKey (singular).
 // =============================================================================
 
 import path from "path";
@@ -23,10 +44,12 @@ import {
 
 import type { AuthUser } from "../../types/common";
 import type { FileMetaPacket } from "../../types/common";
-import type { RecycleBinEntryDto, RecycleBinEntryLean } from '../../types/recyclebin/recyclebin.types';
+import type {
+    RecycleBinEntryDto,
+    RecycleBinEntryLean,
+} from "../../types/recyclebin/recyclebin.types";
 
 import { RecycleBinAuditWriterService } from "./audits/recyclebin-audit-writer.service";
-import { RecycleBinAuditQueryService } from "./audits/recyclebin-audit-query.service";
 
 // =============================================================================
 // A) Engine Inputs / Outputs (service-level contracts)
@@ -46,10 +69,22 @@ export interface RecycleRecordInput {
     tags?: string[];
     module?: string;
     entity?: string;
+
+    /**
+     * extra is already in your contract and schema.
+     * We store recycle-specific metadata in:
+     *   extra.recycle = { collectionName, restoreDocKey, folderKey, sourceKeyOriginal }
+     */
     extra?: Record<string, unknown>;
 
     snapshotData: Record<string, unknown>;
     files: FileMetaPacket[];
+
+    /** Optional but RECOMMENDED (caller knows the exact collection). */
+    collectionName?: string;
+
+    /** Optional hint: where the restore doc lives inside snapshotData (e.g. "user"). */
+    restoreDocKey?: string;
 }
 
 export interface RecycleRecordResult {
@@ -76,6 +111,7 @@ export interface RecycleListFilters {
     tagsAny?: string[];
     module?: string;
     entity?: string;
+    includeRestored?: boolean;
 }
 
 export interface PageQuery {
@@ -104,6 +140,21 @@ export interface RecycleRestorePrepareResult {
     files: FileMetaPacket[];
 }
 
+/** REAL restore result (DB + Files). */
+export interface RecycleRestoreResult {
+    entryId: string;
+    sourceKey: string;
+    refId: string;
+
+    restoredRefId?: string;
+    collectionName: string;
+
+    restoredObjectId?: string;
+
+    filesRestored: FileMetaPacket[];
+    entry: RecycleBinEntryDto;
+}
+
 export interface RecyclePurgeResult {
     purged: boolean;
     entryId: string;
@@ -114,74 +165,96 @@ export interface RecyclePurgeResult {
 // =============================================================================
 
 export class RecycleBinEngineService {
-    /**
-     * Root folder for recycle bin durability files.
-     * Stored paths remain relative (Electron-safe): "public/..."
-     */
+    /** Stored paths remain relative (Electron-safe): "public/..." */
     private readonly RECYCLE_ROOT_REL = "public/recyclebin";
+    private readonly UPLOADS_ROOT_REL = "public/uploads";
 
-    /**
-     * Audit writer facade -> writes JSONL via your audit file service.
-     * The engine only calls high-level methods (recorded/restored/purged).
-     */
     private readonly auditWriter: RecycleBinAuditWriterService;
-
-    /**
-     * Audit query service -> used later by controller/UI endpoints.
-     * (Not used heavily inside engine, but kept for completeness.)
-     */
-    private readonly auditQuery: RecycleBinAuditQueryService;
 
     public constructor () {
         this.auditWriter = new RecycleBinAuditWriterService();
-        this.auditQuery = new RecycleBinAuditQueryService();
     }
 
     // ---------------------------------------------------------------------------
     // 1) RECORD
     // ---------------------------------------------------------------------------
 
+    /**
+     * Record a deletion into the Recycle Bin (DB index + disk snapshot + moved files).
+     *
+     * @param input
+     * - Required:
+     *   - sourceKey: ORIGINAL (singular) logical key (e.g. "property", "user", "lease")
+     *   - refId: domain ref id (uuid / business id)
+     *   - label: UI label
+     *   - deletedBy: AuthUser
+     *   - snapshotData: Record<string, unknown> containing your restore doc at snapshotData[sourceKey]
+     *   - files: FileMetaPacket[] representing real uploads tree
+     *
+     * - Optional:
+     *   - collectionName: exact Mongo collection name to restore into (strongly recommended)
+     *   - restoreDocKey: key inside snapshotData for restore doc (defaults to input.sourceKey)
+     *   - extra: extra.recycle is merged (non-breaking)
+     *
+     * @param session
+     * - Optional mongoose session (omit if none)
+     */
     public async record( input: RecycleRecordInput, session?: ClientSession ): Promise<RecycleRecordResult> {
-        // Validate minimal required fields (fail-fast)
         this.assertNonEmpty( input.sourceKey, "sourceKey" );
         this.assertNonEmpty( input.refId, "refId" );
         this.assertNonEmpty( input.label, "label" );
 
-        // Compute recycle folder plan:
-        // public/recyclebin/<sourceKey>/<refId>/{ snapshot.json, meta.json, files/ }
-        const recycleDirRelPath = this.buildRecycleDirRelPath( input.sourceKey, input.refId );
+        // Folder key is plural for disk structure only.
+        const folderKey = this.toPluralFolder( input.sourceKey );
+
+        // public/recyclebin/<folderKey>/<refId>/
+        const recycleDirRelPath = this.buildRecycleDirRelPath( folderKey, input.refId );
         const snapshotRelPath = this.joinRel( recycleDirRelPath, "snapshot.json" );
         const metaRelPath = this.joinRel( recycleDirRelPath, "meta.json" );
-        const filesDirRelPath = this.joinRel( recycleDirRelPath, "files" );
 
-        // Ensure directories exist before writing/moving
+        // Compatibility: schema has filesDirRelPath; we keep it same as entry root
+        const filesDirRelPath = recycleDirRelPath;
+
         await this.ensureDir( this.abs( recycleDirRelPath ) );
-        await this.ensureDir( this.abs( filesDirRelPath ) );
-
-        // Write snapshot.json (durability)
         await this.safeWriteJson( this.abs( snapshotRelPath ), input.snapshotData );
 
-        // Write meta.json (durability) — contains small metadata + pointers
-        const metaObj = this.buildMetaObject( input, {
-            recycleDirRelPath,
-            snapshotRelPath,
-            metaRelPath,
-            filesDirRelPath,
+        // Restore hints (non-breaking)
+        const collectionName = this.resolveCollectionName( input, folderKey );
+
+        // ✅ CRITICAL FIX (universal):
+        // restoreDocKey MUST default to ORIGINAL sourceKey (singular),
+        // never derived from folderKey ("properties" -> "propertie" bug).
+        const restoreDocKey = this.resolveRestoreDocKey( input );
+
+        const extraMerged = this.mergeExtraRecycleHints( input.extra, {
+            collectionName,
+            restoreDocKey,
+            folderKey,
+            sourceKeyOriginal: input.sourceKey.trim(),
         } );
+
+        const metaObj = this.buildMetaObject(
+            input,
+            {
+                recycleDirRelPath,
+                snapshotRelPath,
+                metaRelPath,
+                filesDirRelPath,
+            },
+            { collectionName, restoreDocKey, folderKey, sourceKeyOriginal: input.sourceKey.trim() }
+        );
+
         await this.safeWriteJson( this.abs( metaRelPath ), metaObj );
 
-        // Move files to recyclebin/files/
-        const movedFiles = await this.moveFilesIntoRecycle( filesDirRelPath, input.files );
+        // Move files (preserve tree)
+        const movedFiles = await this.moveFilesIntoRecyclePreserveTree(
+            input.files,
+            folderKey,
+            input.refId
+        );
 
-        // Upsert DB entry (UI index + fast snapshotData)
         const now = new Date();
 
-        // Path: src/services/recyclebin/recyclebin-engine.service.ts
-        // inside record(...)
-
-        // Build payload for upsertEntry in an exactOptionalPropertyTypes-safe way.
-        // IMPORTANT: Do NOT set optional properties to undefined.
-        // We only add them if we have a real value.
         const upsertPayload: {
             sourceKey: string;
             refId: string;
@@ -199,14 +272,14 @@ export class RecycleBinEngineService {
 
             status: RecycleBinStatus;
 
-            // Optional fields (ONLY add when defined)
             description?: string;
             tags?: string[];
             module?: string;
             entity?: string;
             extra?: Record<string, unknown>;
         } = {
-            sourceKey: input.sourceKey,
+            // stored sourceKey is folderKey (plural) for consistent listing paths
+            sourceKey: folderKey,
             refId: input.refId,
             label: input.label,
             deletedAt: now,
@@ -223,36 +296,18 @@ export class RecycleBinEngineService {
             status: "recorded",
         };
 
-        // Conditionally attach optionals (never attach undefined)
-        if ( input.description && input.description.trim().length > 0 ) {
-            upsertPayload.description = input.description.trim();
-        }
+        if ( input.description && input.description.trim().length > 0 ) upsertPayload.description = input.description.trim();
+        if ( input.tags && input.tags.length > 0 ) upsertPayload.tags = input.tags;
+        if ( input.module && input.module.trim().length > 0 ) upsertPayload.module = input.module.trim();
+        if ( input.entity && input.entity.trim().length > 0 ) upsertPayload.entity = input.entity.trim();
+        if ( extraMerged && Object.keys( extraMerged ).length > 0 ) upsertPayload.extra = extraMerged;
 
-        if ( input.tags && input.tags.length > 0 ) {
-            upsertPayload.tags = input.tags;
-        }
-
-        if ( input.module && input.module.trim().length > 0 ) {
-            upsertPayload.module = input.module.trim();
-        }
-
-        if ( input.entity && input.entity.trim().length > 0 ) {
-            upsertPayload.entity = input.entity.trim();
-        }
-
-        if ( input.extra && Object.keys( input.extra ).length > 0 ) {
-            upsertPayload.extra = input.extra;
-        }
-
-        // Now call upsertEntry with a payload that cannot contain `description: undefined`
         const entryDoc = await this.upsertEntry( upsertPayload, session );
 
-
-        // Audit hook (writes JSONL record via facade)
         await this.auditWriter.recordRecycleCreated(
             {
                 entryId: String( entryDoc._id ),
-                sourceKey: input.sourceKey,
+                sourceKey: folderKey,
                 refId: input.refId,
                 label: input.label,
             },
@@ -277,8 +332,31 @@ export class RecycleBinEngineService {
     // 2) LIST / COUNT
     // ---------------------------------------------------------------------------
 
+    /**
+     * List recycle bin entries with filters + pagination.
+     *
+     * @param filters Query filters (sourceKey/status/module/entity/search etc.)
+     * @param page Page query { page, limit }
+     */
     public async list( filters: RecycleListFilters, page: PageQuery ): Promise<RecycleListResult> {
         const query = this.buildMongoFilter( filters );
+
+        // ✅ Default behavior: do NOT send restored items to frontend.
+        // - If caller explicitly requests status="restored" → allow.
+        // - If caller sets includeRestored=true → allow.
+        const includeRestored = filters.includeRestored === true;
+
+        if ( !includeRestored ) {
+            // If caller did not explicitly set status filter, exclude restored.
+            if ( !filters.status ) {
+                query.status = { $ne: "restored" };
+            }
+            // If caller explicitly asked status="restored", don't override.
+        }
+
+        if ( !filters.status ) {
+            query.status = { $nin: [ "restored", "restore_in_progress" ] };
+        }
 
         const safeLimit = this.clamp( page.limit, 1, 100 );
         const safePage = this.clamp( page.page, 1, 1_000_000 );
@@ -293,11 +371,14 @@ export class RecycleBinEngineService {
             RecycleBinEntryModel.countDocuments( query ),
         ] );
 
-        const items = itemsLean.map( ( x ) => this.toDto( x ) );
-        return { items, other: { total } };
+        return { items: itemsLean.map( ( x ) => this.toDto( x ) ), other: { total } };
     }
 
-
+    /**
+     * Count recycle bin entries for filters.
+     *
+     * @param filters same filters as list
+     */
     public async count( filters: RecycleListFilters ): Promise<RecycleCountResult> {
         const query = this.buildMongoFilter( filters );
         const total = await RecycleBinEntryModel.countDocuments( query );
@@ -305,9 +386,14 @@ export class RecycleBinEngineService {
     }
 
     // ---------------------------------------------------------------------------
-    // 3) READ SNAPSHOT (prefer disk, fallback to DB snapshotData)
+    // 3) READ SNAPSHOT
     // ---------------------------------------------------------------------------
 
+    /**
+     * Read snapshot + meta from disk if possible (fallback to DB snapshotData).
+     *
+     * @param entryId recycle entry id
+     */
     public async readSnapshotByEntryId( entryId: string ): Promise<RecycleReadSnapshotResult> {
         this.assertNonEmpty( entryId, "entryId" );
 
@@ -327,23 +413,30 @@ export class RecycleBinEngineService {
                 ? ( diskMeta as Record<string, unknown> )
                 : { warning: "meta.json missing" };
 
-        return {
-            entry: this.toDto( entryLean ),
-            snapshotData,
-            meta,
-        };
+        return { entry: this.toDto( entryLean ), snapshotData, meta };
     }
-
 
     // ---------------------------------------------------------------------------
     // 4) RESTORE PREPARE
     // ---------------------------------------------------------------------------
 
+    /**
+     * Prepare restore (UI preview/confirm step).
+     *
+     * @param entryId entry id
+     * @param restoredBy actor
+     * @param session optional session
+     */
     public async prepareRestore( entryId: string, restoredBy: AuthUser, session?: ClientSession ): Promise<RecycleRestorePrepareResult> {
         this.assertNonEmpty( entryId, "entryId" );
 
         const entryLean = await RecycleBinEntryModel.findById( entryId ).lean<RecycleBinEntryLean>();
         if ( !entryLean ) throw new Error( "RecycleBin entry not found" );
+
+        // ✅ Restrict restoring already restored entries (universal)
+        if ( entryLean.status === "restored" ) {
+            throw new Error( "This recycle entry is already restored." );
+        }
 
         await this.updateStatus( entryLean._id, "restore_in_progress", restoredBy, session );
 
@@ -363,36 +456,130 @@ export class RecycleBinEngineService {
             session
         );
 
-        const entry: RecycleBinEntryDto = this.toDto( entryLean );
-
-        return { entry, snapshotData, files: entryLean.files };
+        return { entry: this.toDto( entryLean ), snapshotData, files: entryLean.files };
     }
 
+    // ---------------------------------------------------------------------------
+    // 5) REAL RESTORE
+    // ---------------------------------------------------------------------------
 
-    public async markRestored( entryId: string, restoredBy: AuthUser, session?: ClientSession ): Promise<void> {
-        this.assertNonEmpty( entryId, "entryId" );
+    /**
+     * REAL restore: restores DB doc into recorded collection + restores files back to uploads.
+     *
+     * ✅ Fixes:
+     * - Prevent re-restore when already restored
+     * - restoreDocKey default is ORIGINAL sourceKey (stored in meta/extra)
+     * - Never leave entry stuck in "restore_in_progress" if restore fails
+     *
+     * @param options.entryId entry id
+     * @param options.restoredBy actor
+     * @param options.session optional session (omit if none)
+     * @param options.restoreMode "insert" (default) or "upsert"
+     */
+    public async restore( options: {
+        entryId: string;
+        restoredBy: AuthUser;
+        session?: ClientSession;
+        restoreMode?: "insert" | "upsert";
+    } ): Promise<RecycleRestoreResult> {
+        this.assertNonEmpty( options.entryId, "entryId" );
 
-        const entryLean = await RecycleBinEntryModel.findById( entryId ).lean<RecycleBinEntryLean>();
-        if ( !entryLean ) throw new Error( "RecycleBin entry not found" );
+        const entryDoc = await RecycleBinEntryModel.findById( options.entryId ).lean<RecycleBinEntryLean>();
+        if ( !entryDoc ) throw new Error( "RecycleBin entry not found" );
 
-        await this.updateStatus( entryLean._id, "restored", restoredBy, session );
+        // ✅ Restrict restoring data that already restored
+        if ( entryDoc.status === "restored" ) {
+            throw new Error( "This recycle entry is already restored." );
+        }
 
-        await this.auditWriter.recordRestored(
-            {
-                entryId: String( entryLean._id ),
-                sourceKey: entryLean.sourceKey,
-                refId: entryLean.refId,
-            },
-            restoredBy,
-            session
-        );
+        await this.updateStatus( entryDoc._id, "restore_in_progress", options.restoredBy, options.session );
+
+        try {
+            const diskSnapshot = await this.tryReadJson( this.abs( entryDoc.snapshotRelPath ) );
+            const snapshotData =
+                diskSnapshot && this.isRecord( diskSnapshot )
+                    ? ( diskSnapshot as Record<string, unknown> )
+                    : entryDoc.snapshotData;
+
+            const metaDisk = await this.tryReadJson( this.abs( entryDoc.metaRelPath ) );
+            const metaObj = metaDisk && this.isRecord( metaDisk ) ? ( metaDisk as Record<string, unknown> ) : {};
+
+            const { collectionName, restoreDocKey } = this.resolveRestoreHints( entryDoc, metaObj );
+
+            const restoreDocRaw = this.pickRestoreDocument( snapshotData, restoreDocKey );
+            if ( !restoreDocRaw ) {
+                // Helpful error: tells exactly what key was expected.
+                throw new Error( `Restore document not found in snapshotData (restoreDocKey="${ restoreDocKey }")` );
+            }
+
+            const restoreDoc = this.normalizeRestoreDocument( restoreDocRaw );
+
+            // ✅ exactOptionalPropertyTypes-safe: only include session if it exists
+            const restoreArgs: {
+                collectionName: string;
+                doc: Record<string, unknown>;
+                mode: "insert" | "upsert";
+                session?: ClientSession;
+            } = {
+                collectionName,
+                doc: restoreDoc,
+                mode: options.restoreMode ?? "insert",
+            };
+            if ( options.session ) restoreArgs.session = options.session;
+
+            const restoredObjectId = await this.restoreIntoCollection( restoreArgs );
+
+            const filesRestored = await this.restoreFilesBackToUploads( entryDoc.files );
+
+            // ✅ Mark correct final status ONLY after DB+files succeed
+            await this.updateStatus( entryDoc._id, "restored", options.restoredBy, options.session );
+
+            await this.auditWriter.recordRestored(
+                {
+                    entryId: String( entryDoc._id ),
+                    sourceKey: entryDoc.sourceKey,
+                    refId: entryDoc.refId,
+                },
+                options.restoredBy,
+                options.session
+            );
+
+            const updatedEntry = await RecycleBinEntryModel.findById( options.entryId ).lean<RecycleBinEntryLean>();
+            if ( !updatedEntry ) throw new Error( "RecycleBin entry not found after restore" );
+
+            const out: RecycleRestoreResult = {
+                entryId: String( updatedEntry._id ),
+                sourceKey: updatedEntry.sourceKey,
+                refId: updatedEntry.refId,
+                collectionName,
+                filesRestored,
+                entry: this.toDto( updatedEntry ),
+            };
+
+            // ✅ optional only when real value exists
+            if ( restoredObjectId ) out.restoredObjectId = restoredObjectId;
+
+            return out;
+        } catch ( err: unknown ) {
+            // ✅ Never leave stuck in restore_in_progress.
+            // If restore fails, revert back to recorded so user can retry.
+            await this.updateStatus( entryDoc._id, "recorded", options.restoredBy, options.session );
+
+            throw err instanceof Error ? err : new Error( "Restore failed" );
+        }
     }
 
-
     // ---------------------------------------------------------------------------
-    // 5) PURGE (Disk + mark DB status)
+    // 6) PURGE
     // ---------------------------------------------------------------------------
 
+    /**
+     * Permanently delete recycle entry folder and mark DB row as purged.
+     *
+     * @param entryId entry id
+     * @param purgedBy actor
+     * @param session optional session
+     */
     public async purge( entryId: string, purgedBy: AuthUser, session?: ClientSession ): Promise<RecyclePurgeResult> {
         this.assertNonEmpty( entryId, "entryId" );
 
@@ -400,7 +587,6 @@ export class RecycleBinEngineService {
         if ( !entryLean ) throw new Error( "RecycleBin entry not found" );
 
         await this.updateStatus( entryLean._id, "purged", purgedBy, session );
-
         await this.safeRmDir( this.abs( entryLean.recycleDirRelPath ) );
 
         await this.auditWriter.recordPurged(
@@ -416,9 +602,8 @@ export class RecycleBinEngineService {
         return { purged: true, entryId: String( entryLean._id ) };
     }
 
-
     // =============================================================================
-    // C) DB Helpers — exactOptionalPropertyTypes safe
+    // C) DB Helpers
     // =============================================================================
 
     private async upsertEntry(
@@ -449,8 +634,6 @@ export class RecycleBinEngineService {
         },
         session?: ClientSession
     ): Promise<RecycleBinEntryEntity> {
-        // Build the DB update in a JSON-safe way.
-        // Important: we only include optional fields if they exist.
         const updateDoc: Record<string, unknown> = {
             sourceKey: data.sourceKey,
             refId: data.refId,
@@ -496,13 +679,17 @@ export class RecycleBinEngineService {
     ): Promise<void> {
         const now = new Date();
 
-        // Mongo $set doc — only set fields relevant to the new state.
         const setDoc: Record<string, unknown> = { status };
 
-        if ( status === "restored" || status === "restore_in_progress" ) {
+        // ✅ IMPORTANT FIX:
+        // restoredAt/restoredBy must only be stamped when status === "restored".
+        if ( status === "restored" ) {
             setDoc.restoredAt = now;
             setDoc.restoredBy = actor;
         }
+
+        // Optional: you can add schema fields later (restoreStartedAt, restoreStartedBy)
+        // but do not write unknown fields unless your schema supports them.
 
         if ( status === "purged" ) {
             setDoc.purgedAt = now;
@@ -518,8 +705,6 @@ export class RecycleBinEngineService {
 
     private buildMongooseOptions( session?: ClientSession, returnDoc?: boolean ): Record<string, unknown> {
         const opts: Record<string, unknown> = {};
-
-        // exactOptionalPropertyTypes-safe: only attach if session exists
         if ( session ) opts.session = session;
 
         if ( returnDoc ) {
@@ -533,12 +718,9 @@ export class RecycleBinEngineService {
     private toDto( e: RecycleBinEntryLean ): RecycleBinEntryDto {
         const dto: RecycleBinEntryDto = {
             entryId: String( e._id ),
-
             sourceKey: e.sourceKey,
             refId: e.refId,
-
             label: e.label,
-
             deletedAtIso: e.deletedAt.toISOString(),
             deletedBy: e.deletedBy,
 
@@ -553,9 +735,7 @@ export class RecycleBinEngineService {
             status: e.status,
         };
 
-        if ( typeof e.description === "string" && e.description.trim().length > 0 ) {
-            dto.description = e.description.trim();
-        }
+        if ( typeof e.description === "string" && e.description.trim().length > 0 ) dto.description = e.description.trim();
         if ( e.tags && e.tags.length > 0 ) dto.tags = e.tags;
         if ( e.module ) dto.module = e.module;
         if ( e.entity ) dto.entity = e.entity;
@@ -570,36 +750,30 @@ export class RecycleBinEngineService {
         return dto;
     }
 
-
     // =============================================================================
-    // D) Disk Helpers
+    // D) Disk Helpers (path mapping fixed)
     // =============================================================================
 
     private abs( relPath: string ): string {
-        // Input is "public/..." -> resolve to absolute path on disk
         return path.resolve( relPath );
     }
 
-    private buildRecycleDirRelPath( sourceKey: string, refId: string ): string {
-        // public/recyclebin/<sourceKey>/<refId>
-        const cleanSource = this.sanitizeSegment( sourceKey );
+    private buildRecycleDirRelPath( folderKey: string, refId: string ): string {
+        const cleanFolder = this.sanitizeSegment( folderKey );
         const cleanRef = this.sanitizeSegment( refId );
-        return this.joinRel( this.RECYCLE_ROOT_REL, cleanSource, cleanRef );
+        return this.joinRel( this.RECYCLE_ROOT_REL, cleanFolder, cleanRef );
     }
 
     private joinRel( ...segments: string[] ): string {
-        // Force POSIX to keep stored paths consistent (no backslashes)
         return path.posix.join( ...segments.map( ( s ) => this.normalizeRelSegment( s ) ) );
     }
 
     private normalizeRelSegment( seg: string ): string {
-        // Remove backslashes and leading slashes to keep Electron-safe rel paths
-        const s = seg.replace( /\\/g, "/" ).trim();
+        const s = seg.replace( /\\/g, "/" ).replace( /^\/+/, "" ).trim();
         return s.startsWith( "/" ) ? s.slice( 1 ) : s;
     }
 
     private sanitizeSegment( seg: string ): string {
-        // Block path traversal by restricting characters
         return seg.replace( /[^a-zA-Z0-9_\-\.]/g, "_" );
     }
 
@@ -626,93 +800,266 @@ export class RecycleBinEngineService {
         try {
             await fsp.rm( absDir, { recursive: true, force: true } );
         } catch {
-            // best-effort: do not throw, because purge should still be recorded
+            // best-effort
         }
     }
 
-    private async moveFilesIntoRecycle( filesDirRelPath: string, files: FileMetaPacket[] ): Promise<FileMetaPacket[]> {
+    /**
+     * Move files into recyclebin while preserving folder tree:
+     * public/uploads/... -> public/recyclebin/...
+     */
+    private async moveFilesIntoRecyclePreserveTree(
+        files: FileMetaPacket[],
+        folderKey: string,
+        refId: string
+    ): Promise<FileMetaPacket[]> {
         if ( !files || files.length === 0 ) return [];
-
-        const targetDirAbs = this.abs( filesDirRelPath );
-        await this.ensureDir( targetDirAbs );
 
         const moved: FileMetaPacket[] = [];
 
         for ( const file of files ) {
             const srcAbs = file.absDiskPath;
 
-            // If the file is missing, we keep the original packet and continue.
-            // This prevents one missing file from breaking the entire recycle operation.
             if ( !srcAbs || !fs.existsSync( srcAbs ) ) {
                 moved.push( file );
                 continue;
             }
 
-            // Choose a stable filename inside recyclebin:
-            // - Prefer storedName (usually unique)
-            // - Fallback to originalName if storedName is missing
-            const originalRel = ( file.relativePath ?? "" ).replace( /\\/g, "/" );
-            const packedRel = this.sanitizeSegment( originalRel.replace( /\//g, "__" ) );
+            const mappedRel = this.mapUploadsRelToRecycleRel( file.relativePath, folderKey, refId );
+            const destAbs = this.abs( mappedRel );
 
-            const baseName =
-                file.storedName && file.storedName.trim().length > 0
-                    ? this.sanitizeSegment( file.storedName )
-                    : this.sanitizeSegment( file.originalName );
-
-            // ensures uniqueness across folders
-            const safeName = packedRel.length > 0 ? `${ packedRel }__${ baseName }` : baseName;
-
-            const destAbs = path.join( targetDirAbs, safeName );
-
-            // Move file (rename or copy+unlink fallback)
+            await this.ensureDir( path.dirname( destAbs ) );
             await this.safeMoveFile( srcAbs, destAbs );
 
-            // Update packet so it points to recycle location (relative path for Electron)
-            const relPath = this.joinRel( filesDirRelPath, safeName );
-
-            const updated: FileMetaPacket = {
+            moved.push( {
                 ...file,
-                relativePath: relPath,
+                relativePath: mappedRel,
                 absDiskPath: destAbs,
-                publicUrl: this.buildPublicUrl( relPath ),
-            };
-
-            moved.push( updated );
+                publicUrl: this.buildPublicUrl( mappedRel ),
+            } );
         }
 
         return moved;
     }
 
+    /**
+     * Restore files back:
+     * public/recyclebin/... -> public/uploads/...
+     */
+    private async restoreFilesBackToUploads( files: FileMetaPacket[] ): Promise<FileMetaPacket[]> {
+        if ( !files || files.length === 0 ) return [];
+
+        const restored: FileMetaPacket[] = [];
+
+        for ( const file of files ) {
+            const srcAbs = file.absDiskPath;
+
+            if ( !srcAbs || !fs.existsSync( srcAbs ) ) {
+                restored.push( file );
+                continue;
+            }
+
+            const mappedRel = this.mapRecycleRelToUploadsRel( file.relativePath );
+            const destAbs = this.abs( mappedRel );
+
+            await this.ensureDir( path.dirname( destAbs ) );
+            await this.safeMoveFile( srcAbs, destAbs );
+
+            restored.push( {
+                ...file,
+                relativePath: mappedRel,
+                absDiskPath: destAbs,
+                publicUrl: this.buildPublicUrl( mappedRel ),
+            } );
+        }
+
+        return restored;
+    }
+
     private async safeMoveFile( srcAbs: string, destAbs: string ): Promise<void> {
         await this.ensureDir( path.dirname( destAbs ) );
-
         try {
             await fsp.rename( srcAbs, destAbs );
         } catch {
-            // Cross-device rename can fail; copy+delete is the safe fallback
             await fsp.copyFile( srcAbs, destAbs );
             await fsp.unlink( srcAbs );
         }
     }
 
     private buildPublicUrl( relativePath: string ): string {
-        // URL can safely start with "/" (this is not a disk path).
-        // If your static hosting serves "public/" at "/public", then "/public/..."
-        const normalized = relativePath.replace( /\\/g, "/" );
-        if ( normalized.startsWith( "public/" ) ) return "/" + normalized;
-        return "/public/" + normalized.replace( /^\/+/, "" );
+        const normalized = relativePath.replace( /\\/g, "/" ).replace( /^\/+/, "" );
+        // Keep existing behavior: publicUrl is a URL-ish string (not disk rel).
+        return normalized.startsWith( "public/" ) ? "/" + normalized : "/public/" + normalized;
     }
+
+    /**
+     * Map: public/uploads/... -> public/recyclebin/...
+     * Fallback: public/recyclebin/<folderKey>/<refId>/__files/<storedName>
+     */
+    private mapUploadsRelToRecycleRel( originalRel: string, folderKey: string, refId: string ): string {
+        const rel = ( originalRel ?? "" ).replace( /\\/g, "/" ).replace( /^\/+/, "" ).trim();
+
+        if ( rel.startsWith( "public/uploads/" ) ) {
+            return "public/recyclebin/" + rel.slice( "public/uploads/".length );
+        }
+        if ( rel.startsWith( "uploads/" ) ) {
+            return "public/recyclebin/" + rel.slice( "uploads/".length );
+        }
+
+        const safeStored = this.sanitizeSegment( this.pickFileNameFallback( rel ) );
+        return this.joinRel( this.RECYCLE_ROOT_REL, folderKey, this.sanitizeSegment( refId ), "__files", safeStored );
+    }
+
+    /**
+     * Map: public/recyclebin/... -> public/uploads/...
+     */
+    private mapRecycleRelToUploadsRel( recycleRel: string ): string {
+        const rel = ( recycleRel ?? "" ).replace( /\\/g, "/" ).replace( /^\/+/, "" ).trim();
+
+        if ( rel.startsWith( "public/recyclebin/" ) ) {
+            return "public/uploads/" + rel.slice( "public/recyclebin/".length );
+        }
+        if ( rel.startsWith( "recyclebin/" ) ) {
+            return "public/uploads/" + rel.slice( "recyclebin/".length );
+        }
+
+        return rel;
+    }
+
+    private pickFileNameFallback( rel: string ): string {
+        const base = rel.split( "/" ).filter( Boolean ).pop();
+        return base && base.trim().length > 0 ? base : "file.bin";
+    }
+
+    // =============================================================================
+    // E) Restore internals (DB restore)
+    // =============================================================================
+
+    private resolveRestoreHints(
+        entry: RecycleBinEntryLean,
+        meta: Record<string, unknown>
+    ): { collectionName: string; restoreDocKey: string; } {
+        const extra = entry.extra && this.isRecord( entry.extra ) ? ( entry.extra as Record<string, unknown> ) : {};
+        const recycle = this.getNestedRecord( extra, "recycle" );
+        const metaRecycle = this.getNestedRecord( meta, "recycle" );
+
+        const collectionFromHints =
+            this.getString( metaRecycle, "collectionName" ) || this.getString( recycle, "collectionName" );
+
+        const docKeyFromHints =
+            this.getString( metaRecycle, "restoreDocKey" ) || this.getString( recycle, "restoreDocKey" );
+
+        const sourceKeyOriginal =
+            this.getString( metaRecycle, "sourceKeyOriginal" ) ||
+            this.getString( recycle, "sourceKeyOriginal" );
+
+        const collectionName =
+            collectionFromHints && collectionFromHints.trim().length > 0
+                ? this.normalizePluralY( collectionFromHints.trim() )
+                : this.toPluralFolder( entry.sourceKey );
+
+        // ✅ Universal default:
+        // - prefer explicitly stored restoreDocKey
+        // - else prefer stored sourceKeyOriginal (singular)
+        // - else fall back to robust singularization
+        const restoreDocKey =
+            docKeyFromHints && docKeyFromHints.trim().length > 0
+                ? docKeyFromHints.trim()
+                : ( sourceKeyOriginal && sourceKeyOriginal.trim().length > 0
+                    ? sourceKeyOriginal.trim()
+                    : this.toSingularDocKey( entry.sourceKey ) );
+
+        return { collectionName, restoreDocKey };
+    }
+
+    private pickRestoreDocument( snapshotData: Record<string, unknown>, restoreDocKey: string ): Record<string, unknown> | null {
+        // 1) direct key
+        const direct = snapshotData[ restoreDocKey ];
+        if ( direct && this.isRecord( direct ) ) return direct;
+
+        // 2) try plural key (rare, but safe)
+        const plural = this.toPluralFolder( restoreDocKey );
+        const pluralVal = snapshotData[ plural ];
+        if ( pluralVal && this.isRecord( pluralVal ) ) return pluralVal;
+
+        // 3) if snapshot has exactly one object field, use it
+        const keys = Object.keys( snapshotData );
+        const objectKeys = keys.filter( ( k ) => {
+            const v = snapshotData[ k ];
+            return v && this.isRecord( v );
+        } );
+
+        if ( objectKeys.length === 1 ) {
+            const onlyKey = objectKeys[ 0 ];
+            if ( !onlyKey ) return null;
+
+            const v = snapshotData[ onlyKey ];
+            return v && this.isRecord( v ) ? ( v as Record<string, unknown> ) : null;
+        }
+
+        return null;
+    }
+
+    private normalizeRestoreDocument( doc: Record<string, unknown> ): Record<string, unknown> {
+        const out: Record<string, unknown> = { ...doc };
+
+        const id = out[ "_id" ];
+        if ( typeof id === "string" && this.isObjectIdHex( id ) ) {
+            out[ "_id" ] = new Types.ObjectId( id );
+        }
+
+        return out;
+    }
+
+    private async restoreIntoCollection( options: {
+        collectionName: string;
+        doc: Record<string, unknown>;
+        session?: ClientSession;
+        mode: "insert" | "upsert";
+    } ): Promise<string | undefined> {
+        const db = RecycleBinEntryModel.db;
+        const col = db.collection( options.collectionName );
+
+        const docId = options.doc[ "_id" ];
+        const hasId = docId instanceof Types.ObjectId;
+
+        if ( options.mode === "insert" ) {
+            // ✅ do NOT call insertOne(doc, undefined)
+            const res = options.session
+                ? await col.insertOne( options.doc, { session: options.session } )
+                : await col.insertOne( options.doc );
+
+            return res.insertedId ? String( res.insertedId ) : undefined;
+        }
+
+        if ( !hasId ) {
+            throw new Error( "Upsert restoreMode requires snapshot document to contain a valid _id" );
+        }
+
+        await col.updateOne(
+            { _id: docId },
+            { $set: options.doc },
+            options.session ? { upsert: true, session: options.session } : { upsert: true }
+        );
+
+        return String( docId );
+    }
+
+    // =============================================================================
+    // F) Meta builder (includes restore hints)
+    // =============================================================================
 
     private buildMetaObject(
         input: RecycleRecordInput,
-        paths: { recycleDirRelPath: string; snapshotRelPath: string; metaRelPath: string; filesDirRelPath: string; }
+        paths: { recycleDirRelPath: string; snapshotRelPath: string; metaRelPath: string; filesDirRelPath: string; },
+        hints: { collectionName: string; restoreDocKey: string; folderKey: string; sourceKeyOriginal: string; }
     ): Record<string, unknown> {
-        // meta.json is small, readable, and helps with future restore tooling.
         const meta: Record<string, unknown> = {
-            version: 1,
+            version: 2,
             recordedAtIso: new Date().toISOString(),
 
-            sourceKey: input.sourceKey,
+            // stored "sourceKey" in entry is folderKey (plural). keep it consistent in meta too.
+            sourceKey: hints.folderKey,
             refId: input.refId,
             label: input.label,
 
@@ -731,6 +1078,14 @@ export class RecycleBinEngineService {
                 filesDirRelPath: paths.filesDirRelPath,
             },
 
+            recycle: {
+                collectionName: hints.collectionName,
+                restoreDocKey: hints.restoreDocKey,
+
+                // ✅ store original logical key to help future-proof restore
+                sourceKeyOriginal: hints.sourceKeyOriginal,
+            },
+
             filesCount: Array.isArray( input.files ) ? input.files.length : 0,
         };
 
@@ -738,25 +1093,77 @@ export class RecycleBinEngineService {
         if ( input.tags && input.tags.length > 0 ) meta.tags = input.tags;
         if ( input.module ) meta.module = input.module;
         if ( input.entity ) meta.entity = input.entity;
-        if ( input.extra ) meta.extra = input.extra;
+
+        if ( input.extra && Object.keys( input.extra ).length > 0 ) meta.extra = input.extra;
 
         return meta;
     }
 
+    private mergeExtraRecycleHints(
+        extra: Record<string, unknown> | undefined,
+        hints: { collectionName: string; restoreDocKey: string; folderKey: string; sourceKeyOriginal: string; }
+    ): Record<string, unknown> {
+        const base: Record<string, unknown> = extra && this.isRecord( extra ) ? { ...( extra as Record<string, unknown> ) } : {};
+        const recycleExisting = this.getNestedRecord( base, "recycle" );
+
+        const recycle: Record<string, unknown> = {
+            ...( recycleExisting ?? {} ),
+            collectionName: hints.collectionName,
+            restoreDocKey: hints.restoreDocKey,
+            folderKey: hints.folderKey,
+            sourceKeyOriginal: hints.sourceKeyOriginal,
+        };
+
+        base.recycle = recycle;
+        return base;
+    }
+
+    private resolveCollectionName( input: RecycleRecordInput, folderKey: string ): string {
+        if ( input.collectionName && input.collectionName.trim().length > 0 ) {
+            return this.normalizePluralY( input.collectionName.trim() );
+        }
+
+        const extra = input.extra && this.isRecord( input.extra ) ? ( input.extra as Record<string, unknown> ) : {};
+        const recycle = this.getNestedRecord( extra, "recycle" );
+        const fromExtra = this.getString( recycle, "collectionName" );
+        if ( fromExtra && fromExtra.trim().length > 0 ) {
+            return this.normalizePluralY( fromExtra.trim() );
+        }
+
+        return this.normalizePluralY( folderKey );
+    }
+
+    /**
+     * ✅ Universal restoreDocKey rule:
+     * - If caller provides restoreDocKey: use it.
+     * - Else if extra.recycle.restoreDocKey exists: use it.
+     * - Else default to ORIGINAL sourceKey (singular), not derived from folderKey.
+     */
+    private resolveRestoreDocKey( input: RecycleRecordInput ): string {
+        if ( input.restoreDocKey && input.restoreDocKey.trim().length > 0 ) return input.restoreDocKey.trim();
+
+        const extra = input.extra && this.isRecord( input.extra ) ? ( input.extra as Record<string, unknown> ) : {};
+        const recycle = this.getNestedRecord( extra, "recycle" );
+        const fromExtra = this.getString( recycle, "restoreDocKey" );
+        if ( fromExtra && fromExtra.trim().length > 0 ) return fromExtra.trim();
+
+        // ✅ FIX: DEFAULT IS sourceKey ("property"), never folderKey ("properties")
+        return input.sourceKey.trim();
+    }
+
     // =============================================================================
-    // E) Mongo Filter Builder
+    // G) Mongo Filter Builder
     // =============================================================================
 
     private buildMongoFilter( filters: RecycleListFilters ): Record<string, unknown> {
         const q: Record<string, unknown> = {};
 
-        if ( filters.sourceKey ) q.sourceKey = filters.sourceKey;
+        if ( filters.sourceKey ) q.sourceKey = this.toPluralFolder( filters.sourceKey );
         if ( filters.status ) q.status = filters.status;
         if ( filters.module ) q.module = filters.module;
         if ( filters.entity ) q.entity = filters.entity;
 
         if ( filters.deletedByUsername ) q[ "deletedBy.username" ] = filters.deletedByUsername;
-
         if ( filters.tagsAny && filters.tagsAny.length > 0 ) q.tags = { $in: filters.tagsAny };
 
         if ( filters.deletedFromIso || filters.deletedToIso ) {
@@ -785,7 +1192,7 @@ export class RecycleBinEngineService {
     }
 
     // =============================================================================
-    // F) Small Utilities
+    // H) Small Utilities
     // =============================================================================
 
     private clamp( n: number, min: number, max: number ): number {
@@ -799,5 +1206,84 @@ export class RecycleBinEngineService {
 
     private isRecord( v: unknown ): v is Record<string, unknown> {
         return typeof v === "object" && v !== null && !Array.isArray( v );
+    }
+
+    private toPluralFolder( sourceKey: string ): string {
+        const raw = typeof sourceKey === "string" ? sourceKey.trim() : "";
+        if ( !raw ) return "items";
+
+        const s = raw.toLowerCase();
+
+        // already plural-ish
+        if ( s.endsWith( "s" ) ) return s;
+
+        // consonant + "y" => "ies"  (property -> properties)
+        // vowel + "y" => "ys"       (toy -> toys)
+        if ( s.endsWith( "y" ) && s.length >= 2 ) {
+            const beforeY = s.charAt( s.length - 2 );
+            const isVowel = [ "a", "e", "i", "o", "u" ].includes( beforeY );
+            if ( !isVowel ) return `${ s.slice( 0, -1 ) }ies`;
+        }
+
+        return `${ s }s`;
+    }
+
+    private normalizePluralY( candidate: string ): string {
+        const s = typeof candidate === "string" ? candidate.trim() : "";
+        if ( !s ) return s;
+
+        // Fix legacy "propertys" but do NOT break "toys"
+        if ( s.endsWith( "ys" ) && s.length >= 3 ) {
+            const beforeY = s.charAt( s.length - 3 ); // char before 'y'
+            const isVowel = [ "a", "e", "i", "o", "u" ].includes( beforeY );
+            if ( !isVowel ) return `${ s.slice( 0, -2 ) }ies`; // ...ys -> ...ies
+        }
+
+        return s;
+    }
+
+    /**
+     * Robust-ish universal singularization:
+     * - properties -> property
+     * - companies  -> company
+     * - classes    -> class  (removes "es" in common cases)
+     * - users      -> user
+     *
+     * Note: This is only a fallback now; your primary restoreDocKey is stored explicitly.
+     */
+    private toSingularDocKey( key: string ): string {
+        const s0 = typeof key === "string" ? key.trim().toLowerCase() : "";
+        if ( !s0 ) return "item";
+
+        if ( s0.endsWith( "ies" ) && s0.length > 3 ) {
+            return `${ s0.slice( 0, -3 ) }y`;
+        }
+
+        // common "...es" plurals (classes, boxes, churches, wishes)
+        const esEndings = [ "ses", "xes", "zes", "ches", "shes" ];
+        for ( const end of esEndings ) {
+            if ( s0.endsWith( end ) && s0.length > end.length ) {
+                return s0.slice( 0, -2 ); // remove "es"
+            }
+        }
+
+        if ( s0.endsWith( "s" ) && s0.length > 1 ) return s0.slice( 0, -1 );
+
+        return s0;
+    }
+
+    private isObjectIdHex( v: string ): boolean {
+        return /^[a-fA-F0-9]{24}$/.test( v );
+    }
+
+    private getNestedRecord( obj: Record<string, unknown>, key: string ): Record<string, unknown> | null {
+        const v = obj[ key ];
+        return v && this.isRecord( v ) ? ( v as Record<string, unknown> ) : null;
+    }
+
+    private getString( obj: Record<string, unknown> | null, key: string ): string | null {
+        if ( !obj ) return null;
+        const v = obj[ key ];
+        return typeof v === "string" ? v : null;
     }
 }

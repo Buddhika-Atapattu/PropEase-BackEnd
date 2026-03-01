@@ -708,7 +708,7 @@ export const GUARD_ROUTES: ReadonlyArray<GuardRouteDefinition> = [
   {
     id: "property:delete-legacy",
     method: "DELETE",
-    pattern: GuardRoutesMapSource.p( /^\/api-property\/delete-property\/[^/]+\/[^/]+$/ ),
+    pattern: GuardRoutesMapSource.p( /^\/api-property\/delete-property\/[^/]+$/ ),
     module: "PropertyManagement",
     action: "delete",
     description: "PropertyManagement.delete → Delete a property (legacy delete endpoint)",
@@ -1749,7 +1749,7 @@ export const GUARD_ROUTES: ReadonlyArray<GuardRouteDefinition> = [
     id: "recyclebin:count",
     method: "GET",
     pattern: GuardRoutesMapSource.p( /^\/api-recyclebin\/count\/?$/ ),
-    module: "RecycleBin",
+    module: "RecycleBin", 
     action: "count",
     description: "RecycleBin.count → Count recycle bin entries",
   },
@@ -1770,12 +1770,12 @@ export const GUARD_ROUTES: ReadonlyArray<GuardRouteDefinition> = [
     description: "RecycleBin.restore → Prepare restore (pre-flight validation/lock)",
   },
   {
-    id: "recyclebin:restore-mark",
+    id: "recyclebin:restore",
     method: "POST",
-    pattern: GuardRoutesMapSource.p( /^\/api-recyclebin\/[^/]+\/restore\/mark\/?$/ ),
+    pattern: GuardRoutesMapSource.p( /^\/api-recyclebin\/[^/]+\/restore\/?$/ ),
     module: "RecycleBin",
     action: "restore",
-    description: "RecycleBin.restore → Mark/commit restore for an entry",
+    description: "RecycleBin.restore → restore (pre-flight validation/lock)",
   },
   {
     id: "recyclebin:purge",

@@ -887,8 +887,8 @@ export default class Property {
   // ---------------------------------------------------------------------- //
   private deleteProperty(): void {
     this.router.delete(
-      "/delete-property/:id/:username",
-      async ( req: Request<{ id: string; username: string; }>, res: Response ): Promise<void> => {
+      "/delete-property/:id",
+      async ( req: Request<{ id: string; }>, res: Response ): Promise<void> => {
         try {
           // -------------------------------------------------------------------
           // 0) Auth
@@ -904,16 +904,12 @@ export default class Property {
           // 1) Params
           // -------------------------------------------------------------------
           const propertyID = this.s( req.params.id );
-          const urlUsername = this.s( req.params.username );
 
           if ( !propertyID ) {
             ApiResponseBuilder.validationError( res, "Property ID is required." );
             return;
           }
-          if ( !urlUsername ) {
-            ApiResponseBuilder.validationError( res, "Property deletor is required." );
-            return;
-          }
+
 
           // -------------------------------------------------------------------
           // 2) Load property snapshot BEFORE delete
@@ -963,12 +959,13 @@ export default class Property {
             description: "Property deleted",
             snapshotData,
             files,
+            collectionName: PropertyModel.collection.name,
             module: "Property Management",
             entity: "Property",
             tags: [ "property", "delete" ],
             deleteDbRecord: async ( session ) => {
               const opts = session ? { session } : {};
-              await PropertyModel.deleteOne( { id: propertyID }, { opts } );
+              await PropertyModel.deleteOne( { id: propertyID }, opts );
             },
           };
 
@@ -1022,7 +1019,11 @@ export default class Property {
           );
 
 
-          ApiResponseBuilder.noContent( res, "Property recorded to recyclebin and deleted from DB." );
+          ApiResponseBuilder.ok( res, 'other', {
+            deleted
+          },
+            "Property has been deleted!"
+          );
           return;
         } catch ( error: unknown ) {
           console.error( "[Error:] [PropertyRouter] delete-property failed.\n", error );
@@ -1030,7 +1031,7 @@ export default class Property {
           return;
         }
       }
-    );
+    ); 
   }
 
   // ---------------------------------------------------------------------- //

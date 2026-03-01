@@ -726,6 +726,7 @@ export class TeamManagementController {
         label: 'Team Deletion',
         description: `${ teamCode } has been deleted!`,
         snapshotData,
+        collectionName: TeamManagementModel.collection.name,
         files: movertoRecycleBi.meta,
         sourceKey: 'teamManagement',
         tags: [ 'team', 'teamManagement', 'delete', 'deleteTeam' ],

@@ -1206,6 +1206,7 @@ export default class Lease {
           refId: leaseID,
           sourceKey: 'Lease',
           description: `Delete lease agreement with ID ${ leaseID } and all associated documents.`,
+          collectionName: LeaseModel.collection.name,
           module: 'Lease Management',
           tags: [ 'Lease', 'Agreement', 'Document Deletion' ],
           files: scanFiles,

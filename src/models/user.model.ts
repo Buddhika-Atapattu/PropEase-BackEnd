@@ -44,7 +44,7 @@ import {
   Types,
 } from "mongoose";
 
-import type { Address } from "./property.model";
+import type { Address } from "../types/common";
 
 // Import ONLY TYPES (no runtime circular deps).
 import type {
@@ -457,7 +457,7 @@ export interface IUser extends Document {
   emailVerificationTokenExpires?: Date | null;
 
   // MFA
-  multiAuthEnabled: boolean;
+  multiAuthEnabled?: boolean;
   multiAuthActivatedAt?: Date | null;
   multiAuthSecret?: string | null;
 
@@ -471,25 +471,25 @@ export interface IUser extends Document {
   updator?: string;
 
   // Preferences + notifications + security meta
-  loginMeta: UserLoginMetadata;
-  preferences: UserPreferences;
-  notificationPreferences: UserNotificationPreferences;
+  loginMeta?: UserLoginMetadata;
+  preferences?: UserPreferences;
+  notificationPreferences?: UserNotificationPreferences;
 
   // Payments (refs only)
-  paymentProfile: UserPaymentProfile;
-  wallet: UserWallet;
+  paymentProfile?: UserPaymentProfile;
+  wallet?: UserWallet;
 
   // WhatsApp/Facebook-like pointers
-  devices: UserDevice[];
-  rooms: UserRoomMembership[];
-  pinnedMessages: UserPinnedMessage[];
+  devices?: UserDevice[];
+  rooms?: UserRoomMembership[];
+  pinnedMessages?: UserPinnedMessage[];
 
-  socialGraph: UserSocialGraph;
-  privacy: UserPrivacy;
-  presence: UserPresence;
+  socialGraph?: UserSocialGraph;
+  privacy?: UserPrivacy;
+  presence?: UserPresence;
 
-  socialProfile: UserSocialProfile;
-  savedContent: UserSavedContent;
+  socialProfile?: UserSocialProfile;
+  savedContent?: UserSavedContent;
 
   createdAt: Date;
   updatedAt: Date;
@@ -742,9 +742,9 @@ export class PaymentProfileSubSchemaBuilder {
   public static buildSchema(): Schema<UserPaymentProfile> {
     return new Schema<UserPaymentProfile>(
       {
-        provider: { type: String, required: true, default: "custom", trim: true },
-        customerId: { type: String, required: true, default: "", trim: true },
-        defaultCurrency: { type: String, required: true, default: "LKR", trim: true },
+        provider: { type: String, required: false, default: "custom", trim: true },
+        customerId: { type: String, required: false, default: "", trim: true },
+        defaultCurrency: { type: String, required: false, default: "LKR", trim: true },
         billingEmail: { type: String, required: false, default: null, trim: true },
 
         defaultPaymentMethodRef: { type: String, required: false, default: null, trim: true },
@@ -863,15 +863,15 @@ export class UserSocialProfileSubSchemaBuilder {
   public static buildSchema(): Schema<UserSocialProfile> {
     return new Schema<UserSocialProfile>(
       {
-        handle: { type: String, required: true, default: "", trim: true },
-        displayName: { type: String, required: true, default: "", trim: true },
+        handle: { type: String, required: false, default: "", trim: true },
+        displayName: { type: String, required: false, default: "", trim: true },
         about: { type: String, required: false, default: null, trim: true },
 
         avatarUrl: { type: String, required: false, default: null, trim: true },
         coverUrl: { type: String, required: false, default: null, trim: true },
 
-        isCreator: { type: Boolean, required: true, default: false },
-        isPublicProfile: { type: Boolean, required: true, default: true },
+        isCreator: { type: Boolean, required: false, default: false },
+        isPublicProfile: { type: Boolean, required: false, default: true },
       },
       { _id: false }
     );
@@ -966,7 +966,7 @@ export class UserModelBuilder {
         emailVerificationTokenExpires: { type: Date, required: false, default: null },
 
         // ── MFA (secret must never be exposed)
-        multiAuthEnabled: { type: Boolean, required: true, default: false },
+        multiAuthEnabled: { type: Boolean, required: false, default: false },
         multiAuthActivatedAt: { type: Date, required: false, default: null },
         multiAuthSecret: { type: String, required: false, default: null },
 
@@ -982,7 +982,7 @@ export class UserModelBuilder {
         // ── Security + preferences
         loginMeta: {
           type: loginMetaSchema,
-          required: true,
+          required: false,
           default: (): UserLoginMetadata => ( {
             failedLoginAttempts: 0,
             lastLoginAt: null,
@@ -995,7 +995,7 @@ export class UserModelBuilder {
         },
         preferences: {
           type: preferencesSchema,
-          required: true,
+          required: false,
           default: (): UserPreferences => ( {
             theme: "system",
             language: "en",
@@ -1011,7 +1011,7 @@ export class UserModelBuilder {
         },
         notificationPreferences: {
           type: notificationPrefsSchema,
-          required: true,
+          required: false,
           default: (): UserNotificationPreferences => ( {
             email: true,
             inApp: true,
@@ -1022,10 +1022,10 @@ export class UserModelBuilder {
         // ── Payments
         paymentProfile: {
           type: paymentProfileSchema,
-          required: true,
+          required: false,
           default: (): UserPaymentProfile => ( {
             provider: "custom",
-            customerId: "",
+            customerId: "unknown",
             defaultCurrency: "LKR",
             billingEmail: null,
             defaultPaymentMethodRef: null,
@@ -1034,7 +1034,7 @@ export class UserModelBuilder {
         },
         wallet: {
           type: walletSchema,
-          required: true,
+          required: false,
           default: (): UserWallet => ( {
             enabled: false,
             balances: [],
@@ -1042,13 +1042,13 @@ export class UserModelBuilder {
         },
 
         // ── WhatsApp / social pointers
-        devices: { type: [ deviceSchema ], required: true, default: [] },
-        rooms: { type: [ roomMembershipSchema ], required: true, default: [] },
-        pinnedMessages: { type: [ pinnedMessageSchema ], required: true, default: [] },
+        devices: { type: [ deviceSchema ], required: false, default: [] },
+        rooms: { type: [ roomMembershipSchema ], required: false, default: [] },
+        pinnedMessages: { type: [ pinnedMessageSchema ], required: false, default: [] },
 
         socialGraph: {
           type: socialGraphSchema,
-          required: true,
+          required: false,
           default: (): UserSocialGraph => ( {
             contactUserIds: [],
             followingUserIds: [],
@@ -1058,7 +1058,7 @@ export class UserModelBuilder {
         },
         privacy: {
           type: privacySchema,
-          required: true,
+          required: false,
           default: (): UserPrivacy => ( {
             blockedUserIds: [],
             allowMessagesFrom: "everyone",
@@ -1068,7 +1068,7 @@ export class UserModelBuilder {
         },
         presence: {
           type: presenceSchema,
-          required: true,
+          required: false,
           default: (): UserPresence => ( {
             state: "offline",
             lastActiveAt: null,
@@ -1077,7 +1077,7 @@ export class UserModelBuilder {
 
         socialProfile: {
           type: socialProfileSchema,
-          required: true,
+          required: false,
           default: (): UserSocialProfile => ( {
             handle: "",
             displayName: "",
@@ -1090,7 +1090,7 @@ export class UserModelBuilder {
         },
         savedContent: {
           type: savedContentSchema,
-          required: true,
+          required: false,
           default: (): UserSavedContent => ( {
             savedPostIds: [],
             pinnedPostIds: [],

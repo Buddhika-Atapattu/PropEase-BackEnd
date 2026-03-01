@@ -425,9 +425,6 @@ export default class Tenant {
   // inside your router class
 
   private deleteTenant(): void {
-    // ✅ strongly recommend: import Request as ExpressRequest to avoid DOM Request conflicts
-    // import type { Request as ExpressRequest, Response } from "express";
-
     this.router.delete(
       "/delete-tenant/:username/:deletor",
       async (
@@ -444,19 +441,27 @@ export default class Tenant {
 
           // 1) params
           const username = this.s( req.params.username );
-          const deletor =
-            this.s( req.params.deletor ) || String( author.username ?? "" ).trim();
+          const deletorParam = this.s( req.params.deletor );
+          const authorUsername = String( author.username ?? "" ).trim();
 
           if ( !username ) {
             ApiResponseBuilder.validationError( res, "Username is required" );
             return;
           }
+
+          // ✅ security: prevent spoof (adjust rule if you want admins to delete on behalf)
+          if ( deletorParam && deletorParam !== authorUsername ) {
+            ApiResponseBuilder.forbidden( res, "Deletor mismatch (spoof attempt)" );
+            return;
+          }
+
+          const deletor = authorUsername;
           if ( !deletor ) {
             ApiResponseBuilder.validationError( res, "Deletor is required" );
             return;
           }
 
-          // 2) validate tenant + deletor
+          // 2) validate tenant + deletor user
           const tenantDoc = await TenantModel.findOne( { username } ).lean().exec();
           if ( !tenantDoc ) {
             ApiResponseBuilder.notFound( res, "Tenant not found" );
@@ -466,9 +471,7 @@ export default class Tenant {
           const deletorDoc = await UserModel.findOne(
             { username: deletor },
             USER_MODEL_PROJECTION
-          )
-            .lean()
-            .exec();
+          ).lean().exec();
 
           if ( !deletorDoc ) {
             ApiResponseBuilder.notFound( res, "Deletor user not found" );
@@ -476,87 +479,84 @@ export default class Tenant {
           }
 
           // 3) load leases BEFORE deletion
-          type LeaseWithId = LeasePayload & { leaseID?: string; };
+          type LeaseWithId = LeasePayload & { leaseID: string; };
           const leases = await LeaseModel.find( {
             "tenantInformation.tenantUsername": username,
           } )
-            .lean<LeaseWithId[]>() // ✅ row type, NOT array type
+            .lean<LeaseWithId[]>()
             .exec();
 
-          const leaseIds: string[] = leases
-            .map( ( l: LeaseWithId ) => this.s( l.leaseID ) )
-            .filter( ( x: string ): x is string => x.length > 0 );
+          // 4) delete leases one-by-one (awaited) + per-lease recycle entry
+          for ( const lease of leases ) {
+            try {
+              const leaseId = this.s( lease.leaseID );
+              if ( !leaseId ) {
+                // choose: skip or hard-fail. hard-fail is safer.
+                throw new Error( "[Error:] leaseID missing while deleting tenant cascade\n" );
+              }
 
-          // 4) scan files (tenant root + each lease root)
-          const allFilePackets: FileMetaPacket[] = [];
-          const leaseRootsById: Record<string, string> = {};
+              const leaseRootPathLike = `${ this.LEASES_UPLOAD_ROOT_REL }/${ leaseId }`;
 
-          // ✅ With the new guard: you may pass "uploads/..." or "public/uploads/..."
-          // Prefer canonical "uploads/..." (no public prefix)
+              const leasePackets = await FileMetaPacketBuilder.scanTree( {
+                rootPathLike: leaseRootPathLike,
+                bucket: `lease:${ leaseId }`,
+                req,
+              } );
+
+              const plan: DomainDeletePlan<unknown> = {
+                sourceKey: "lease",
+                refId: leaseId,
+                label: `Lease: ${ leaseId }`,
+                description: `Lease deleted (cascade from tenant: ${ username })`,
+                snapshotData: { lease }, // one lease only
+                files: leasePackets,
+                collectionName: LeaseModel.collection.name,
+                module: "Lease Management",
+                entity: "Lease",
+                tags: [ "lease", "cascade", "tenant" ],
+
+                deleteDbRecord: async ( session?: ClientSession ): Promise<void> => {
+                  const opts = session ? { session } : undefined;
+                  await LeaseModel.deleteOne( { leaseID: leaseId }, opts ).exec();
+                },
+              };
+
+              await this.deleteSvc.deleteWithRecycleBin( author, plan );
+            }
+            catch ( err ) {
+              console.error( '[Error:] [Tenant.deleteTenant:] \n', err, '\n' );
+              return;
+            }
+          }
+
+          // 5) tenant files
           const tenantRootPathLike = `${ this.TENANT_UPLOAD_ROOT_REL }/${ username }`;
           const tenantPackets = await FileMetaPacketBuilder.scanTree( {
             rootPathLike: tenantRootPathLike,
             bucket: `tenant:${ username }`,
             req,
           } );
-          allFilePackets.push( ...tenantPackets );
 
-          for ( const leaseId of leaseIds ) {
-            const leaseRootPathLike = `${ this.LEASES_UPLOAD_ROOT_REL }/${ leaseId }`;
-            leaseRootsById[ leaseId ] = leaseRootPathLike;
-
-            const leasePackets = await FileMetaPacketBuilder.scanTree( {
-              rootPathLike: leaseRootPathLike,
-              bucket: `lease:${ leaseId }`,
-              req,
-            } );
-
-            allFilePackets.push( ...leasePackets );
-          }
-
-          // 5) snapshot (JSON-safe)
-          // DomainDeletePlan expects Record<string, unknown>.
-          // We keep this JSON-safe to avoid non-serializable data.
-          const snapshotData: Record<string, unknown> = {
-            tenant: this.toJsonSafe( tenantDoc ),
-            leases: this.toJsonSafe( leases ),
-            deletedBy: {
-              username: this.s( ( deletorDoc as { username?: unknown; } | null )?.username ) || deletor,
-              role: this.s( ( deletorDoc as { role?: unknown; } | null )?.role ) || "unknown",
-            },
-            restoreHints: {
-              tenantUsername: username,
-              tenantUploadsRoot: tenantRootPathLike,
-              leasesUploadsRoot: this.LEASES_UPLOAD_ROOT_REL,
-              leaseIds,
-              leaseRootsById,
-            },
-          };
-
-          // 6) recyclebin delete plan (DB delete inside session)
-          const plan: DomainDeletePlan<unknown> = {
+          // 6) tenant recycle entry + delete tenant
+          const tenantPlan: DomainDeletePlan<unknown> = {
             sourceKey: "tenant",
             refId: username,
             label: `Tenant: ${ this.s( ( tenantDoc as { name?: unknown; } | null )?.name ) || username }`,
-            description: "Tenant deleted (cascade leases)",
-            snapshotData,
-            files: allFilePackets,
+            description: "Tenant deleted",
+            snapshotData: { tenant: tenantDoc },
+            files: tenantPackets,
+            collectionName: TenantModel.collection.name,
             module: "Tenant Management",
             entity: "Tenant",
-            tags: [ "tenant", "lease", "cascade" ],
+            tags: [ "tenant" ],
 
             deleteDbRecord: async ( session?: ClientSession ): Promise<void> => {
-              const opts = session ? { session } : {};
-              await LeaseModel.deleteMany(
-                { "tenantInformation.tenantUsername": username },
-                { opts }
-              ).exec();
-
-              await TenantModel.deleteOne( { username }, { opts } ).exec();
+              const opts = session ? { session } : undefined;
+              await TenantModel.deleteOne( { username }, opts ).exec();
             },
           };
 
-          await this.deleteSvc.deleteWithRecycleBin( author, plan );
+          await this.deleteSvc.deleteWithRecycleBin( author, tenantPlan );
 
           // 7) notify (best-effort)
           try {
