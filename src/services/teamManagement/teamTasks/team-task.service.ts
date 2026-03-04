@@ -613,7 +613,7 @@ export class TeamTaskService {
       },
     };
 
-    const deleted = await this.recycleBinDomainDeleteService.deleteWithRecycleBin( actor, deletePlan );
+    const deleted = await this.recycleBinDomainDeleteService.deleteWithRecycleBin( actor, deletePlan, req );
 
     const dto = this.toDtoMinimal( existing );
     const ctxWithUsers = await this.withResolvedCtx( dto, ctx );

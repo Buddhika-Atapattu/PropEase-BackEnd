@@ -1216,7 +1216,7 @@ export default class Lease {
           },
         };
 
-        const result = await this.deleteService.deleteWithRecycleBin( actor, deletionPlan );
+        const result = await this.deleteService.deleteWithRecycleBin( actor, deletionPlan, req );
 
         if ( !result.entry ) {
           ApiResponseBuilder.internalError( res, new Error( "Failed to delete lease agreement." ) );

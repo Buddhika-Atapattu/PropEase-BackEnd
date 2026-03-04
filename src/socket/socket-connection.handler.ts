@@ -6,7 +6,7 @@
 //     user:<username>
 //     role:<role>
 //     team:<teamCode>
-//     company
+//     company 
 // - Keeps session:<token> for auth/security kill switch.
 // - Keeps broadcast (optional global)
 // ============================================================================
@@ -15,6 +15,7 @@ import { GuardTokenService } from "../services/guard-token.service";
 import { wsSecurityEventLogger } from "../services/ws-service/ws-security-event-logger.service";
 import type { WsTokenRegistryRedis } from "../services/ws-service/ws-token-registry.redis.service";
 import type { Role } from "../types/roles";
+import { UniversalSocketRooms } from './events/universal/universal-socket.events';
 import { SocketAuthHelper } from "./socket-auth.helper";
 import type {
   CallAnswerPayload,
@@ -28,9 +29,8 @@ import type {
 } from "./socket-types.type";
 
 import type { AuthUser } from "../types/common";
-import { SocketRooms } from "./events/rooms/socket.rooms";
-import type { NotificationPayload } from "./socket-types.type";
 import { NotificationRoomsJoinHelper } from "./helpers/notification-room-join.helper";
+import type { NotificationPayload } from "./socket-types.type";
 
 
 // WsTokenPushPayload (BE → FE) after wsToken rotation
@@ -168,44 +168,44 @@ export class SocketConnectionHandler {
   // Universal rooms join
   // ==========================================================================
   private joinUniversalRooms( socket: TypedSocket, user: AuthUser ): void {
-    socket.join( SocketRooms.user( user.username ) );
-    socket.join( SocketRooms.role( String( user.role ) ) );
-    socket.join( SocketRooms.COMPANY );
+    socket.join( UniversalSocketRooms.user( user.username ) );
+    socket.join( UniversalSocketRooms.role( String( user.role ) ) );
+    socket.join( UniversalSocketRooms.COMPANY );
 
     if ( Array.isArray( user.teamCodes ) ) {
       for ( const t of user.teamCodes ) {
         const teamCode = typeof t === "string" ? t.trim() : "";
-        if ( teamCode ) socket.join( SocketRooms.team( teamCode ) );
+        if ( teamCode ) socket.join( UniversalSocketRooms.team( teamCode ) );
       }
     }
 
-    socket.join( SocketRooms.BROADCAST );
+    socket.join( UniversalSocketRooms.BROADCAST );
 
     // Security / session room
     const sessionToken = socket.data.sessionToken as string | undefined;
     if ( sessionToken && sessionToken.trim() ) {
-      socket.join( SocketRooms.session( sessionToken.trim() ) );
+      socket.join( UniversalSocketRooms.session( sessionToken.trim() ) );
     }
 
     console.log( "[Info:] [SocketConnectionHandler] Universal rooms joined.\n" );
   }
 
   private leaveUniversalRooms( socket: TypedSocket, user: AuthUser ): void {
-    socket.leave( SocketRooms.user( user.username ) );
-    socket.leave( SocketRooms.role( String( user.role ) ) );
-    socket.leave( SocketRooms.COMPANY );
-    socket.leave( SocketRooms.BROADCAST );
+    socket.leave( UniversalSocketRooms.user( user.username ) );
+    socket.leave( UniversalSocketRooms.role( String( user.role ) ) );
+    socket.leave( UniversalSocketRooms.COMPANY );
+    socket.leave( UniversalSocketRooms.BROADCAST );
 
     if ( Array.isArray( user.teamCodes ) ) {
       for ( const t of user.teamCodes ) {
         const teamCode = typeof t === "string" ? t.trim() : "";
-        if ( teamCode ) socket.leave( SocketRooms.team( teamCode ) );
+        if ( teamCode ) socket.leave( UniversalSocketRooms.team( teamCode ) );
       }
     }
 
     const sessionToken = socket.data.sessionToken as string | undefined;
     if ( sessionToken && sessionToken.trim() ) {
-      socket.leave( SocketRooms.session( sessionToken.trim() ) );
+      socket.leave( UniversalSocketRooms.session( sessionToken.trim() ) );
     }
   }
 
@@ -260,7 +260,7 @@ export class SocketConnectionHandler {
             "[Error:] [SocketConnectionHandler] wsToken invalid AND session invalid – terminating user sockets.\n"
           );
 
-          const userRoom = SocketRooms.user( authUser.username );
+          const userRoom = UniversalSocketRooms.user( authUser.username );
 
           this.nsp.to( userRoom ).emit( "session:terminated", {
             mode: "security",
@@ -303,7 +303,7 @@ export class SocketConnectionHandler {
   * - Used for logout, token revocation, or security termination.
   *
   * 02) Important matters
-  * - Uses the session room convention: SocketRooms.session(<sessionToken>)
+  * - Uses the session room convention: UniversalSocketRooms.session(<sessionToken>)
   * - Emits a termination event BEFORE disconnecting sockets (best UX).
   * - Never throws; if token invalid/empty → no-op.
   *
@@ -331,7 +331,7 @@ export class SocketConnectionHandler {
       if ( !token ) return;
 
       const why = this.safeReasonOrDefault( reason, "forced_disconnect" );
-      const room = SocketRooms.session( token );
+      const room = UniversalSocketRooms.session( token );
 
       // 1) Notify UI (optional, but safest UX)
       this.nsp.to( room ).emit( "session:terminated", {
@@ -362,7 +362,7 @@ export class SocketConnectionHandler {
    * - Used for logout by username, admin kick, security termination, etc.
    *
    * 02) Important matters
-   * - Uses the user room convention: SocketRooms.user(<username>)
+   * - Uses the user room convention: UniversalSocketRooms.user(<username>)
    * - Emits a termination event BEFORE disconnecting sockets.
    * - Never throws; if username invalid/empty → no-op.
    *
@@ -389,7 +389,7 @@ export class SocketConnectionHandler {
       if ( !u ) return;
 
       const why = this.safeReasonOrDefault( reason, "forced_disconnect" );
-      const room = SocketRooms.user( u );
+      const room = UniversalSocketRooms.user( u );
 
       // 1) Notify UI
       this.nsp.to( room ).emit( "session:terminated", {
@@ -675,15 +675,15 @@ export class SocketConnectionHandler {
   // Emission helpers
   // ==========================================================================
   public emitToUser( username: string, event: string, payload: unknown ): void {
-    this.nsp.to( SocketRooms.user( username ) ).emit( event, payload );
+    this.nsp.to( UniversalSocketRooms.user( username ) ).emit( event, payload );
   }
 
   public emitToRole( role: Role, event: string, payload: unknown ): void {
-    this.nsp.to( SocketRooms.role( String( role ) ) ).emit( event, payload );
+    this.nsp.to( UniversalSocketRooms.role( String( role ) ) ).emit( event, payload );
   }
 
   public emitToTeam( teamCode: string, event: string, payload: unknown ): void {
-    this.nsp.to( SocketRooms.team( teamCode ) ).emit( event, payload );
+    this.nsp.to( UniversalSocketRooms.team( teamCode ) ).emit( event, payload );
   }
 
   public emitToRoom( room: string, event: string, payload: unknown ): void {
@@ -739,11 +739,11 @@ export class SocketConnectionHandler {
     const company = this.extractCompanyFlag( notif );
 
     for ( const u of usernames ) this.emitToUser( u, event, notif );
-    for ( const r of roles ) this.nsp.to( SocketRooms.role( r ) ).emit( event, notif );
-    for ( const t of teams ) this.nsp.to( SocketRooms.team( t ) ).emit( event, notif );
+    for ( const r of roles ) this.nsp.to( UniversalSocketRooms.role( r ) ).emit( event, notif );
+    for ( const t of teams ) this.nsp.to( UniversalSocketRooms.team( t ) ).emit( event, notif );
 
-    if ( company ) this.nsp.to( SocketRooms.COMPANY ).emit( event, notif );
-    if ( broadcast ) this.nsp.to( SocketRooms.BROADCAST ).emit( event, notif );
+    if ( company ) this.nsp.to( UniversalSocketRooms.COMPANY ).emit( event, notif );
+    if ( broadcast ) this.nsp.to( UniversalSocketRooms.BROADCAST ).emit( event, notif );
   }
 
   private extractBroadcastFlag( notif: NotificationPayload ): boolean {

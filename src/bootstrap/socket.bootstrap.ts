@@ -18,15 +18,14 @@
 // ============================================================================
 
 import type { Server as HttpServer } from "http";
-import type { Socket } from "socket.io";
 
 import SocketServer from "../core/socket-server";
-import { SocketConnectionHandler } from "../socket/socket-connection.handler";
 import { SocketAuthHelper } from "../socket/socket-auth.helper";
+import { SocketConnectionHandler } from "../socket/socket-connection.handler";
 import type { TypedNamespace } from "../socket/socket-types.type";
 
-import { GuardTokenService } from "../services/guard-token.service";
 import TrafficMonitor from "../middleware/trafficMonitor";
+import { GuardTokenService } from "../services/guard-token.service";
 
 import { FRONTEND_ORIGIN, JWT_SECRET } from "../configs/env.config";
 
@@ -40,8 +39,8 @@ import { CommentsSourceRegistry } from "../source/comments.source";
 
 import { WsEmitterProvider } from "../socket/ws-emitter.provider";
 
-import type { AuthUser } from "../types/common";
 import { NotificationRpcHandler } from "../socket/handlers/notifications/notification.rpc.handler";
+
 
 // ============================================================================
 // Result contract for bootstrap
@@ -155,10 +154,11 @@ export class SocketBootstrap {
     // WHY: 
     // - This is the canonical place where sockets are authenticated and placed
     //   into correct rooms:
-    //    • team.<teamCode>
-    //    • member.<userId>
+    //    • company
+    //    • role:<roleKey>
     //    • user:<username>
-    //    • (optional) team:<teamCode>
+    //    • team:<teamCode>
+    //    • session:<sessionToken>
     //
     // - If you do NOT centralize this, each gateway will “invent its own” room
     //   logic and you will get mismatches and missing UI updates.
@@ -256,7 +256,7 @@ export class SocketBootstrap {
 
 
     // ------------------------------------------------------------------------
-    // 9) Return handles
+    // 10) Return handles
     // WHY:
     // - Allows AppServer/Core to keep references for future integration tests,
     //   health checks, and controlled shutdown strategies.

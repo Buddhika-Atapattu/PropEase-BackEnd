@@ -47,7 +47,7 @@ export const ALLOWED_HOSTS: string =
 
 /** Public-denied folders (security middleware) */
 export const PUBLIC_DENY_DIRS: string =
-    process.env.PUBLIC_DENY_DIRS ?? "recyclebin,backups,adminsOnly,private";
+    process.env.PUBLIC_DENY_DIRS ?? "backups,adminsOnly,private";
 
 export const REDIS_URL: string = process.env.REDIS_URL ?? 'redis://127.0.0.1:6379';
 

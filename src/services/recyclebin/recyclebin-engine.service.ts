@@ -33,6 +33,7 @@
 import path from "path";
 import fs from "fs";
 import fsp from "fs/promises";
+import { Request } from "express";
 
 import { Types, type ClientSession } from "mongoose";
 
@@ -199,7 +200,7 @@ export class RecycleBinEngineService {
      * @param session
      * - Optional mongoose session (omit if none)
      */
-    public async record( input: RecycleRecordInput, session?: ClientSession ): Promise<RecycleRecordResult> {
+    public async record( input: RecycleRecordInput, req: Request, session?: ClientSession ): Promise<RecycleRecordResult> {
         this.assertNonEmpty( input.sourceKey, "sourceKey" );
         this.assertNonEmpty( input.refId, "refId" );
         this.assertNonEmpty( input.label, "label" );
@@ -250,7 +251,8 @@ export class RecycleBinEngineService {
         const movedFiles = await this.moveFilesIntoRecyclePreserveTree(
             input.files,
             folderKey,
-            input.refId
+            input.refId,
+            req,
         );
 
         const now = new Date();
@@ -355,7 +357,7 @@ export class RecycleBinEngineService {
         }
 
         if ( !filters.status ) {
-            query.status = { $nin: [ "restored", "restore_in_progress" ] };
+            query.status = { $nin: [ "restored" ] };
         }
 
         const safeLimit = this.clamp( page.limit, 1, 100 );
@@ -427,7 +429,7 @@ export class RecycleBinEngineService {
      * @param restoredBy actor
      * @param session optional session
      */
-    public async prepareRestore( entryId: string, restoredBy: AuthUser, session?: ClientSession ): Promise<RecycleRestorePrepareResult> {
+    public async prepareRestore( entryId: string, restoredBy: AuthUser, req: Request, session?: ClientSession ): Promise<RecycleRestorePrepareResult> {
         this.assertNonEmpty( entryId, "entryId" );
 
         const entryLean = await RecycleBinEntryModel.findById( entryId ).lean<RecycleBinEntryLean>();
@@ -438,7 +440,7 @@ export class RecycleBinEngineService {
             throw new Error( "This recycle entry is already restored." );
         }
 
-        await this.updateStatus( entryLean._id, "restore_in_progress", restoredBy, session );
+        await this.updateStatus( entryLean._id, "restore_in_progress", restoredBy, req, session );
 
         const diskSnapshot = await this.tryReadJson( this.abs( entryLean.snapshotRelPath ) );
         const snapshotData =
@@ -464,75 +466,166 @@ export class RecycleBinEngineService {
     // ---------------------------------------------------------------------------
 
     /**
-     * REAL restore: restores DB doc into recorded collection + restores files back to uploads.
-     *
-     * ✅ Fixes:
-     * - Prevent re-restore when already restored
-     * - restoreDocKey default is ORIGINAL sourceKey (stored in meta/extra)
-     * - Never leave entry stuck in "restore_in_progress" if restore fails
-     *
-     * @param options.entryId entry id
-     * @param options.restoredBy actor
-     * @param options.session optional session (omit if none)
-     * @param options.restoreMode "insert" (default) or "upsert"
-     */
+ * Restore a recyclebin entry back into its original MongoDB collection + move files back to uploads.
+ *
+ * 01) Introduction
+ * - Universal restore entry point for the Recycle Bin engine.
+ * - Restores DB document(s) by reading the snapshot content, then restores files.
+ *
+ * 02) Important matters (ISO/IEC 27001 / 27002)
+ * - MUST NOT trust snapshot data blindly: collection name must be resolved from controlled metadata
+ *   (entry.extra.recycle.collectionName / meta.json hints) and MUST be validated/allowed.
+ * - MUST avoid leaving an entry stuck in "restore_in_progress" (revert on failure).
+ * - MUST restore DB first, then files, then mark status "restored".
+ *
+ * 03) Why we make this method
+ * - Provides a single, universal restore flow that works across modules, regardless of snapshot shape.
+ *
+ * @param options.entryId
+ * - Expected: Mongo _id of recyclebin entry (string)
+ *
+ * @param options.restoredBy
+ * - Expected: Auth user performing the restore (RBAC / audit)
+ *
+ * @param options.req
+ * - Expected: Express Request (used to build public URLs and for audit metadata)
+ *
+ * @param options.session
+ * - Optional: Mongoose session for transactional behavior (if your app uses sessions)
+ *
+ * @param options.restoreMode
+ * - Optional: "insert" | "upsert"
+ * - Default: "insert"
+ * - "insert": fails if _id already exists
+ * - "upsert": replaces/creates when _id exists (based on your restoreIntoCollection implementation)
+ */
     public async restore( options: {
         entryId: string;
         restoredBy: AuthUser;
+        req: Request;
         session?: ClientSession;
         restoreMode?: "insert" | "upsert";
     } ): Promise<RecycleRestoreResult> {
         this.assertNonEmpty( options.entryId, "entryId" );
 
-        const entryDoc = await RecycleBinEntryModel.findById( options.entryId ).lean<RecycleBinEntryLean>();
+        const entryDoc = await RecycleBinEntryModel
+            .findById( options.entryId )
+            .lean<RecycleBinEntryLean>();
+
         if ( !entryDoc ) throw new Error( "RecycleBin entry not found" );
 
-        // ✅ Restrict restoring data that already restored
+        // ✅ Restrict restoring data that is already restored
         if ( entryDoc.status === "restored" ) {
             throw new Error( "This recycle entry is already restored." );
         }
 
-        await this.updateStatus( entryDoc._id, "restore_in_progress", options.restoredBy, options.session );
+        await this.updateStatus(
+            entryDoc._id,
+            "restore_in_progress",
+            options.restoredBy,
+            options.req,
+            options.session
+        );
 
         try {
+            // ------------------------------------------------------------
+            // 1) Load snapshot (disk preferred, DB fallback)
+            // ------------------------------------------------------------
             const diskSnapshot = await this.tryReadJson( this.abs( entryDoc.snapshotRelPath ) );
             const snapshotData =
                 diskSnapshot && this.isRecord( diskSnapshot )
                     ? ( diskSnapshot as Record<string, unknown> )
                     : entryDoc.snapshotData;
 
+            // ------------------------------------------------------------
+            // 2) Load meta (disk preferred, empty fallback)
+            // ------------------------------------------------------------
             const metaDisk = await this.tryReadJson( this.abs( entryDoc.metaRelPath ) );
-            const metaObj = metaDisk && this.isRecord( metaDisk ) ? ( metaDisk as Record<string, unknown> ) : {};
+            const metaObj =
+                metaDisk && this.isRecord( metaDisk )
+                    ? ( metaDisk as Record<string, unknown> )
+                    : {};
 
+            // ------------------------------------------------------------
+            // 3) Resolve controlled restore hints (collectionName is the anchor)
+            //    - We keep resolveRestoreHints because it is your central place
+            //      that reads entry.extra.recycle.collectionName etc.
+            //    - We DO NOT restrict restore to restoreDocKey only.
+            // ------------------------------------------------------------
             const { collectionName, restoreDocKey } = this.resolveRestoreHints( entryDoc, metaObj );
 
-            const restoreDocRaw = this.pickRestoreDocument( snapshotData, restoreDocKey );
-            if ( !restoreDocRaw ) {
-                // Helpful error: tells exactly what key was expected.
-                throw new Error( `Restore document not found in snapshotData (restoreDocKey="${ restoreDocKey }")` );
+            // OPTIONAL BUT RECOMMENDED:
+            // Validate collectionName is allowed to be restored (prevents abuse).
+            // If you already do this inside restoreIntoCollection(), you can omit this call here.
+            this.assertCollectionAllowedForRestore( collectionName );
+
+            // ------------------------------------------------------------
+            // 4) Universal snapshot picking (NO sourceKey coupling)
+            //
+            // Supported snapshot shapes:
+            // A) sections[] format:
+            //    { sections: [ { collection: "payment_transactions", docs: [...] }, ... ] }
+            //
+            // B) keyed-by-collection:
+            //    { "payment_transactions": { ...doc } } OR { "payment_transactions": [ ...docs ] }
+            //
+            // C) legacy restoreDocKey wrapper:
+            //    { transactions: { ...doc } } OR { transactions: [ ...docs ] }  (if restoreDocKey exists)
+            //
+            // D) raw-doc snapshot:
+            //    { _id: ..., ... }  (transaction currently matches this)
+            // ------------------------------------------------------------
+            const restoreDocsRaw = this.pickRestoreDocumentsUniversal( {
+                snapshotData,
+                collectionName,
+                restoreDocKey,
+            } );
+
+            if ( restoreDocsRaw.length === 0 ) {
+                throw new Error(
+                    `Restore document(s) not found in snapshotData for collection="${ collectionName }"`
+                );
             }
 
-            const restoreDoc = this.normalizeRestoreDocument( restoreDocRaw );
+            // Normalize + restore all docs (array-safe)
+            const restoredIds: string[] = [];
 
-            // ✅ exactOptionalPropertyTypes-safe: only include session if it exists
-            const restoreArgs: {
-                collectionName: string;
-                doc: Record<string, unknown>;
-                mode: "insert" | "upsert";
-                session?: ClientSession;
-            } = {
-                collectionName,
-                doc: restoreDoc,
-                mode: options.restoreMode ?? "insert",
-            };
-            if ( options.session ) restoreArgs.session = options.session;
+            for ( const docRaw of restoreDocsRaw ) {
+                const restoreDoc = this.normalizeRestoreDocument( docRaw );
 
-            const restoredObjectId = await this.restoreIntoCollection( restoreArgs );
+                const restoreArgs: {
+                    collectionName: string;
+                    doc: Record<string, unknown>;
+                    mode: "insert" | "upsert";
+                    session?: ClientSession;
+                } = {
+                    collectionName,
+                    doc: restoreDoc,
+                    mode: options.restoreMode ?? "insert",
+                };
 
-            const filesRestored = await this.restoreFilesBackToUploads( entryDoc.files );
+                if ( options.session ) restoreArgs.session = options.session;
 
-            // ✅ Mark correct final status ONLY after DB+files succeed
-            await this.updateStatus( entryDoc._id, "restored", options.restoredBy, options.session );
+                const restoredObjectId = await this.restoreIntoCollection( restoreArgs );
+
+                if ( restoredObjectId ) restoredIds.push( restoredObjectId );
+            }
+
+            // ------------------------------------------------------------
+            // 5) Restore files back to uploads
+            // ------------------------------------------------------------
+            const filesRestored = await this.restoreFilesBackToUploads( entryDoc.files, options.req );
+
+            // ------------------------------------------------------------
+            // 6) Mark restored ONLY after DB + files succeed
+            // ------------------------------------------------------------
+            await this.updateStatus(
+                entryDoc._id,
+                "restored",
+                options.restoredBy,
+                options.req,
+                options.session
+            );
 
             await this.auditWriter.recordRestored(
                 {
@@ -544,7 +637,10 @@ export class RecycleBinEngineService {
                 options.session
             );
 
-            const updatedEntry = await RecycleBinEntryModel.findById( options.entryId ).lean<RecycleBinEntryLean>();
+            const updatedEntry = await RecycleBinEntryModel
+                .findById( options.entryId )
+                .lean<RecycleBinEntryLean>();
+
             if ( !updatedEntry ) throw new Error( "RecycleBin entry not found after restore" );
 
             const out: RecycleRestoreResult = {
@@ -554,19 +650,122 @@ export class RecycleBinEngineService {
                 collectionName,
                 filesRestored,
                 entry: this.toDto( updatedEntry ),
+                ...( restoredIds.length === 1 && restoredIds[ 0 ]
+                    ? { restoredObjectId: restoredIds[ 0 ] }
+                    : {} ),
             };
 
-            // ✅ optional only when real value exists
-            if ( restoredObjectId ) out.restoredObjectId = restoredObjectId;
+            // Keep the existing contract: expose a SINGLE id when exactly one doc was restored.
+            if ( restoredIds.length === 1 ) {
+                const restoredId = restoredIds[ 0 ];
+                if ( restoredId ) {
+                    out.restoredObjectId = restoredId;
+                }
+            }
 
             return out;
         } catch ( err: unknown ) {
             // ✅ Never leave stuck in restore_in_progress.
             // If restore fails, revert back to recorded so user can retry.
-            await this.updateStatus( entryDoc._id, "recorded", options.restoredBy, options.session );
+            await this.updateStatus(
+                entryDoc._id,
+                "recorded",
+                options.restoredBy,
+                options.req,
+                options.session
+            );
 
             throw err instanceof Error ? err : new Error( "Restore failed" );
         }
+    }
+
+    /**
+     * Universal snapshot resolver (collection-driven, not sourceKey-driven).
+     *
+     * Supports:
+     * - sections[] format
+     * - keyed-by-collection format
+     * - legacy restoreDocKey wrapper
+     * - raw-doc snapshot fallback
+     */
+    private pickRestoreDocumentsUniversal( options: {
+        snapshotData: Record<string, unknown> | unknown;
+        collectionName: string;
+        restoreDocKey: string;
+    } ): Array<Record<string, unknown>> {
+        const snap = options.snapshotData;
+
+        // -------------------------
+        // A) sections[] format
+        // -------------------------
+        if ( this.isRecord( snap ) ) {
+            const sectionsUnknown = ( snap as Record<string, unknown> )[ "sections" ];
+            if ( Array.isArray( sectionsUnknown ) ) {
+                for ( const sec of sectionsUnknown ) {
+                    if ( !this.isRecord( sec ) ) continue;
+
+                    const collection = sec[ "collection" ];
+                    const docs = sec[ "docs" ];
+
+                    if ( typeof collection === "string" && collection === options.collectionName ) {
+                        if ( Array.isArray( docs ) ) {
+                            return docs.filter( ( d ) => this.isRecord( d ) ) as Array<Record<string, unknown>>;
+                        }
+                        if ( this.isRecord( docs ) ) return [ docs as Record<string, unknown> ];
+                    }
+                }
+            }
+
+            // -------------------------
+            // B) keyed-by-collection format
+            // -------------------------
+            const byCollection = ( snap as Record<string, unknown> )[ options.collectionName ];
+            if ( Array.isArray( byCollection ) ) {
+                return byCollection.filter( ( d ) => this.isRecord( d ) ) as Array<Record<string, unknown>>;
+            }
+            if ( this.isRecord( byCollection ) ) return [ byCollection as Record<string, unknown> ];
+
+            // -------------------------
+            // C) legacy restoreDocKey wrapper (keep compatibility)
+            // -------------------------
+            const byKey = ( snap as Record<string, unknown> )[ options.restoreDocKey ];
+            if ( Array.isArray( byKey ) ) {
+                return byKey.filter( ( d ) => this.isRecord( d ) ) as Array<Record<string, unknown>>;
+            }
+            if ( this.isRecord( byKey ) ) return [ byKey as Record<string, unknown> ];
+
+            // -------------------------
+            // D) raw-doc snapshot fallback
+            //   - if snapshot itself is a doc-like object, restore it directly
+            // -------------------------
+            if ( this.looksLikeMongoDocument( snap as Record<string, unknown> ) ) {
+                return [ snap as Record<string, unknown> ];
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * Heuristic: checks if an object "looks like" a MongoDB document snapshot.
+     * Keeps restore universal even when snapshotData is stored as the raw doc.
+     */
+    private looksLikeMongoDocument( obj: Record<string, unknown> ): boolean {
+        // Common invariants across your domain docs:
+        // - _id exists (string/ObjectId/extended-json)
+        // - or createdAt/updatedAt
+        if ( Object.prototype.hasOwnProperty.call( obj, "_id" ) ) return true;
+        if ( Object.prototype.hasOwnProperty.call( obj, "createdAt" ) ) return true;
+        if ( Object.prototype.hasOwnProperty.call( obj, "updatedAt" ) ) return true;
+        return false;
+    }
+
+    /**
+     * Security guard: validate collection name is allowed for restore.
+     * (Implement your allow-list internally. If you already validate inside restoreIntoCollection, keep one source of truth.)
+     */
+    private assertCollectionAllowedForRestore( collectionName: string ): void {
+        this.assertNonEmpty( collectionName, "collectionName" );
     }
 
     // ---------------------------------------------------------------------------
@@ -580,13 +779,13 @@ export class RecycleBinEngineService {
      * @param purgedBy actor
      * @param session optional session
      */
-    public async purge( entryId: string, purgedBy: AuthUser, session?: ClientSession ): Promise<RecyclePurgeResult> {
+    public async purge( entryId: string, purgedBy: AuthUser, req: Request, session?: ClientSession ): Promise<RecyclePurgeResult> {
         this.assertNonEmpty( entryId, "entryId" );
 
         const entryLean = await RecycleBinEntryModel.findById( entryId ).lean<RecycleBinEntryLean>();
         if ( !entryLean ) throw new Error( "RecycleBin entry not found" );
 
-        await this.updateStatus( entryLean._id, "purged", purgedBy, session );
+        await this.updateStatus( entryLean._id, "purged", purgedBy, req, session );
         await this.safeRmDir( this.abs( entryLean.recycleDirRelPath ) );
 
         await this.auditWriter.recordPurged(
@@ -675,7 +874,9 @@ export class RecycleBinEngineService {
         entryObjectId: Types.ObjectId,
         status: RecycleBinStatus,
         actor: AuthUser,
-        session?: ClientSession
+        req: Request,
+        session?: ClientSession,
+
     ): Promise<void> {
         const now = new Date();
 
@@ -811,7 +1012,8 @@ export class RecycleBinEngineService {
     private async moveFilesIntoRecyclePreserveTree(
         files: FileMetaPacket[],
         folderKey: string,
-        refId: string
+        refId: string,
+        req: Request,
     ): Promise<FileMetaPacket[]> {
         if ( !files || files.length === 0 ) return [];
 
@@ -835,7 +1037,7 @@ export class RecycleBinEngineService {
                 ...file,
                 relativePath: mappedRel,
                 absDiskPath: destAbs,
-                publicUrl: this.buildPublicUrl( mappedRel ),
+                publicUrl: this.buildPublicUrl( mappedRel, req ),
             } );
         }
 
@@ -846,7 +1048,7 @@ export class RecycleBinEngineService {
      * Restore files back:
      * public/recyclebin/... -> public/uploads/...
      */
-    private async restoreFilesBackToUploads( files: FileMetaPacket[] ): Promise<FileMetaPacket[]> {
+    private async restoreFilesBackToUploads( files: FileMetaPacket[], req: Request ): Promise<FileMetaPacket[]> {
         if ( !files || files.length === 0 ) return [];
 
         const restored: FileMetaPacket[] = [];
@@ -869,7 +1071,7 @@ export class RecycleBinEngineService {
                 ...file,
                 relativePath: mappedRel,
                 absDiskPath: destAbs,
-                publicUrl: this.buildPublicUrl( mappedRel ),
+                publicUrl: this.buildPublicUrl( mappedRel, req ),
             } );
         }
 
@@ -886,10 +1088,99 @@ export class RecycleBinEngineService {
         }
     }
 
-    private buildPublicUrl( relativePath: string ): string {
-        const normalized = relativePath.replace( /\\/g, "/" ).replace( /^\/+/, "" );
-        // Keep existing behavior: publicUrl is a URL-ish string (not disk rel).
-        return normalized.startsWith( "public/" ) ? "/" + normalized : "/public/" + normalized;
+    private buildPublicUrl( relativePath: string, req: Request ): string {
+
+        /**
+         * -----------------------------------------------------------
+         * 01. Normalize path separators
+         * -----------------------------------------------------------
+         * Windows paths may contain "\" so convert to "/"
+         */
+        let normalized = relativePath.replace( /\\/g, "/" );
+
+        /**
+         * -----------------------------------------------------------
+         * 02. Remove leading slashes
+         * -----------------------------------------------------------
+         * Ensures predictable path building
+         */
+        normalized = normalized.replace( /^\/+/, "" );
+
+        /**
+         * -----------------------------------------------------------
+         * 03. Remove "public/" prefix
+         * -----------------------------------------------------------
+         * Because Express static serves:
+         *
+         * app.use("/public", express.static("public"));
+         *
+         * OR often:
+         * app.use(express.static("public"));
+         *
+         * Your requirement:
+         * public/uploads/x.png → uploads/x.png
+         */
+        normalized = normalized.replace( /^public\//, "" );
+
+        /**
+         * -----------------------------------------------------------
+         * 04. Resolve host
+         * -----------------------------------------------------------
+         */
+        const host = this.generateHost( req );
+
+        /**
+         * -----------------------------------------------------------
+         * 05. Build final public URL
+         * -----------------------------------------------------------
+         */
+        return `${ host }/${ normalized }`;
+    }
+
+    private generateHost( req: Request ): string {
+        /**
+         * -----------------------------------------------------------
+         * 01. Determine protocol
+         * -----------------------------------------------------------
+         * - If the system is behind a proxy (Nginx / Cloudflare),
+         *   the real protocol is usually in "x-forwarded-proto".
+         * - Otherwise fall back to req.protocol.
+         */
+        const forwardedProto = req.headers[ "x-forwarded-proto" ];
+        const protocol =
+            typeof forwardedProto === "string"
+                ? forwardedProto.split( "," )[ 0 ]
+                : req.protocol;
+
+        /**
+         * -----------------------------------------------------------
+         * 02. Determine host
+         * -----------------------------------------------------------
+         * - "x-forwarded-host" used when behind proxy
+         * - otherwise standard "host" header
+         */
+        const forwardedHost = req.headers[ "x-forwarded-host" ];
+        const host =
+            typeof forwardedHost === "string"
+                ? forwardedHost.split( "," )[ 0 ]
+                : req.get( "host" );
+
+        /**
+         * -----------------------------------------------------------
+         * 03. Safety fallback
+         * -----------------------------------------------------------
+         */
+        if ( !host ) {
+            console.warn( "[Warning:] Host header missing when generating host URL\n" );
+            return `${ protocol }://localhost`;
+        }
+
+        /**
+         * -----------------------------------------------------------
+         * 04. Build full host URL
+         * -----------------------------------------------------------
+         */
+        return `${ protocol }://${ host }`;
     }
 
     /**

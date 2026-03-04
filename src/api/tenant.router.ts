@@ -521,7 +521,7 @@ export default class Tenant {
                 },
               };
 
-              await this.deleteSvc.deleteWithRecycleBin( author, plan );
+              await this.deleteSvc.deleteWithRecycleBin( author, plan, req );
             }
             catch ( err ) {
               console.error( '[Error:] [Tenant.deleteTenant:] \n', err, '\n' );
@@ -556,7 +556,7 @@ export default class Tenant {
             },
           };
 
-          await this.deleteSvc.deleteWithRecycleBin( author, tenantPlan );
+          await this.deleteSvc.deleteWithRecycleBin( author, tenantPlan, req );
 
           // 7) notify (best-effort)
           try {

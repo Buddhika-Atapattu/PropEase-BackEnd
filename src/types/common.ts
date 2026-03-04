@@ -174,6 +174,7 @@ export type AuthUser = {
     // one user can be in multiple teams
     teamCodes?: string[]; // e.g. ["TEAM-A", "TEAM-B"]
     branchId?: string; // optional org structure
+    companyId?: string;
 };
 
 /**
@@ -181,6 +182,12 @@ export type AuthUser = {
  * (never leak Mongoose Types.ObjectId into FE contracts)
  */
 export type AuthUserNormalized = Omit<AuthUser, "userId"> & { userId: string; };
+
+export interface ActorMini {
+    userId: string;
+    username: string;
+    role?: string;
+}
 
 // -----------------------------------------------------------------------------
 // 05) File metadata packet (standard upload result across the platform)
@@ -252,4 +259,21 @@ export interface ValidationUnit {
     token?: string;
     isValid?: boolean;
     expiresAt?: string;
+}
+
+
+export interface PageQueryDto {
+    page: number;  // 1-based
+    limit: number; // 1..100 or 1..500 depending on endpoint
+}
+
+export interface PageMetaDto {
+    total: number;
+    page?: number;
+    limit?: number;
+}
+
+export interface ListResponseDto<T> {
+    items: T[];
+    other: { pagination: PageMetaDto; };
 }

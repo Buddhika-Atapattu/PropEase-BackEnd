@@ -376,7 +376,7 @@ export class WorkItemController {
             }
 
             const ctx = this.buildWsContext( req, auth );
-            await this.service.deleteById( ctx, workItemId, auth );
+            await this.service.deleteById( ctx, workItemId, auth, req );
 
             this.notificationHub.emit( {
                 eventKey: "team:work-item.deleted",

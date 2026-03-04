@@ -1,7 +1,7 @@
 // Path: src/socket/ws-emitter.provider.ts
 // ============================================================================
 // WsEmitterProvider — boot-order safe WS emitter
-// - Emits ONLY using SocketRooms (universal naming)
+// - Emits ONLY using UniversalSocketRooms (universal naming)
 // ============================================================================
 
 import type { Role } from "../types/roles";

@@ -19,11 +19,11 @@
 import type {
   RecycleBinListItemDto,
   RecycleBinPurgeResult,
-  RecycleBinRestorePrepareDto,
   RecycleBinRecordResult,
+  RecycleBinRestorePrepareDto,
 } from "../../../types/recyclebin/recyclebin.types";
 
-import { SocketRooms } from "../rooms/socket.rooms";
+import { UniversalSocketRooms } from '../universal/universal-socket.events';
 
 /* =============================================================================
  * A) Rooms (Stable Forever)
@@ -60,11 +60,11 @@ export class RecycleBinRooms {
    * - Avoid untrusted payload role strings; role must come from auth user context.
    *
    * Result
-   * - Emits into: role.<role>
+   * - Emits into: role:<role>
    */
   public static role(roleKey: string): string {
     const r = typeof roleKey === "string" ? roleKey.trim() : "";
-    return SocketRooms.role(r.toLowerCase());
+    return UniversalSocketRooms.role( r.toLowerCase() );
   }
 
   /**
@@ -80,11 +80,11 @@ export class RecycleBinRooms {
    * - Avoid emitting team events if the module isn’t team-scoped.
    *
    * Result
-   * - Emits into: team.<teamCode>
+   * - Emits into: team:<teamCode>
    */
   public static team(teamCode: string): string {
     const t = typeof teamCode === "string" ? teamCode.trim() : "";
-    return SocketRooms.team(t);
+    return UniversalSocketRooms.team( t );
   }
 
   /**
@@ -100,11 +100,11 @@ export class RecycleBinRooms {
    * - Do not trust username from payload; controller must use auth user.
    *
    * Result
-   * - Emits into: user.<username>
+   * - Emits into: user:<username>
    */
   public static user(username: string): string {
     const u = typeof username === "string" ? username.trim() : "";
-    return SocketRooms.user(u);
+    return UniversalSocketRooms.user( u );
   }
 }
 

@@ -80,6 +80,18 @@ export const NOTIFICATION_ACTION_KEYS = [
    "payment:invoice.paid",
    "payment:transaction.failed",
    "payment:refund.completed",
+   "payment:bank.account.created",
+   "payment:bank.account.updated",
+   "payment:bank.account.deleted",
+   "payment:bank.created",
+   "payment:bank.updated",
+   "payment:bank.deleted",
+   "payment:transaction.created",
+   "payment:transaction.updated",
+   "payment:transaction.deleted",
+   "payment:transaction.approved",
+   "payment:transaction.rejected",
+   "payment:transaction.change.payment.status",
 
    /* =============================================================================
       TEAM MANAGEMENT

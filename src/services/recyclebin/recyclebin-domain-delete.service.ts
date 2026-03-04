@@ -23,6 +23,7 @@
 // =============================================================================
 
 import mongoose, { type ClientSession, startSession } from "mongoose";
+import { Request } from "express";
 
 import type { AuthUser } from "../../types/common";
 import type { FileMetaPacket } from "../../types/common";
@@ -214,7 +215,8 @@ export class RecycleBinDomainDeleteService {
    */
   public async deleteWithRecycleBin<TDoc>(
     actor: AuthUser,
-    plan: DomainDeletePlan<TDoc>
+    plan: DomainDeletePlan<TDoc>,
+    req: Request,
   ): Promise<{ entry: RecycleRecordResult }> {
     // Keep a copy of ORIGINAL packets for fallback safety.
     // IMPORTANT: engine.record may rewrite packets (paths) to recyclebin.
@@ -254,7 +256,7 @@ export class RecycleBinDomainDeleteService {
         // ✅ New (optional) engine input. If your engine supports it, it will record it.
         ...( collectionName ? { collectionName } : {} ),
       },
-      undefined // do NOT pass session here; record is durability-first and can be outside tx.
+      req // do NOT pass session here; record is durability-first and can be outside tx.
     );
 
     // 2) Delete DB record (Tx-aware)
@@ -297,7 +299,7 @@ export class RecycleBinDomainDeleteService {
       // 3) Compensation (DB delete failed after recording)
       // Current policy: purge recycle entry best-effort to avoid orphan recycle rows.
       try {
-        await this.engine.purge(recorded.entryId, actor);
+        await this.engine.purge( recorded.entryId, actor, req );
       } catch {
         // best-effort only
       }

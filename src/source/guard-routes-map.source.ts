@@ -637,27 +637,268 @@ export const GUARD_ROUTES: ReadonlyArray<GuardRouteDefinition> = [
     description: "UserManagement.view → Resolve tenant user by username (lease flow helper)",
   },
 
-  // =========================================================================
+
+  // ============================================================================
   // PAYMENTS (/api-payments) → AccessMap: PaymentBilling
+  // ============================================================================
+  // Mounted under: /api-payments
+  // Router reference: PB-20260302-01
+  // Router file: src/api/payment/payment.router.ts
+  // ============================================================================
   // =========================================================================
+  // BANK REGISTRY (Master Data)
+  // =========================================================================
+
+  // GET /api-payments/banks?page=&limit=&onlyActive=&countryCca2=&search=
   {
-    // POST /api-payment/create
-    id: "payment:create",
-    method: "POST",
-    pattern: /^\/api-payments\/create(?:\?.*)?$/i,
-    module: "PaymentBilling",
-    action: "create",
-    description: "Create payment + persist invoice snapshot + generate invoice PDF.",
-  },
-  {
-    // GET /api-payment/invoice/:paymentId
-    id: "payment:invoice",
+    id: "payment:bank:list",
     method: "GET",
-    pattern: /^\/api-payments\/invoice\/[^\/\?]+(?:\?.*)?$/i,
+    pattern: /^\/api-payments\/banks(?:\?.*)?$/i,
     module: "PaymentBilling",
-    action: "invoice",
-    description: "Resolve invoice PDF by paymentId (returns relPath + url).",
+    action: "view",
+    description: "List banks under company scope (pagination + filters).",
   },
+
+  // POST /api-payments/banks/create
+  {
+    id: "payment:bank:create",
+    method: "POST",
+    pattern: /^\/api-payments\/banks\/create(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "bank_manage",
+    description: "Create bank (master data).",
+  },
+
+  // GET /api-payments/banks/bankId/:bankId
+  {
+    id: "payment:bank:read",
+    method: "GET",
+    pattern: /^\/api-payments\/banks\/bankId\/[^\/\?]+(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "view",
+    description: "Read one bank by bankId.",
+  },
+
+  // GET /api-payments/banks/bankCode/:bankCode
+  {
+    id: "payment:bank:readByCode",
+    method: "GET",
+    pattern: /^\/api-payments\/banks\/bankCode\/[^\/\?]+(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "view",
+    description: "Read one bank by bankCode.",
+  },
+
+  // PUT /api-payments/banks/update/:bankId
+  {
+    id: "payment:bank:update",
+    method: "PUT",
+    pattern: /^\/api-payments\/banks\/update\/[^\/\?]+(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "bank_manage",
+    description: "Update bank (PATCH/PUT semantics).",
+  },
+
+  // PUT /api-payments/banks/:bankId/status
+  {
+    id: "payment:bank:status",
+    method: "PUT",
+    pattern: /^\/api-payments\/banks\/[^\/\?]+\/status(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "bank_manage",
+    description: "Set bank status active/inactive.",
+  },
+
+  // DELETE /api-payments/banks/:bankId
+  {
+    id: "payment:bank:delete",
+    method: "DELETE",
+    pattern: /^\/api-payments\/banks\/[^\/\?]+(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "bank_manage",
+    description: "Delete bank via recycle bin workflow.",
+  },
+
+  // =========================================================================
+  // BANK ACCOUNTS (Company Receiving Accounts)
+  // =========================================================================
+
+  // GET /api-payments/bank-accounts/public?currencyCode=&includeInactive=
+  {
+    id: "payment:bankAccount:publicList",
+    method: "GET",
+    pattern: /^\/api-payments\/bank-accounts\/public(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "view",
+    description: "Public-safe list of bank accounts for dropdowns (optionally filtered).",
+  },
+
+  // POST /api-payments/bank-accounts/create
+  {
+    id: "payment:bankAccount:create",
+    method: "POST",
+    pattern: /^\/api-payments\/bank-accounts\/create(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "bank_account_manage",
+    description: "Create bank account (company receiving account).",
+  },
+
+  // GET /api-payments/bank-accounts/accountId/:accountId
+  {
+    id: "payment:bankAccount:read",
+    method: "GET",
+    pattern: /^\/api-payments\/bank-accounts\/accountId\/[^\/\?]+(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "view",
+    description: "Read one bank account by accountId.",
+  },
+
+  // GET /api-payments/bank-accounts/alias/:alias
+  {
+    id: "payment:bankAccount:readByAlias",
+    method: "GET",
+    pattern: /^\/api-payments\/bank-accounts\/alias\/[^\/\?]+(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "view",
+    description: "Read one bank account by alias.",
+  },
+
+  // PUT /api-payments/bank-accounts/update/:accountId
+  {
+    id: "payment:bankAccount:update",
+    method: "PUT",
+    pattern: /^\/api-payments\/bank-accounts\/update\/[^\/\?]+(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "bank_account_manage",
+    description: "Update bank account (PATCH/PUT semantics).",
+  },
+
+  // PUT /api-payments/bank-accounts/default/:accountId
+  {
+    id: "payment:bankAccount:setDefault",
+    method: "PUT",
+    pattern: /^\/api-payments\/bank-accounts\/default\/[^\/\?]+(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "bank_account_manage",
+    description: "Set default bank account for company.",
+  },
+
+  // DELETE /api-payments/bank-accounts/delete/:accountId
+  {
+    id: "payment:bankAccount:delete",
+    method: "DELETE",
+    pattern: /^\/api-payments\/bank-accounts\/delete\/[^\/\?]+(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "bank_account_manage",
+    description: "Delete bank account via recycle bin workflow.",
+  },
+
+  // =========================================================================
+  // TRANSACTIONS (External payment recording + verification)
+  // =========================================================================
+
+  // POST /api-payments/transactions/create
+  {
+    id: "payment:tx:create",
+    method: "POST",
+    pattern: /^\/api-payments\/transactions\/create(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "record",
+    description: "Create payment transaction record (multipart/form-data).",
+  },
+
+  // GET /api-payments/transactions?page=&limit=&search=&currencyCode=&method=&paymentStatus=&verificationStatus=&bankAccountId=&from=&to=
+  {
+    id: "payment:tx:list",
+    method: "GET",
+    pattern: /^\/api-payments\/transactions(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "view",
+    description: "List transactions (pagination + filters).",
+  },
+
+  // GET /api-payments/transactions/count?withByStatus=1&search=...
+  {
+    id: "payment:tx:count",
+    method: "GET",
+    pattern: /^\/api-payments\/transactions\/count(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "count",
+    description: "Count transactions (optionally grouped by status).",
+  },
+
+  // POST /api-payments/transactions/evidence/upload/:transactionId
+  {
+    id: "payment:tx:evidenceUpload",
+    method: "POST",
+    pattern: /^\/api-payments\/transactions\/evidence\/upload\/[^\/\?]+(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "update",
+    description: "Upload evidence files for a transaction (multipart/form-data).",
+  },
+
+  // GET /api-payments/transactions/:transactionId
+  {
+    id: "payment:tx:read",
+    method: "GET",
+    pattern: /^\/api-payments\/transactions\/[^\/\?]+(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "view",
+    description: "Read one transaction by transactionId.",
+  },
+
+  // PUT /api-payments/transactions/:transactionId
+  {
+    id: "payment:tx:update",
+    method: "PUT",
+    pattern: /^\/api-payments\/transactions\/[^\/\?]+(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "update",
+    description: "Update transaction (multipart/form-data; PATCH semantics).",
+  },
+
+  // DELETE /api-payments/transactions/:transactionId
+  {
+    id: "payment:tx:delete",
+    method: "DELETE",
+    pattern: /^\/api-payments\/transactions\/[^\/\?]+(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "delete",
+    description: "Delete transaction via recycle bin workflow.",
+  },
+
+  // POST /api-payments/transactions/:transactionId/approve
+  {
+    id: "payment:tx:approve",
+    method: "POST",
+    pattern: /^\/api-payments\/transactions\/[^\/\?]+\/approve(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "approve",
+    description: "Approve transaction (verification workflow).",
+  },
+
+  // POST /api-payments/transactions/:transactionId/reject
+  {
+    id: "payment:tx:reject",
+    method: "POST",
+    pattern: /^\/api-payments\/transactions\/[^\/\?]+\/reject(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "reject",
+    description: "Reject transaction (verification workflow).",
+  },
+
+  // POST /api-payments/transactions/:transactionId/status
+  {
+    id: "payment:tx:status",
+    method: "POST",
+    pattern: /^\/api-payments\/transactions\/[^\/\?]+\/status(?:\?.*)?$/i,
+    module: "PaymentBilling",
+    action: "status",
+    description: "Reject transaction (verification workflow).",
+  },
+
+
+
   // =========================================================================
   // PLACES (/api-places) → AccessMap: PropertyManagement.view
   // =========================================================================
@@ -1749,7 +1990,7 @@ export const GUARD_ROUTES: ReadonlyArray<GuardRouteDefinition> = [
     id: "recyclebin:count",
     method: "GET",
     pattern: GuardRoutesMapSource.p( /^\/api-recyclebin\/count\/?$/ ),
-    module: "RecycleBin", 
+    module: "RecycleBin",
     action: "count",
     description: "RecycleBin.count → Count recycle bin entries",
   },

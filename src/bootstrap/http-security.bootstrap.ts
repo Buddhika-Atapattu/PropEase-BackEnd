@@ -219,7 +219,7 @@ export class HttpSecurityBootstrap {
   }
 
   private denyListFromEnv(): string[] {
-    const raw: string[] = String(PUBLIC_DENY_DIRS || 'recyclebin').split(',');
+    const raw: string[] = String(PUBLIC_DENY_DIRS).split(',');
     return raw.map((s: string) => s.trim()).filter(Boolean);
   }
 }

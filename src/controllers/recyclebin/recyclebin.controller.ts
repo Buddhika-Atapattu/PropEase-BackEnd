@@ -194,7 +194,7 @@ export class RecycleBinController {
                 return;
             }
 
-            const result = await this.engine.prepareRestore( entryId, actor );
+            const result = await this.engine.prepareRestore( entryId, actor, req );
 
 
             // ✅ Audit (targeted)
@@ -254,6 +254,7 @@ export class RecycleBinController {
             const result = await this.engine.restore( {
                 entryId,
                 restoredBy: actor,
+                req,
                 ...( restoreMode ? { restoreMode } : {} ),
             } );
 
@@ -307,7 +308,7 @@ export class RecycleBinController {
                 return;
             }
 
-            const result = await this.engine.purge( entryId, actor );
+            const result = await this.engine.purge( entryId, actor, req );
 
             // ✅ Audit
             await this.audit.recordPurged( { entryId: result.entryId }, actor );

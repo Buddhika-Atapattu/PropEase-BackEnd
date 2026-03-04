@@ -336,7 +336,8 @@ export class WorkItemRestService {
     public async deleteById(
         ctx: WorkItemWsContext,
         workItemId: string,
-        actor: AuthUser
+        actor: AuthUser,
+        req: Request,
     ): Promise<void> {
         const _id = this.toObjectId( workItemId );
 
@@ -382,7 +383,7 @@ export class WorkItemRestService {
                     },
                 };
 
-                await this.deleteService.deleteWithRecycleBin( actor, activityPlan );
+                await this.deleteService.deleteWithRecycleBin( actor, activityPlan, req );
             } catch ( err: unknown ) {
                 console.error( "[Error:] [WorkItemService.deleteById:] memberActivity recycle delete failed.\n", err, "\n" );
                 // Choose: either continue deleting others or stop. Stopping keeps behavior strict.
@@ -412,7 +413,7 @@ export class WorkItemRestService {
             },
         };
 
-        await this.deleteService.deleteWithRecycleBin( actor, workItemPlan );
+        await this.deleteService.deleteWithRecycleBin( actor, workItemPlan, req );
 
         // 3) WS emit
         if ( ctx.teamCode ) {

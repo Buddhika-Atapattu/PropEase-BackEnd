@@ -969,7 +969,7 @@ export default class Property {
             },
           };
 
-          const deleted = await this.deleteSvc.deleteWithRecycleBin( author, plan );
+          const deleted = await this.deleteSvc.deleteWithRecycleBin( author, plan, req );
 
           // -------------------------------------------------------------------
           // 6) Notify (non-fatal)

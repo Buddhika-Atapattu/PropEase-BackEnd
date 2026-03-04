@@ -41,7 +41,7 @@ import type {
   TypedSocket
 } from '../socket/socket-types.type';
 
-import { AuthUser } from '../types/common'
+import { AuthUser } from '../types/common';
 
 // Handles extraction of sessionToken from cookies/headers/handshake
 import { SocketAuthHelper } from '../socket/socket-auth.helper';
@@ -59,6 +59,7 @@ import { GuardTokenService } from '../services/guard-token.service';
 import { WsTokenRegistryProvider } from '../services/ws-service/ws-token-registry.provider.service';
 
 import { wsSecurityEventLogger } from '../services/ws-service/ws-security-event-logger.service';
+import type { PermissionEntry } from '../models/user.model';
 
 // ---------------------------------------------------------------------------
 // Options for setting up the Socket.IO server
@@ -142,15 +143,15 @@ export default class SocketServer {
         pingTimeout: 20_000   // when to consider client dead
       }
     );
-  
+
     this.ioServer = io;
-  
+
     // Use root namespace "/" unless user defined a custom namespace
     this.nsp =
       this.opts.namespace === '/'
         ? io.sockets
         : io.of( this.opts.namespace );
-  
+
     // -------------------------------------------------------------------
     // 1) AUTH MIDDLEWARE (HANDSHAKE LEVEL)
     //
@@ -170,16 +171,16 @@ export default class SocketServer {
           //   - headers
           const rawSessionToken: string | null =
             this.authHelper.extractSessionToken( socket );
-  
+
           // Normalise user-agent header to a single string
           const uaHeader = socket.handshake.headers[ 'user-agent' ];
           const userAgent: string | undefined =
             typeof uaHeader === 'string'
               ? uaHeader
               : Array.isArray( uaHeader )
-                ? (uaHeader as string[]).join( '; ' )
+                ? ( uaHeader as string[] ).join( '; ' )
                 : undefined;
-  
+
           if ( !rawSessionToken || rawSessionToken.trim().length === 0 ) {
             // No token at all → deny + log (no username known yet → omit username)
             await wsSecurityEventLogger.log( {
@@ -189,19 +190,19 @@ export default class SocketServer {
               userAgent,
               reason: 'missing session token at handshake'
             } );
-  
+
             next( new Error( 'Unauthorized' ) );
             return;
           }
-  
+
           // Now we have a guaranteed, trimmed session token string
           const sessionToken: string = rawSessionToken.trim();
-  
+
           // Validate token → return user from GuardTokenService
           const user = await this.guardTokenService.resolveUserBySessionToken(
             sessionToken
           );
-  
+
           if ( !user ) {
             await wsSecurityEventLogger.log( {
               eventType: 'wsTokenDenied',
@@ -212,13 +213,13 @@ export default class SocketServer {
               userAgent,
               reason: 'invalid/expired session token at handshake'
             } );
-  
+
             console.warn(
               '[Warning:] [socket auth] Invalid or expired sessionToken – rejecting socket:',
               socket.id,
               '\n'
             );
-  
+
             next(
               new Error(
                 '[Unauthorized] invalid or expired sessionToken – rejecting socket'
@@ -226,7 +227,7 @@ export default class SocketServer {
             );
             return;
           }
-  
+
           // Minimal information stored on socket for downstream handlers
           const authUser: AuthUser = {
             name: user.name,
@@ -234,10 +235,14 @@ export default class SocketServer {
             role: user.role as any,
             userId: user._id
           };
-  
+
           socket.data.authUser = authUser;
           socket.data.sessionToken = sessionToken;
-  
+
+          const permissions = user?.access?.permissions;
+          const guardActions = this.buildGuardActions( permissions );
+          if ( guardActions.length > 0 ) socket.data.guardActions = guardActions;
+
           // NEXT STEP:
           // The wsToken will be validated "post-handshake"
           // inside SocketConnectionHandler.registerConnectionHandlers().
@@ -262,7 +267,7 @@ export default class SocketServer {
 
     return this.nsp;
   }
-  
+
 
   // -----------------------------------------------------------------------
   // attachToApp()
@@ -313,5 +318,35 @@ export default class SocketServer {
       throw new Error( 'SocketConnectionHandler not initialised. Call attach() first.' );
     }
     return this.connectionHandler;
+  }
+
+  /**
+   * Build flattened guardActions list from DB permissions.
+   *
+   * @param permissions
+   * - Expected: user.access.permissions (PermissionEntry[])
+   *
+   * @returns string[]
+   * - Example: ["PaymentBilling:create", "LeaseManagement:view"]
+   */
+  private buildGuardActions( permissions: PermissionEntry[] | undefined | null ): string[] {
+    if ( !Array.isArray( permissions ) || permissions.length === 0 ) return [];
+
+    const out: string[] = [];
+
+    for ( const p of permissions ) {
+      const mod = typeof p?.module === "string" ? p.module.trim() : "";
+      if ( !mod ) continue;
+
+      const acts = Array.isArray( p?.actions ) ? p.actions : [];
+      for ( const a of acts ) {
+        const act = typeof a === "string" ? a.trim() : "";
+        if ( !act ) continue;
+        out.push( `${ mod }:${ act }` );
+      }
+    }
+
+    // dedupe
+    return Array.from( new Set( out ) );
   }
 }

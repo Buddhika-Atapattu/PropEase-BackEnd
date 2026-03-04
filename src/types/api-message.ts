@@ -20,17 +20,20 @@ import type { User } from "../models/user.model";
 // IMPORTANT: Do NOT import Document-extended types into API contracts.
 // These must be plain DTOs (Lean-safe).
 import type { WorkEventDto } from "../models/teamManagement/workEvent.model";
+import type { RecycleBinEntryDto } from './recyclebin/recyclebin.types';
 import type { MemberActivityDto } from "./teamManagement/memberActivities/memberActivities.types";
+import type { MilestoneDto } from './teamManagement/milestones/milestone.types';
 import type { TeamManagementDto } from "./teamManagement/teamMain/teamManagement.types";
 import type { TeamTaskDto } from './teamManagement/teamTasks/team-tasks.type';
 import type { WorkItemDto } from "./teamManagement/workItem/workItem.types";
-import type { MilestoneDto } from './teamManagement/milestones/milestone.types';
-import type { RecycleBinEntryDto } from './recyclebin/recyclebin.types';
 
 // ✅ TYPE-ONLY import (prevents runtime dependency problems)
 import type { CommentDto } from "./comment.types";
 import type { FileMetaPacket, PaginationMeta, ValidationUnit } from "./common";
-import type { NotificationInboxItemDto, NotificationCoreDto } from './notification/notification.types';
+import type { NotificationCoreDto, NotificationInboxItemDto } from './notification/notification.types';
+import type { BankAccountDto } from "./payments/bank-registry/bank-accounts/bank-account.types";
+import type { BankCoreDto } from "./payments/bank-registry/banks/bank.types";
+import type { PaymentTransactionCoreDto, PaymentTransactionListItemDto } from "./payments/transactions/payment-transaction.types";
 
 // ──────────────────────────────────────────────────────────────
 // 1) Core primitives
@@ -98,6 +101,16 @@ export interface SystemData {
   //Notifications
   notification?: NotificationInboxItemDto | NotificationCoreDto;
   notifications?: NotificationInboxItemDto[] | NotificationCoreDto[];
+
+  //Payments
+  bank?: BankCoreDto;
+  banks?: BankCoreDto[];
+
+  bankAccount?: BankAccountDto;
+  bankAccounts?: BankAccountDto[];
+
+  transaction?: PaymentTransactionCoreDto;
+  transactions?: PaymentTransactionCoreDto[] | PaymentTransactionListItemDto[];
 
   // Dashboard summaries
   totalUsers?: number;
@@ -189,6 +202,8 @@ export type MilestoneSystemData = Pick<SystemData, 'milestone' | 'milestones'>;
 export type RecycleBinSystemData = Pick<SystemData, 'recycleBinItem' | 'recycleBinItems'>;
 
 export type NotificationSystemData = Pick<SystemData, 'notification' | 'notifications'>;
+
+
 
 // ──────────────────────────────────────────────────────────────
 // 7) Convenience ApiData aliases per module

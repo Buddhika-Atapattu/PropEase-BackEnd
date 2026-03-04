@@ -2013,7 +2013,7 @@ export default class UserRoute {
           // ===================================================================
           // 6) Execute: Record to recyclebin FIRST, then delete DB
           // ===================================================================
-          const result = await this.deleteSvc.deleteWithRecycleBin( actor, plan );
+          const result = await this.deleteSvc.deleteWithRecycleBin( actor, plan, req );
 
 
           // ===================================================================

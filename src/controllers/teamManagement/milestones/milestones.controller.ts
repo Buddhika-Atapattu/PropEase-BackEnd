@@ -295,7 +295,7 @@ export class MilestonesController {
 
 
 
-      const deleted = await this.service.deleteById( ctx, milestoneId );
+      const deleted = await this.service.deleteById( ctx, milestoneId, req );
 
       await this.notificationHub.emit( {
         eventKey: 'team:member.milestone.deleted',

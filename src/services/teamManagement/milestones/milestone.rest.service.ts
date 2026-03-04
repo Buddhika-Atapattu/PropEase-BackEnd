@@ -275,7 +275,7 @@ export class MilestoneRestService {
         return dto;
     }
 
-    public async deleteById( ctx: MilestoneWsContext, milestoneId: string ): Promise<{
+    public async deleteById( ctx: MilestoneWsContext, milestoneId: string, req: Request ): Promise<{
         entry: RecycleRecordResult;
     }> {
         const _id = this.toObjectId( milestoneId );
@@ -305,7 +305,7 @@ export class MilestoneRestService {
         };
 
         // ✅ Call ONCE (durability-first)
-        const deleted = await this.deleteSvc.deleteWithRecycleBin( ctx.actor, plan );
+        const deleted = await this.deleteSvc.deleteWithRecycleBin( ctx.actor, plan, req );
 
         // WS emit (best-effort; must not break REST)
         try {

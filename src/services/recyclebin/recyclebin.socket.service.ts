@@ -39,19 +39,19 @@ import {
 export interface RecycleBinWsAudience {
   /**
    * @param usernames
-   * - Emits to: user.<username>
+   * - Emits to: user:<username>
    */
   usernames?: string[];
 
   /**
    * @param roles
-   * - Emits to: role.<role>
+   * - Emits to: role:<role>
    */
   roles?: string[];
 
   /**
    * @param teamCodes
-   * - Emits to: team.<teamCode>
+   * - Emits to: team:<teamCode>
    */
   teamCodes?: string[];
 

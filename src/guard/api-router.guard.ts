@@ -579,6 +579,7 @@ export class ApiGuardExport {
             username: user.username,
             name: user.name,
             userId: user._id,
+            companyId: 'PROPEASE',
         };
 
         console.log( '[Info:] [ApiRouterGuard:] Valid AuthUser \n' );
@@ -599,6 +600,7 @@ export class ApiGuardExport {
             username: user.username,
             name: user.name,
             userId: MongoIdUtil.toIdString( user._id ),
+            companyId: 'PROPEASE',
         };
 
         console.log( '[Info:] [ApiRouterGuard:] Valid AuthUserNormalized \n' )

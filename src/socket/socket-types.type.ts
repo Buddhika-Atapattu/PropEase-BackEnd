@@ -5,46 +5,58 @@ import {
     Namespace,
     Server as IOServer,
     Socket as IOSocket,
-    type DefaultEventsMap
-} from 'socket.io';
-import type { Role } from '../types/roles';
-import { Types } from 'mongoose';
-import { AuthUser } from '../types/common';
+    type DefaultEventsMap,
+} from "socket.io";
+
+import type { Role } from "../types/roles";
+import { Types } from "mongoose";
+import type { AuthUser, ISODateString } from "../types/common";
+import type { NotificationCoreDto } from "../types/notification/notification.types";
 
 export type JwtPayload = {
     sub?: string;
 
-    name?: string;        // optional "name" claim (for better FE display), fallback to "username"
-    userId: Types.ObjectId;        // userId (string) if your JWT uses it
+    name?: string;
+    userId: Types.ObjectId;
     username: string;
     role: Role;
 
-    // optional scoping hints (multi-team supported)
     branchId?: string;
-    teamCodes?: string[];    // ✅ one user can belong to many teams
+    teamCodes?: string[];
 
     iat?: number;
     exp?: number;
 };
 
+export interface GuardTokenPayload {
+    token: string,
+    issuedAt: number;
+    expiresAt: number;
+}
 
 /**
  * Socket.IO "data" bag for each connection.
- * We extend this as needed (authUser, sessionToken, etc.)
  */
 export type SocketAuthData = {
     authUser?: AuthUser;
     sessionToken?: string;
 
-    // -----------------------------
-    // KPI realtime room join helpers
-    // -----------------------------
-    kpiTeams?: string[];      // teamCodes (user can have many)
-    kpiBranchId?: string;     // optional (only if you have branches)
+    /**
+     * High-level WS security (flattened permission keys).
+     * Example entries:
+     * - "PaymentBilling:view"
+     * - "PaymentBilling:create"
+     * - "PaymentBilling:refund"
+     * - "PaymentBilling:delete"
+     * - "PaymentBilling:invoice"
+     */
+    guardActions?: string[];
+
+    // KPI helpers
+    kpiTeams?: string[];
+    kpiBranchId?: string;
 };
 
-
-// Strongly-typed aliases for Socket.IO server / namespace / socket
 export type TypedServer = IOServer<
     DefaultEventsMap,
     DefaultEventsMap,
@@ -66,11 +78,8 @@ export type TypedSocket = IOSocket<
     SocketAuthData
 >;
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Domain payloads – keep in sync with FE DTOs
-// ──────────────────────────────────────────────────────────────────────────────
-
-export type AudienceMode = 'user' | 'role' | 'broadcast';
+// Domain payloads (kept as-is)
+export type AudienceMode = "user" | "role" | "broadcast";
 
 export interface NotificationAudience {
     mode: AudienceMode;
@@ -78,35 +87,26 @@ export interface NotificationAudience {
     roles?: Role[];
 }
 
-export interface NotificationPayload {
-    _id: string;
-    title: string;
-    body: string;
-    category: string;
-    type: string;
-    severity?: 'info' | 'success' | 'warning' | 'error';
-    audience: NotificationAudience;
-    createdAt: string;
-}
+export interface NotificationPayload extends NotificationCoreDto {}
 
 export interface ChatMessagePayload {
     id: string;
-    roomId?: string;   // e.g. "chat:tenant-123-owner-7"
-    from: string;      // enforced by backend (socket auth)
-    to?: string;       // direct message target username
+    roomId?: string;
+    from: string;
+    to?: string;
     text?: string;
     createdAt: string;
 }
 
 export interface CallSignalBase {
-    callId: string;    // unique call/session id
-    from: string;      // caller username (enforced server-side)
-    to: string;        // callee username
+    callId: string;
+    from: string;
+    to: string;
 }
 
 export interface CallOfferPayload extends CallSignalBase {
     sdp: unknown;
-    kind: 'audio' | 'video' | 'screen' | 'audio_video';
+    kind: "audio" | "video" | "screen" | "audio_video";
 }
 
 export interface CallAnswerPayload extends CallSignalBase {
@@ -119,15 +119,4 @@ export interface CallCandidatePayload extends CallSignalBase {
 
 export interface CallEndPayload extends CallSignalBase {
     reason?: string;
-}
-
-/**
- * Guard token payload (BE → FE)
- * NOTE: token here is the hex guardToken from GuardTokenService,
- *       not a separate JWT anymore.
- */
-export interface GuardTokenPayload {
-    token: string;   // DB-backed hex guard token
-    issuedAt: number;
-    expiresAt: number;
 }

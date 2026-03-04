@@ -407,19 +407,43 @@ export const ACCESS_OPTIONS = [
     module: "PaymentBilling",
     label: "Payments",
     icon: "payments",
-    description: "Billing, invoices, collections, approvals, refunds.",
+    description: "Bank registry, bank accounts, payment transactions, verification workflow.",
     actions: [
-      { id: "view", label: "View", icon: "visibility" },
-      { id: "create", label: "Create", icon: "add" }, // invoice/charge
-      { id: "update", label: "Update", icon: "edit" }, // adjust
-      { id: "delete", label: "Delete", icon: "delete" }, // void
-      { id: "invoice", label: "Invoice", icon: "receipt_long" },
-      { id: "record", label: "Record", icon: "point_of_sale" },
-      { id: "approve", label: "Approve", icon: "verified" },
-      { id: "refund", label: "Refund", icon: "currency_exchange" },
-      { id: "reconcile", label: "Reconcile", icon: "rule", description: "Reconcile payments vs invoices." },
-      { id: "audit", label: "Audit", icon: "fact_check" },
-      { id: "export", label: "Export", icon: "file_download" },
+      // -----------------------------
+      // READ
+      // -----------------------------
+      { id: "view", label: "View", icon: "visibility" },           // list/read banks/accounts/transactions
+      { id: "count", label: "Count", icon: "tag" },                // /transactions/count (and future list counts)
+
+      // -----------------------------
+      // BANK REGISTRY (Master Data)
+      // -----------------------------
+      { id: "bank_manage", label: "Manage Banks", icon: "account_balance" }, // create/update/status/delete banks
+
+      // -----------------------------
+      // BANK ACCOUNTS (Company receiving accounts)
+      // -----------------------------
+      { id: "bank_account_manage", label: "Manage Bank Accounts", icon: "account_balance_wallet" }, // create/update/delete accounts, set default
+
+      // -----------------------------
+      // TRANSACTIONS (External payments)
+      // -----------------------------
+      { id: "record", label: "Record", icon: "point_of_sale" },    // create transaction
+      { id: "update", label: "Update", icon: "edit" },             // update transaction
+      { id: "delete", label: "Delete", icon: "delete" },           // delete transaction (to recyclebin)
+
+      // -----------------------------
+      // VERIFICATION (High privilege)
+      // -----------------------------
+      { id: "approve", label: "Approve", icon: "verified" },                      // approve transaction
+      { id: "reject", label: "Reject", icon: "gpp_bad" },                         // reject transaction
+      { id: "status", label: "Change Status", icon: "account_balance" },          // status transaction
+
+      // -----------------------------
+      // GOVERNANCE
+      // -----------------------------
+      { id: "audit", label: "Audit", icon: "fact_check" },         // view audit events/verification history (future)
+      { id: "export", label: "Export", icon: "file_download" },    // export reports (future)
     ] as const,
   },
   {

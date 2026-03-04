@@ -742,7 +742,7 @@ export class TeamManagementController {
       };
 
       // ✅ Do the transactional delete + recyclebin write
-      const rbResult = await this.deleteSvc.deleteWithRecycleBin( auth, deletePlan );
+      const rbResult = await this.deleteSvc.deleteWithRecycleBin( auth, deletePlan, req );
 
       // ✅ Emit notification only after success (and await it)
       await this.notificationHub.emit( {
